@@ -1,0 +1,18 @@
+{
+  "headline": "GitHub[Neurowealth/NeuroWealth-Smartcontract]: Add minimum and maximum deposit limits as configurable constants",
+  "url": "https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/1",
+  "expected_usd": 10000.0,
+  "strategy": "锁定明码 bounty；交付代码+run_log+sample_data，并准备自动交割链接。",
+  "raw_expected": "10000.00 USD",
+  "bounty_literal": "10,000 USDC",
+  "source_line": "## 🚨 发现新商机：GitHub[Neurowealth/NeuroWealth-Smartcontract]: Add minimum and maximum deposit limits as configurable constants",
+  "kind": "generic_automation",
+  "difficulty": 1.0,
+  "score": 10000.0,
+  "oid": "3aaecfd1f82463e80f9de808a4b40bb14c8f6b4841fbc76e589e525d58ceefdd",
+  "payout": {
+    "asset": "USDT",
+    "chain": "EVM",
+    "wallet": "0xF57503F99fA20b912200ed90D26d945093136ef5"
+  }
+}
