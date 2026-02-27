@@ -128,6 +128,12 @@ pub enum DataKey {
     /// Per-user deposit cap
     /// Maximum amount a single user can deposit
     UserDepositCap,
+    /// Minimum deposit amount
+    /// Minimum amount required for a single deposit
+    MinDeposit,
+    /// Maximum deposit amount
+    /// Maximum amount allowed for a single deposit
+    MaxDeposit,
     /// Contract version for upgrade tracking
     Version,
 }
@@ -340,10 +346,12 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::Owner, &agent);
         env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
         env.storage().instance().set(&DataKey::UserDepositCap, &10_000_000_000_i128); // 10K USDC default
+        env.storage().instance().set(&DataKey::MinDeposit, &1_000_000_i128); // 1 USDC default
+        env.storage().instance().set(&DataKey::MaxDeposit, &10_000_000_000_i128); // 10K USDC default
         env.storage().instance().set(&DataKey::Version, &1_u32);
 
         env.events().publish(
-            (symbol_short!("vault_initialized"),),
+            (symbol_short!("v_init"),),
             VaultInitializedEvent {
                 agent: agent.clone(),
                 usdc_token: usdc_token.clone(),
@@ -393,7 +401,8 @@ impl NeuroWealthVault {
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(amount);
-        Self::require_minimum_deposit(amount);
+        Self::require_minimum_deposit(&env, amount);
+        Self::require_maximum_deposit(&env, amount);
         Self::require_within_deposit_cap(&env, &user, amount);
         Self::require_within_tvl_cap(&env, amount);
 
@@ -562,9 +571,10 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance()
+            .get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("vault_paused"),),
+            (symbol_short!("v_pause"),),
             VaultPausedEvent { caller }
         );
     }
@@ -596,9 +606,10 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &false);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance()
+            .get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("vault_unpaused"),),
+            (symbol_short!("v_unpause"),),
             VaultUnpausedEvent { caller }
         );
     }
@@ -628,9 +639,10 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance()
+            .get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("emergency_paused"),),
+            (symbol_short!("e_pause"),),
             EmergencyPausedEvent { caller }
         );
     }
@@ -672,7 +684,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TvLCap, &cap);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("l_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: old_user_cap,
@@ -714,7 +726,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::UserDepositCap, &cap);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("l_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: cap,
@@ -761,11 +773,64 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TvLCap, &max);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("l_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: min,
                 old_max: old_tvl_cap,
+                new_max: max,
+            }
+        );
+    }
+
+    /// Sets both the minimum and maximum deposit limits in a single transaction.
+    ///
+    /// This function allows updating both deposit limits atomically and emits a
+    /// `LimitsUpdatedEvent` with all old and new values.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `min` - New minimum deposit limit in USDC units (7 decimal places)
+    /// * `max` - New maximum deposit limit in USDC units (7 decimal places)
+    ///
+    /// # Returns
+    /// Nothing. This function updates both deposit limits and returns nothing.
+    ///
+    /// # Panics
+    /// - If the caller is not the owner
+    /// - If min is less than 1 USDC (1_000_000 stroops)
+    /// - If max is less than min
+    ///
+    /// # Events
+    /// Emits `LimitsUpdatedEvent` with:
+    /// - `old_min`: Previous minimum deposit limit
+    /// - `new_min`: New minimum deposit limit
+    /// - `old_max`: Previous maximum deposit limit
+    /// - `new_max`: New maximum deposit limit
+    ///
+    /// # Security
+    /// - Only the owner can modify the deposit limits
+    pub fn set_deposit_limits(env: Env, min: i128, max: i128) {
+        Self::require_is_owner(&env);
+        
+        // Validate limits
+        assert!(min >= 1_000_000, "Minimum deposit must be at least 1 USDC");
+        assert!(max >= min, "Maximum deposit must be greater than or equal to minimum");
+        
+        let old_min = env.storage().instance()
+            .get(&DataKey::MinDeposit).unwrap_or(1_000_000);
+        let old_max = env.storage().instance()
+            .get(&DataKey::MaxDeposit).unwrap_or(10_000_000_000);
+        
+        env.storage().instance().set(&DataKey::MinDeposit, &min);
+        env.storage().instance().set(&DataKey::MaxDeposit, &max);
+        
+        env.events().publish(
+            (symbol_short!("l_upd"),),
+            LimitsUpdatedEvent {
+                old_min,
+                new_min: min,
+                old_max,
                 new_max: max,
             }
         );
@@ -797,6 +862,32 @@ impl NeuroWealthVault {
             .unwrap_or(0)
     }
 
+    /// Returns the current minimum deposit limit.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current minimum deposit limit in USDC units (7 decimal places)
+    pub fn get_min_deposit(env: Env) -> i128 {
+        env.storage().instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(1_000_000) // Default 1 USDC
+    }
+
+    /// Returns the current maximum deposit limit.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current maximum deposit limit in USDC units (7 decimal places)
+    pub fn get_max_deposit(env: Env) -> i128 {
+        env.storage().instance()
+            .get(&DataKey::MaxDeposit)
+            .unwrap_or(10_000_000_000) // Default 10K USDC
+    }
+
     /// Updates the authorized AI agent address.
     ///
     /// Only the owner can update the agent. This allows for agent key rotation
@@ -823,13 +914,13 @@ impl NeuroWealthVault {
     pub fn update_agent(env: Env, new_agent: Address) {
         Self::require_is_owner(&env);
         
-        let old_agent = env.storage().instance()
+        let old_agent: Address = env.storage().instance()
             .get(&DataKey::Agent).unwrap();
         
         env.storage().instance().set(&DataKey::Agent, &new_agent);
         
         env.events().publish(
-            (symbol_short!("agent_updated"),),
+            (symbol_short!("a_upd"),),
             AgentUpdatedEvent {
                 old_agent: old_agent.clone(),
                 new_agent: new_agent.clone(),
@@ -870,7 +961,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TotalDeposits, &new_total);
         
         env.events().publish(
-            (symbol_short!("assets_updated"),),
+            (symbol_short!("s_upd"),),
             AssetsUpdatedEvent {
                 old_total,
                 new_total,
@@ -1005,54 +1096,7 @@ impl NeuroWealthVault {
     /// # Panics
     /// None
     ///
-    /// # EventsSummary
-The vault contract currently emits events for deposit and withdraw but several state-changing admin functions emit nothing. The AI agent and any external indexers need these events to maintain accurate state without polling the chain constantly.
-
-Missing Events
-Function | Event Needed -- | -- initialize | VaultInitializedEvent pause | VaultPausedEvent unpause | VaultUnpausedEvent emergency_pause | EmergencyPausedEvent set_limits | LimitsUpdatedEvent update_agent | AgentUpdatedEvent update_total_assets | AssetsUpdatedEvent rebalance | RebalanceEvent (update existing)
-Expected Event Structs
-rust
-#[contracttype]
-pub struct VaultInitializedEvent {
-    pub agent: Address,
-    pub usdc_token: Address,
-    pub tvl_cap: i128,
-}
-
-#[contracttype]
-pub struct AgentUpdatedEvent {
-    pub old_agent: Address,
-    pub new_agent: Address,
-}
-
-#[contracttype]
-pub struct LimitsUpdatedEvent {
-    pub old_min: i128,
-    pub new_min: i128,
-    pub old_max: i128,
-    pub new_max: i128,
-}
-
-#[contracttype]
-pub struct RebalanceEvent {
-    pub protocol: Symbol,
-    pub expected_apy: i128, // in basis points e.g. 850 = 8.5%
-}
-
-#[contracttype]
-pub struct AssetsUpdatedEvent {
-    pub old_total: i128,
-    pub new_total: i128,
-}
-Tasks
-Define all missing event structs listed above
-Add env.events().publish(...) to each function that is missing one
-Ensure all event structs use #[contracttype] derive
-Write tests that assert each event is emitted correctly using env.events().all()
-Acceptance Criteria
-Every state-changing function emits at least one event
-Event data contains enough fields to reconstruct state changes off-chain
-Tests verify event emission for each function
+    /// # Events
     /// None
     pub fn get_version(env: Env) -> u32 {
         env.storage().instance()
@@ -1074,7 +1118,7 @@ Tests verify event emission for each function
     /// # Events
     /// None
     pub fn get_usdc_token(env: Env) -> Address {
-        env.storage::instance()
+        env.storage().instance()
             .get(&DataKey::UsdcToken)
             .unwrap()
     }
@@ -1128,13 +1172,28 @@ Tests verify event emission for each function
 
     /// Validates that a deposit meets the minimum requirement.
     ///
-    /// Minimum deposit is 1 USDC (1_000_000 in 7-decimal units).
+    /// Minimum deposit is read from storage (default 1 USDC).
     ///
     /// # Panics
     /// - If amount < minimum deposit
     #[inline]
-    fn require_minimum_deposit(amount: i128) {
-        assert!(amount >= 1_000_000, "Minimum deposit is 1 USDC");
+    fn require_minimum_deposit(env: &Env, amount: i128) {
+        let min_deposit: i128 = env.storage().instance()
+            .get(&DataKey::MinDeposit).unwrap_or(1_000_000);
+        assert!(amount >= min_deposit, "Below minimum deposit");
+    }
+
+    /// Validates that a deposit is within the maximum limit.
+    ///
+    /// Maximum deposit is read from storage (default 10,000 USDC).
+    ///
+    /// # Panics
+    /// - If amount > maximum deposit
+    #[inline]
+    fn require_maximum_deposit(env: &Env, amount: i128) {
+        let max_deposit: i128 = env.storage().instance()
+            .get(&DataKey::MaxDeposit).unwrap_or(10_000_000_000);
+        assert!(amount <= max_deposit, "Exceeds maximum deposit");
     }
 
     /// Validates that a deposit is within the user's cap.
@@ -1168,3 +1227,6 @@ Tests verify event emission for each function
         }
     }
 }
+
+#[cfg(test)]
+mod test;
