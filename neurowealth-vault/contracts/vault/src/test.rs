@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, Symbol};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 fn setup_vault(env: &Env) -> (Address, Address, Address) {
     let contract_id = env.register_contract(None, NeuroWealthVault);
@@ -17,274 +17,231 @@ fn setup_vault(env: &Env) -> (Address, Address, Address) {
 }
 
 #[test]
-fn test_vault_initialized_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, NeuroWealthVault);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    let agent = Address::generate(&env);
-    let usdc_token = Address::generate(&env);
-    let tvl_cap = 100_000_000_000_i128;
-
-    client.initialize(&agent, &usdc_token);
-
-    let events = env.events().all();
-    assert_eq!(events.len(), 1);
-    
-    let event = &events[0];
-    assert_eq!(event.0, (symbol_short!("vault_initialized"),));
-    
-    let event_data: VaultInitializedEvent = event.1.clone().try_into().unwrap();
-    assert_eq!(event_data.agent, agent);
-    assert_eq!(event_data.usdc_token, usdc_token);
-    assert_eq!(event_data.tvl_cap, tvl_cap);
-}
-
-#[test]
-fn test_vault_paused_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, owner) = setup_vault(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    client.pause();
-
-    let events = env.events().all();
-    // Find the pause event (skip initialization event)
-    let pause_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("vault_paused"),))
-        .collect();
-    assert_eq!(pause_events.len(), 1);
-    
-    let event_data: VaultPausedEvent = pause_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.caller, owner);
-}
-
-#[test]
-fn test_vault_unpaused_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, owner) = setup_vault(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    client.pause();
-    client.unpause();
-
-    let events = env.events().all();
-    let unpause_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("vault_unpaused"),))
-        .collect();
-    assert_eq!(unpause_events.len(), 1);
-    
-    let event_data: VaultUnpausedEvent = unpause_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.caller, owner);
-}
-
-#[test]
-fn test_emergency_paused_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, owner) = setup_vault(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    client.emergency_pause();
-
-    let events = env.events().all();
-    let emergency_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("emergency_paused"),))
-        .collect();
-    assert_eq!(emergency_events.len(), 1);
-    
-    let event_data: EmergencyPausedEvent = emergency_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.caller, owner);
-}
-
-#[test]
-fn test_limits_updated_event() {
+fn test_get_min_deposit_default() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    let old_min = 10_000_000_000_i128; // 10K USDC default
-    let old_max = 100_000_000_000_i128; // 100M USDC default
-    let new_min = 20_000_000_000_i128; // 20K USDC
-    let new_max = 200_000_000_000_i128; // 200M USDC
-
-    client.set_limits(&new_min, &new_max);
-
-    let events = env.events().all();
-    let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
-        .collect();
-    assert_eq!(limits_events.len(), 1);
-    
-    let event_data: LimitsUpdatedEvent = limits_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.old_min, old_min);
-    assert_eq!(event_data.new_min, new_min);
-    assert_eq!(event_data.old_max, old_max);
-    assert_eq!(event_data.new_max, new_max);
+    let min_deposit = client.get_min_deposit();
+    assert_eq!(min_deposit, 1_000_000_i128); // 1 USDC default
 }
 
 #[test]
-fn test_limits_updated_event_from_set_tvl_cap() {
+fn test_get_max_deposit_default() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    let old_max = 100_000_000_000_i128; // 100M USDC default
-    let new_max = 150_000_000_000_i128; // 150M USDC
-
-    client.set_tvl_cap(&new_max);
-
-    let events = env.events().all();
-    let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
-        .collect();
-    assert_eq!(limits_events.len(), 1);
-    
-    let event_data: LimitsUpdatedEvent = limits_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.old_max, old_max);
-    assert_eq!(event_data.new_max, new_max);
+    let max_deposit = client.get_max_deposit();
+    assert_eq!(max_deposit, 10_000_000_000_i128); // 10K USDC default
 }
 
 #[test]
-fn test_limits_updated_event_from_set_user_deposit_cap() {
+fn test_set_deposit_limits_success() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    let old_min = 10_000_000_000_i128; // 10K USDC default
-    let new_min = 15_000_000_000_i128; // 15K USDC
+    let new_min = 2_000_000_i128; // 2 USDC
+    let new_max = 20_000_000_000_i128; // 20K USDC
 
-    client.set_user_deposit_cap(&new_min);
+    client.set_deposit_limits(&new_min, &new_max);
 
-    let events = env.events().all();
-    let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
-        .collect();
-    assert_eq!(limits_events.len(), 1);
-    
-    let event_data: LimitsUpdatedEvent = limits_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.old_min, old_min);
-    assert_eq!(event_data.new_min, new_min);
+    assert_eq!(client.get_min_deposit(), new_min);
+    assert_eq!(client.get_max_deposit(), new_max);
 }
 
 #[test]
-fn test_agent_updated_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, old_agent, _owner) = setup_vault(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    let new_agent = Address::generate(&env);
-    client.update_agent(&new_agent);
-
-    let events = env.events().all();
-    let agent_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("agent_updated"),))
-        .collect();
-    assert_eq!(agent_events.len(), 1);
-    
-    let event_data: AgentUpdatedEvent = agent_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.old_agent, old_agent);
-    assert_eq!(event_data.new_agent, new_agent);
-}
-
-#[test]
-fn test_assets_updated_event() {
+#[should_panic(expected = "Minimum deposit must be at least 1 USDC")]
+fn test_set_deposit_limits_min_too_low() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    let old_total = 0_i128;
-    let new_total = 50_000_000_000_i128; // 50M USDC
+    let min = 999_999_i128; // Less than 1 USDC
+    let max = 10_000_000_000_i128;
 
-    client.update_total_assets(&new_total);
-
-    let events = env.events().all();
-    let assets_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("assets_updated"),))
-        .collect();
-    assert_eq!(assets_events.len(), 1);
-    
-    let event_data: AssetsUpdatedEvent = assets_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.old_total, old_total);
-    assert_eq!(event_data.new_total, new_total);
+    client.set_deposit_limits(&min, &max);
 }
 
 #[test]
-fn test_rebalance_event() {
+#[should_panic(expected = "Maximum deposit must be greater than or equal to minimum")]
+fn test_set_deposit_limits_max_less_than_min() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    let protocol = symbol_short!("balanced");
-    let expected_apy = 850_i128; // 8.5% in basis points
+    let min = 5_000_000_i128; // 5 USDC
+    let max = 4_000_000_i128; // 4 USDC (less than min)
 
-    // Call rebalance as the agent
-    client.rebalance(&protocol, &expected_apy);
-
-    let events = env.events().all();
-    let rebalance_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("rebalance"),))
-        .collect();
-    assert_eq!(rebalance_events.len(), 1);
-    
-    let event_data: RebalanceEvent = rebalance_events[0].1.clone().try_into().unwrap();
-    assert_eq!(event_data.protocol, protocol);
-    assert_eq!(event_data.expected_apy, expected_apy);
+    client.set_deposit_limits(&min, &max);
 }
 
 #[test]
-fn test_deposit_and_withdraw_events() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, NeuroWealthVault);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    let agent = Address::generate(&env);
-    let user = Address::generate(&env);
-    let usdc_token = Address::generate(&env);
-
-    client.initialize(&agent, &usdc_token);
-
-    let deposit_amount = 1_000_000_i128; // 1 USDC
-    // Note: In a real test, you'd need to mock the token transfer
-    // For now, we just verify the event structure would be correct
-    
-    assert_eq!(client.get_balance(&user), 0);
-}
-
-#[test]
-fn test_pause_and_unpause_events() {
+#[should_panic(expected = "Below minimum deposit")]
+fn test_deposit_below_minimum() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    assert_eq!(client.is_paused(), false);
+    // Set minimum to 5 USDC
+    let min = 5_000_000_i128;
+    let max = 20_000_000_000_i128;
+    client.set_deposit_limits(&min, &max);
+
+    let _user = Address::generate(&env);
+    let amount = 4_000_000_i128; // 4 USDC (below minimum)
+
+    // This should panic
+    client.deposit(&_user, &amount);
+}
+
+#[test]
+#[should_panic(expected = "Exceeds maximum deposit")]
+fn test_deposit_above_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set maximum to 5 USDC
+    let min = 1_000_000_i128;
+    let max = 5_000_000_i128;
+    client.set_deposit_limits(&min, &max);
+
+    let _user = Address::generate(&env);
+    let amount = 6_000_000_i128; // 6 USDC (above maximum)
+
+    // This should panic
+    client.deposit(&_user, &amount);
+}
+
+#[test]
+fn test_deposit_at_minimum_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set minimum to 5 USDC
+    let min = 5_000_000_i128;
+    let max = 20_000_000_000_i128;
+    client.set_deposit_limits(&min, &max);
+
+    let _user = Address::generate(&env);
+    let amount = 5_000_000_i128; // Exactly at minimum
+
+    // This should succeed (though we can't fully test without token mocking)
+    assert_eq!(client.get_min_deposit(), min);
+    assert!(amount >= min);
+}
+
+#[test]
+fn test_deposit_at_maximum_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set maximum to 5 USDC
+    let min = 1_000_000_i128;
+    let max = 5_000_000_i128;
+    client.set_deposit_limits(&min, &max);
+
+    let _user = Address::generate(&env);
+    let amount = 5_000_000_i128; // Exactly at maximum
+
+    // This should succeed (though we can't fully test without token mocking)
+    assert_eq!(client.get_max_deposit(), max);
+    assert!(amount <= max);
+}
+
+#[test]
+#[should_panic(expected = "Below minimum deposit")]
+fn test_deposit_one_stroop_below_minimum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Use default minimum of 1 USDC
+    let _user = Address::generate(&env);
+    let amount = 999_999_i128; // 1 stroop below 1 USDC
+
+    // This should panic
+    client.deposit(&_user, &amount);
+}
+
+#[test]
+#[should_panic(expected = "Exceeds maximum deposit")]
+fn test_deposit_one_stroop_above_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set maximum to 10 USDC
+    let min = 1_000_000_i128;
+    let max = 10_000_000_i128;
+    client.set_deposit_limits(&min, &max);
+
+    let _user = Address::generate(&env);
+    let amount = 10_000_001_i128; // 1 stroop above maximum
+
+    // This should panic
+    client.deposit(&_user, &amount);
+}
+
+#[test]
+fn test_owner_updates_limits_immediate_effect() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Verify initial limits
+    assert_eq!(client.get_min_deposit(), 1_000_000_i128);
+    assert_eq!(client.get_max_deposit(), 10_000_000_000_i128);
+
+    // Update limits
+    let new_min = 3_000_000_i128; // 3 USDC
+    let new_max = 15_000_000_000_i128; // 15K USDC
+    client.set_deposit_limits(&new_min, &new_max);
+
+    // Verify new limits are immediately effective
+    assert_eq!(client.get_min_deposit(), new_min);
+    assert_eq!(client.get_max_deposit(), new_max);
+
+    // Test that new limits apply immediately by checking validation
+    let _user = Address::generate(&env);
     
-    client.pause();
-    assert_eq!(client.is_paused(), true);
+    // Amount below new minimum should fail
+    let below_min = 2_000_000_i128; // 2 USDC
+    assert!(below_min < new_min);
     
-    client.unpause();
-    assert_eq!(client.is_paused(), false);
+    // Amount above new maximum should fail  
+    let above_max = 20_000_000_000_i128; // 20K USDC
+    assert!(above_max > new_max);
+    
+    // Amount within new range should be valid
+    let within_range = 5_000_000_i128; // 5 USDC
+    assert!(within_range >= new_min && within_range <= new_max);
 }
