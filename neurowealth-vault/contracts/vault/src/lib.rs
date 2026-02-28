@@ -6,16 +6,18 @@
 //!
 //! This contract implements a non-custodial vault where users deposit USDC and an AI agent
 //! automatically deploys those funds across various yield-generating protocols on the Stellar
-//! blockchain. The vault maintains 1:1 parity between deposited assets and user balances.
+//! blockchain. The vault uses share-based accounting to automatically track and distribute yield.
 //!
 //! ## Share Accounting Model
 //!
-//! Currently, this implementation uses a simple 1:1 asset accounting model where:
-//! - 1 deposited USDC = 1 vault share
-//! - Withdrawals return the exact USDC amount deposited (plus any yield earned externally)
-//!
-//! In Phase 2, this will be upgraded to a proper share-based system using the ERC-4626
-//! standard, where vault shares represent a proportional claim on total vault assets.
+//! This implementation uses a share-based accounting system (ERC-4626 inspired) where:
+//! - Users deposit USDC and receive shares representing proportional vault ownership
+//! - First deposit receives 1:1 shares (e.g., 10 USDC = 10 shares)
+//! - Subsequent deposits receive proportional shares based on current share price
+//! - When yield accrues (via `update_total_assets`), total assets increase but shares remain constant
+//! - Share price = total_assets / total_shares, which increases as yield accrues
+//! - Users can withdraw more than their original deposit due to yield appreciation
+//! - Withdrawals burn shares and return proportional assets based on current share price
 //!
 //! ## Asset Flow
 //!
@@ -23,8 +25,16 @@
 //! Deposit Flow:
 //! User → [USDC Token] → [Vault Contract] → [AI Agent monitors]
 //!                      ↓
-//!              Balance recorded per user
-//!              DepositEvent emitted
+//!              Shares minted (proportional to deposit)
+//!              Total assets and shares updated
+//!              DepositEvent emitted (with shares info)
+//!
+//! Yield Accrual Flow (AI Agent):
+//! AI Agent → [Vault.update_total_assets()] → Total assets increase
+//!                              ↓
+//!                      Share price increases automatically
+//!                      User balances increase proportionally
+//!                      AssetsUpdatedEvent emitted
 //!
 //! Rebalance Flow (AI Agent):
 //! AI Agent → [Vault.rebalance()] → [External Protocols (Blend, DEX)]
@@ -34,8 +44,9 @@
 //! Withdraw Flow:
 //! User → [Vault.withdraw()] → [Vault Contract] → [USDC Token] → User
 //!         ↓
-//! Balance updated
-//! WithdrawEvent emitted
+//! Shares burned (proportional to withdrawal)
+//! Total assets and shares updated
+//! WithdrawEvent emitted (with shares info)
 //! ```
 //!
 //! ## Storage Layout
@@ -43,7 +54,9 @@
 //! ### Instance Storage (Contract-Wide, Expensive to Read/Write)
 //! - `Agent`: The authorized AI agent address that can call rebalance()
 //! - `UsdcToken`: The USDC token contract address
-//! - `TotalDeposits`: Total USDC held in vault (excluding yield deployed externally)
+//! - `TotalShares`: Total shares in circulation
+//! - `TotalAssets`: Total assets managed by vault (including yield)
+//! - `TotalDeposits`: @deprecated - Use TotalAssets for share-based accounting
 //! - `Paused`: Boolean flag for emergency pause state
 //! - `Owner`: Contract owner address for administrative functions
 //! - `TvlCap`: Maximum total value locked in the vault
@@ -51,7 +64,8 @@
 //! - `Version`: Contract version for upgrade tracking
 //!
 //! ### Persistent Storage (Per-User, Cheaper)
-//! - `Balance(user)`: USDC balance for each user address
+//! - `Shares(user)`: Share ownership for each user address
+//! - `Balance(user)`: @deprecated - Use share-based balance via get_balance()
 //!
 //! ## Event Design Philosophy
 //!
@@ -106,10 +120,21 @@ use soroban_sdk::{
 pub enum DataKey {
     /// User's USDC balance (key: user Address)
     /// Stored in persistent storage for efficient per-user access
+    /// @deprecated: Use Shares(Address) for share-based accounting
     Balance(Address),
+    /// User's share ownership (key: user Address)
+    /// Stored in persistent storage for efficient per-user access
+    Shares(Address),
     /// Total USDC deposits in the vault
     /// Stored in instance storage (single value, frequently read)
+    /// @deprecated: Use TotalAssets for share-based accounting
     TotalDeposits,
+    /// Total shares in circulation
+    /// Stored in instance storage (single value, frequently read)
+    TotalShares,
+    /// Total assets managed by the vault (including yield)
+    /// Stored in instance storage (single value, frequently read)
+    TotalAssets,
     /// Authorized AI agent address
     /// Can only call rebalance() to move funds between yield strategies
     Agent,
@@ -150,6 +175,8 @@ pub struct DepositEvent {
     pub user: Address,
     /// Amount of USDC deposited (7 decimal places)
     pub amount: i128,
+    /// Shares minted for this deposit
+    pub shares: i128,
 }
 
 /// Emitted when a user withdraws USDC from the vault.
@@ -165,6 +192,8 @@ pub struct WithdrawEvent {
     pub user: Address,
     /// Amount of USDC withdrawn (7 decimal places)
     pub amount: i128,
+    /// Shares burned for this withdrawal
+    pub shares: i128,
 }
 
 /// Emitted when the AI agent rebalances funds between yield strategies.
@@ -336,6 +365,8 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::Agent, &agent);
         env.storage().instance().set(&DataKey::UsdcToken, &usdc_token);
         env.storage().instance().set(&DataKey::TotalDeposits, &0_i128);
+        env.storage().instance().set(&DataKey::TotalShares, &0_i128);
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::Owner, &agent);
         env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
@@ -394,28 +425,52 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(amount);
         Self::require_minimum_deposit(amount);
-        Self::require_within_deposit_cap(&env, &user, amount);
-        Self::require_within_tvl_cap(&env, amount);
 
+        // Get current vault state
+        let total_assets: i128 = env.storage().instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0);
+        
+        // Check TVL cap (using total assets after this deposit)
+        Self::require_within_tvl_cap(&env, amount);
+        
+        // Check user deposit cap (using share-based balance)
+        Self::require_within_deposit_cap(&env, &user, amount);
+
+        // Transfer USDC from user to vault
         let usdc_token: Address = env.storage().instance()
             .get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
-        let current_balance: i128 = env.storage().persistent()
-            .get(&DataKey::Balance(user.clone()))
+        // Calculate shares to mint
+        let shares_to_mint = Self::convert_to_shares(&env, amount);
+
+        // Update user shares
+        let current_shares: i128 = env.storage().persistent()
+            .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0);
         env.storage().persistent()
-            .set(&DataKey::Balance(user.clone()), &(current_balance + amount));
+            .set(&DataKey::Shares(user.clone()), &(current_shares + shares_to_mint));
 
-        let total: i128 = env.storage().instance()
-            .get(&DataKey::TotalDeposits).unwrap_or(0);
+        // Update total shares
+        let total_shares: i128 = env.storage().instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
         env.storage().instance()
-            .set(&DataKey::TotalDeposits, &(total + amount));
+            .set(&DataKey::TotalShares, &(total_shares + shares_to_mint));
+
+        // Update total assets
+        env.storage().instance()
+            .set(&DataKey::TotalAssets, &(total_assets + amount));
 
         env.events().publish(
             (symbol_short!("deposit"),),
-            DepositEvent { user, amount }
+            DepositEvent { 
+                user, 
+                amount,
+                shares: shares_to_mint,
+            }
         );
     }
 
@@ -458,28 +513,66 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(amount);
 
-        let balance: i128 = env.storage().persistent()
-            .get(&DataKey::Balance(user.clone()))
+        // Get current vault state
+        let total_shares: i128 = env.storage().instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        let total_assets: i128 = env.storage().instance()
+            .get(&DataKey::TotalAssets)
             .unwrap_or(0);
 
-        assert!(balance >= amount, "Insufficient balance");
+        assert!(total_shares > 0, "No shares exist");
+        assert!(total_assets > 0, "Vault has no assets");
 
+        // Calculate shares needed for the requested USDC amount
+        // shares = (amount * total_shares) / total_assets
+        let shares_to_burn = (amount as i128)
+            .checked_mul(total_shares)
+            .unwrap()
+            .checked_div(total_assets)
+            .unwrap();
+
+        // Ensure at least 1 share is burned for non-zero amounts
+        let shares_to_burn = if shares_to_burn == 0 && amount > 0 {
+            1
+        } else {
+            shares_to_burn
+        };
+
+        // Check user has enough shares
+        let user_shares: i128 = env.storage().persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+        assert!(user_shares >= shares_to_burn, "Insufficient shares");
+
+        // Calculate actual USDC amount to withdraw (may differ slightly due to rounding)
+        let actual_amount = Self::convert_to_assets(&env, shares_to_burn);
+
+        // Update user shares (burn)
         env.storage().persistent()
-            .set(&DataKey::Balance(user.clone()), &(balance - amount));
+            .set(&DataKey::Shares(user.clone()), &(user_shares - shares_to_burn));
 
-        let total: i128 = env.storage().instance()
-            .get(&DataKey::TotalDeposits).unwrap_or(0);
+        // Update total shares
         env.storage().instance()
-            .set(&DataKey::TotalDeposits, &(total - amount));
+            .set(&DataKey::TotalShares, &(total_shares - shares_to_burn));
 
+        // Update total assets
+        env.storage().instance()
+            .set(&DataKey::TotalAssets, &(total_assets - actual_amount));
+
+        // Transfer USDC to user
         let usdc_token: Address = env.storage().instance()
             .get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(&env.current_contract_address(), &user, &amount);
+        token_client.transfer(&env.current_contract_address(), &user, &actual_amount);
 
         env.events().publish(
             (symbol_short!("withdraw"),),
-            WithdrawEvent { user, amount }
+            WithdrawEvent { 
+                user, 
+                amount: actual_amount,
+                shares: shares_to_burn,
+            }
         );
     }
 
@@ -839,19 +932,22 @@ impl NeuroWealthVault {
 
     /// Updates the total assets tracked by the vault.
     ///
-    /// This function allows the owner to manually adjust the total assets
-    /// value, typically used for reconciliation or accounting corrections.
-    /// Use with caution as it affects TVL calculations.
+    /// This function allows the AI agent to update the total assets value
+    /// when yield is generated (e.g., from Blend lending). When total assets
+    /// increase, the share price automatically increases, distributing yield
+    /// proportionally to all shareholders.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
+    /// * `agent` - The AI agent address (must authorize)
     /// * `new_total` - New total assets value in USDC units (7 decimal places)
     ///
     /// # Returns
     /// Nothing. This function updates total assets and returns nothing.
     ///
     /// # Panics
-    /// - If the caller is not the owner
+    /// - If the caller is not the authorized agent
+    /// - If new_total is negative
     ///
     /// # Events
     /// Emits `AssetsUpdatedEvent` with:
@@ -859,15 +955,19 @@ impl NeuroWealthVault {
     /// - `new_total`: New total assets
     ///
     /// # Security
-    /// - Only the owner can update total assets
-    /// - This should only be used for reconciliation, not for manipulating balances
-    pub fn update_total_assets(env: Env, new_total: i128) {
-        Self::require_is_owner(&env);
+    /// - Only the authorized agent can update total assets
+    /// - This is the primary mechanism for yield accrual
+    /// - Share price increases automatically as total_assets increases
+    pub fn update_total_assets(env: Env, agent: Address, new_total: i128) {
+        agent.require_auth();
+        Self::require_is_agent(&env);
+        
+        assert!(new_total >= 0, "Total assets cannot be negative");
         
         let old_total = env.storage().instance()
-            .get(&DataKey::TotalDeposits).unwrap_or(0);
+            .get(&DataKey::TotalAssets).unwrap_or(0);
         
-        env.storage().instance().set(&DataKey::TotalDeposits, &new_total);
+        env.storage().instance().set(&DataKey::TotalAssets, &new_total);
         
         env.events().publish(
             (symbol_short!("assets_updated"),),
@@ -885,25 +985,63 @@ impl NeuroWealthVault {
 
     /// Returns the USDC balance of a specific user.
     ///
-    /// This is the amount of USDC the user has deposited, excluding any
-    /// yield that may have been earned through the AI agent's strategies.
-    /// Yield is tracked separately by the AI agent off-chain.
+    /// This returns the current value of the user's shares in USDC terms,
+    /// including any yield that has been earned. The balance increases
+    /// automatically as yield accrues to the vault.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `user` - The user address to query
     ///
     /// # Returns
-    /// The user's USDC balance in raw units (7 decimal places)
+    /// The user's USDC balance in raw units (7 decimal places), calculated
+    /// from their share ownership
+    ///
+    /// # Panics
+    /// None (returns 0 if user has no shares or vault has no assets)
+    ///
+    /// # Events
+    /// None
+    pub fn get_balance(env: Env, user: Address) -> i128 {
+        let user_shares: i128 = env.storage().persistent()
+            .get(&DataKey::Shares(user))
+            .unwrap_or(0);
+        
+        if user_shares == 0 {
+            return 0;
+        }
+
+        let total_shares: i128 = env.storage().instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        
+        if total_shares == 0 {
+            return 0;
+        }
+
+        Self::convert_to_assets(&env, user_shares)
+    }
+
+    /// Returns the number of shares owned by a specific user.
+    ///
+    /// Shares represent proportional ownership of the vault. As yield accrues,
+    /// the value of each share increases, but the number of shares remains constant.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `user` - The user address to query
+    ///
+    /// # Returns
+    /// The user's share count
     ///
     /// # Panics
     /// None
     ///
     /// # Events
     /// None
-    pub fn get_balance(env: Env, user: Address) -> i128 {
+    pub fn get_shares(env: Env, user: Address) -> i128 {
         env.storage().persistent()
-            .get(&DataKey::Balance(user))
+            .get(&DataKey::Shares(user))
             .unwrap_or(0)
     }
 
@@ -927,6 +1065,50 @@ impl NeuroWealthVault {
     pub fn get_total_deposits(env: Env) -> i128 {
         env.storage().instance()
             .get(&DataKey::TotalDeposits)
+            .unwrap_or(0)
+    }
+
+    /// Returns the total assets managed by the vault.
+    ///
+    /// This includes all USDC deposits plus any yield that has been generated.
+    /// The total assets value is updated by the AI agent when yield accrues.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Total assets in USDC units (7 decimal places), including yield
+    ///
+    /// # Panics
+    /// None
+    ///
+    /// # Events
+    /// None
+    pub fn get_total_assets(env: Env) -> i128 {
+        env.storage().instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0)
+    }
+
+    /// Returns the total shares in circulation.
+    ///
+    /// Shares represent proportional ownership of the vault. The total number
+    /// of shares increases when users deposit and decreases when users withdraw.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Total shares in circulation
+    ///
+    /// # Panics
+    /// None
+    ///
+    /// # Events
+    /// None
+    pub fn get_total_shares(env: Env) -> i128 {
+        env.storage().instance()
+            .get(&DataKey::TotalShares)
             .unwrap_or(0)
     }
 
@@ -1074,11 +1256,85 @@ Tests verify event emission for each function
     /// # Events
     /// None
     pub fn get_usdc_token(env: Env) -> Address {
-        env.storage::instance()
+        env.storage().instance()
             .get(&DataKey::UsdcToken)
             .unwrap()
     }
 
+
+    // ==========================================================================
+    // SHARE CONVERSION HELPERS
+    // ==========================================================================
+
+    /// Converts a USDC amount to shares based on current vault state.
+    ///
+    /// Uses the formula: shares = (amount * total_shares) / total_assets
+    /// For the first deposit (total_shares == 0), returns 1:1 shares.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `usdc_amount` - Amount of USDC to convert to shares
+    ///
+    /// # Returns
+    /// The number of shares that should be minted for the given USDC amount
+    ///
+    /// # Panics
+    /// - If total_assets > 0 but total_shares == 0 (inconsistent state)
+    #[inline]
+    fn convert_to_shares(env: &Env, usdc_amount: i128) -> i128 {
+        let total_shares: i128 = env.storage().instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        let total_assets: i128 = env.storage().instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0);
+
+        // First deposit: 1:1 shares
+        if total_shares == 0 {
+            return usdc_amount;
+        }
+
+        // Subsequent deposits: proportional shares
+        // shares = (amount * total_shares) / total_assets
+        // Using checked arithmetic to prevent overflow
+        (usdc_amount as i128)
+            .checked_mul(total_shares)
+            .unwrap()
+            .checked_div(total_assets)
+            .unwrap()
+    }
+
+    /// Converts shares to USDC amount based on current vault state.
+    ///
+    /// Uses the formula: assets = (shares * total_assets) / total_shares
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `shares` - Number of shares to convert to USDC
+    ///
+    /// # Returns
+    /// The USDC amount that the given shares represent
+    ///
+    /// # Panics
+    /// - If total_shares == 0 (no shares exist yet)
+    #[inline]
+    fn convert_to_assets(env: &Env, shares: i128) -> i128 {
+        let total_shares: i128 = env.storage().instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        let total_assets: i128 = env.storage().instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0);
+
+        assert!(total_shares > 0, "No shares exist");
+
+        // assets = (shares * total_assets) / total_shares
+        (shares as i128)
+            .checked_mul(total_assets)
+            .unwrap()
+            .checked_div(total_shares)
+            .unwrap()
+    }
 
     // ==========================================================================
     // INTERNAL VALIDATION HELPERS
@@ -1139,6 +1395,9 @@ Tests verify event emission for each function
 
     /// Validates that a deposit is within the user's cap.
     ///
+    /// Checks the user's current share-based balance plus the new deposit amount
+    /// against the per-user deposit cap.
+    ///
     /// # Panics
     /// - If user's new balance would exceed the deposit cap
     #[inline]
@@ -1146,25 +1405,40 @@ Tests verify event emission for each function
         let cap: i128 = env.storage().instance()
             .get(&DataKey::UserDepositCap).unwrap_or(0);
         if cap > 0 {
-            let current_balance: i128 = env.storage().persistent()
-                .get(&DataKey::Balance(user.clone()))
+            // Get current balance (share-based, includes yield)
+            let user_shares: i128 = env.storage().persistent()
+                .get(&DataKey::Shares(user.clone()))
                 .unwrap_or(0);
+            
+            let total_shares: i128 = env.storage().instance()
+                .get(&DataKey::TotalShares)
+                .unwrap_or(0);
+            
+            let current_balance = if user_shares > 0 && total_shares > 0 {
+                Self::convert_to_assets(env, user_shares)
+            } else {
+                0
+            };
+            
             assert!(current_balance + amount <= cap, "Exceeds user deposit cap");
         }
     }
 
     /// Validates that a deposit is within the TVL cap.
     ///
+    /// Checks total assets (including yield) plus the new deposit amount
+    /// against the TVL cap.
+    ///
     /// # Panics
-    /// - If total deposits would exceed the TVL cap
+    /// - If total assets would exceed the TVL cap
     #[inline]
     fn require_within_tvl_cap(env: &Env, amount: i128) {
         let cap: i128 = env.storage().instance()
             .get(&DataKey::TvLCap).unwrap_or(0);
         if cap > 0 {
-            let total: i128 = env.storage().instance()
-                .get(&DataKey::TotalDeposits).unwrap_or(0);
-            assert!(total + amount <= cap, "Exceeds TVL cap");
+            let total_assets: i128 = env.storage().instance()
+                .get(&DataKey::TotalAssets).unwrap_or(0);
+            assert!(total_assets + amount <= cap, "Exceeds TVL cap");
         }
     }
 }
