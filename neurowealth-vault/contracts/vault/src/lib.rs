@@ -102,10 +102,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token,
-    Address, Env, Symbol, symbol_short,
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
 };
-
 
 // ============================================================================
 // STORAGE KEYS
@@ -156,7 +154,6 @@ pub enum DataKey {
     /// Contract version for upgrade tracking
     Version,
 }
-
 
 // ============================================================================
 // EVENTS
@@ -241,7 +238,7 @@ pub struct VaultInitializedEvent {
 /// - `SymbolShort("vault_paused")` - Event identifier
 #[contracttype]
 pub struct VaultPausedEvent {
-    pub caller: Address,
+    pub owner: Address,
 }
 
 /// Emitted when the vault is unpaused.
@@ -250,7 +247,7 @@ pub struct VaultPausedEvent {
 /// - `SymbolShort("vault_unpaused")` - Event identifier
 #[contracttype]
 pub struct VaultUnpausedEvent {
-    pub caller: Address,
+    pub owner: Address,
 }
 
 /// Emitted when the vault is emergency paused.
@@ -259,7 +256,7 @@ pub struct VaultUnpausedEvent {
 /// - `SymbolShort("emergency_paused")` - Event identifier
 #[contracttype]
 pub struct EmergencyPausedEvent {
-    pub caller: Address,
+    pub owner: Address,
 }
 
 /// Emitted when deposit limits are updated.
@@ -294,7 +291,6 @@ pub struct AssetsUpdatedEvent {
     pub new_total: i128,
 }
 
-
 // ============================================================================
 // CONTRACT
 // ============================================================================
@@ -322,7 +318,6 @@ pub struct NeuroWealthVault;
 
 #[contractimpl]
 impl NeuroWealthVault {
-
     // ==========================================================================
     // INITIALIZATION
     // ==========================================================================
@@ -363,26 +358,29 @@ impl NeuroWealthVault {
         let tvl_cap = 100_000_000_000_i128; // 100M USDC default
 
         env.storage().instance().set(&DataKey::Agent, &agent);
-        env.storage().instance().set(&DataKey::UsdcToken, &usdc_token);
-        env.storage().instance().set(&DataKey::TotalDeposits, &0_i128);
-        env.storage().instance().set(&DataKey::TotalShares, &0_i128);
-        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::UsdcToken, &usdc_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &0_i128);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::Owner, &agent);
         env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
-        env.storage().instance().set(&DataKey::UserDepositCap, &10_000_000_000_i128); // 10K USDC default
+        env.storage()
+            .instance()
+            .set(&DataKey::UserDepositCap, &10_000_000_000_i128); // 10K USDC default
         env.storage().instance().set(&DataKey::Version, &1_u32);
 
         env.events().publish(
-            (symbol_short!("vault_initialized"),),
+            (symbol_short!("v_init"),),
             VaultInitializedEvent {
                 agent: agent.clone(),
                 usdc_token: usdc_token.clone(),
                 tvl_cap,
-            }
+            },
         );
     }
-
 
     // ==========================================================================
     // CORE LIFECYCLE - DEPOSIT
@@ -437,43 +435,31 @@ impl NeuroWealthVault {
         // Check user deposit cap (using share-based balance)
         Self::require_within_deposit_cap(&env, &user, amount);
 
-        // Transfer USDC from user to vault
-        let usdc_token: Address = env.storage().instance()
-            .get(&DataKey::UsdcToken).unwrap();
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
-        // Calculate shares to mint
-        let shares_to_mint = Self::convert_to_shares(&env, amount);
-
-        // Update user shares
-        let current_shares: i128 = env.storage().persistent()
-            .get(&DataKey::Shares(user.clone()))
+        let current_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(user.clone()))
             .unwrap_or(0);
-        env.storage().persistent()
-            .set(&DataKey::Shares(user.clone()), &(current_shares + shares_to_mint));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(user.clone()), &(current_balance + amount));
 
-        // Update total shares
-        let total_shares: i128 = env.storage().instance()
-            .get(&DataKey::TotalShares)
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
             .unwrap_or(0);
-        env.storage().instance()
-            .set(&DataKey::TotalShares, &(total_shares + shares_to_mint));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &(total + amount));
 
-        // Update total assets
-        env.storage().instance()
-            .set(&DataKey::TotalAssets, &(total_assets + amount));
-
-        env.events().publish(
-            (symbol_short!("deposit"),),
-            DepositEvent { 
-                user, 
-                amount,
-                shares: shares_to_mint,
-            }
-        );
+        env.events()
+            .publish((symbol_short!("deposit"),), DepositEvent { user, amount });
     }
-
 
     // ==========================================================================
     // CORE LIFECYCLE - WITHDRAW
@@ -513,9 +499,10 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(amount);
 
-        // Get current vault state
-        let total_shares: i128 = env.storage().instance()
-            .get(&DataKey::TotalShares)
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(user.clone()))
             .unwrap_or(0);
         let total_assets: i128 = env.storage().instance()
             .get(&DataKey::TotalAssets)
@@ -548,34 +535,26 @@ impl NeuroWealthVault {
         // Calculate actual USDC amount to withdraw (may differ slightly due to rounding)
         let actual_amount = Self::convert_to_assets(&env, shares_to_burn);
 
-        // Update user shares (burn)
-        env.storage().persistent()
-            .set(&DataKey::Shares(user.clone()), &(user_shares - shares_to_burn));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(user.clone()), &(balance - amount));
 
-        // Update total shares
-        env.storage().instance()
-            .set(&DataKey::TotalShares, &(total_shares - shares_to_burn));
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &(total - amount));
 
-        // Update total assets
-        env.storage().instance()
-            .set(&DataKey::TotalAssets, &(total_assets - actual_amount));
-
-        // Transfer USDC to user
-        let usdc_token: Address = env.storage().instance()
-            .get(&DataKey::UsdcToken).unwrap();
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
         token_client.transfer(&env.current_contract_address(), &user, &actual_amount);
 
-        env.events().publish(
-            (symbol_short!("withdraw"),),
-            WithdrawEvent { 
-                user, 
-                amount: actual_amount,
-                shares: shares_to_burn,
-            }
-        );
+        env.events()
+            .publish((symbol_short!("withdraw"),), WithdrawEvent { user, amount });
     }
-
 
     // ==========================================================================
     // CORE LIFECYCLE - REBALANCE
@@ -615,10 +594,12 @@ impl NeuroWealthVault {
 
         env.events().publish(
             (symbol_short!("rebalance"),),
-            RebalanceEvent { protocol, expected_apy }
+            RebalanceEvent {
+                protocol,
+                expected_apy,
+            },
         );
     }
-
 
     // ==========================================================================
     // ADMINISTRATIVE - PAUSE CONTROL
@@ -635,6 +616,7 @@ impl NeuroWealthVault {
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
+    /// * `owner` - The owner address (must authorize this call)
     ///
     /// # Returns
     /// Nothing. This function pauses the vault and returns nothing.
@@ -644,28 +626,28 @@ impl NeuroWealthVault {
     ///
     /// # Events
     /// Emits `VaultPausedEvent` with:
-    /// - `caller`: The owner's address that triggered the pause
+    /// - `owner`: The owner's address that triggered the pause
     ///
     /// # Security
-    /// - Only the owner can pause the vault
+    /// - Only the owner can pause the vault (verified via require_auth)
     /// - There is no automatic unpause - owner must explicitly call unpause()
     /// - Users' funds remain safe and can be withdrawn after unpause
-    pub fn pause(env: Env) {
-        Self::require_is_owner(&env);
+    pub fn pause(env: Env, owner: Address) {
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        assert_eq!(owner, stored_owner, "Only owner can pause");
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
-        env.events().publish(
-            (symbol_short!("vault_paused"),),
-            VaultPausedEvent { caller }
-        );
+        env.events()
+            .publish((symbol_short!("v_paused"),), VaultPausedEvent { owner });
     }
 
     /// Unpauses the vault, re-enabling deposits and withdrawals.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
+    /// * `owner` - The owner address (must authorize this call)
     ///
     /// # Returns
     /// Nothing. This function unpauses the vault and returns nothing.
@@ -676,24 +658,26 @@ impl NeuroWealthVault {
     ///
     /// # Events
     /// Emits `VaultUnpausedEvent` with:
-    /// - `caller`: The owner's address that triggered the unpause
+    /// - `owner`: The owner's address that triggered the unpause
     ///
     /// # Security
-    /// - Only the owner can unpause the vault
-    pub fn unpause(env: Env) {
-        Self::require_is_owner(&env);
+    /// - Only the owner can unpause the vault (verified via require_auth)
+    pub fn unpause(env: Env, owner: Address) {
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        assert_eq!(owner, stored_owner, "Only owner can unpause");
 
-        let paused: bool = env.storage().instance()
-            .get(&DataKey::Paused).unwrap_or(false);
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
         assert!(paused, "Vault is not paused");
 
         env.storage().instance().set(&DataKey::Paused, &false);
 
-        let caller = env.invoker();
-        env.events().publish(
-            (symbol_short!("vault_unpaused"),),
-            VaultUnpausedEvent { caller }
-        );
+        env.events()
+            .publish((symbol_short!("v_unpause"),), VaultUnpausedEvent { owner });
     }
 
     /// Emergency pause function that immediately halts all operations.
@@ -703,6 +687,7 @@ impl NeuroWealthVault {
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
+    /// * `owner` - The owner address (must authorize this call)
     ///
     /// # Returns
     /// Nothing. This function emergency pauses the vault and returns nothing.
@@ -712,22 +697,20 @@ impl NeuroWealthVault {
     ///
     /// # Events
     /// Emits `EmergencyPausedEvent` with:
-    /// - `caller`: The owner's address that triggered the emergency pause
+    /// - `owner`: The owner's address that triggered the emergency pause
     ///
     /// # Security
-    /// - Only the owner can emergency pause the vault
-    pub fn emergency_pause(env: Env) {
-        Self::require_is_owner(&env);
+    /// - Only the owner can emergency pause the vault (verified via require_auth)
+    pub fn emergency_pause(env: Env, owner: Address) {
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        assert_eq!(owner, stored_owner, "Only owner can emergency pause");
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
-        env.events().publish(
-            (symbol_short!("emergency_paused"),),
-            EmergencyPausedEvent { caller }
-        );
+        env.events()
+            .publish((symbol_short!("e_paused"),), EmergencyPausedEvent { owner });
     }
-
 
     // ==========================================================================
     // ADMINISTRATIVE - CONFIGURATION
@@ -756,22 +739,24 @@ impl NeuroWealthVault {
     /// - Reducing the cap below current total deposits does not affect existing deposits
     pub fn set_tvl_cap(env: Env, cap: i128) {
         Self::require_is_owner(&env);
-        
-        let old_tvl_cap = env.storage().instance()
-            .get(&DataKey::TvLCap).unwrap_or(0);
-        let old_user_cap = env.storage().instance()
-            .get(&DataKey::UserDepositCap).unwrap_or(0);
-        
+
+        let old_tvl_cap = env.storage().instance().get(&DataKey::TvLCap).unwrap_or(0);
+        let old_user_cap = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0);
+
         env.storage().instance().set(&DataKey::TvLCap, &cap);
-        
+
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: old_user_cap,
                 old_max: old_tvl_cap,
                 new_max: cap,
-            }
+            },
         );
     }
 
@@ -798,22 +783,24 @@ impl NeuroWealthVault {
     /// - Reducing the cap below a user's current balance does not affect them
     pub fn set_user_deposit_cap(env: Env, cap: i128) {
         Self::require_is_owner(&env);
-        
-        let old_tvl_cap = env.storage().instance()
-            .get(&DataKey::TvLCap).unwrap_or(0);
-        let old_user_cap = env.storage().instance()
-            .get(&DataKey::UserDepositCap).unwrap_or(0);
-        
+
+        let old_tvl_cap = env.storage().instance().get(&DataKey::TvLCap).unwrap_or(0);
+        let old_user_cap = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0);
+
         env.storage().instance().set(&DataKey::UserDepositCap, &cap);
-        
+
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: cap,
                 old_max: old_tvl_cap,
                 new_max: old_tvl_cap,
-            }
+            },
         );
     }
 
@@ -844,23 +831,25 @@ impl NeuroWealthVault {
     /// - Only the owner can modify the limits
     pub fn set_limits(env: Env, min: i128, max: i128) {
         Self::require_is_owner(&env);
-        
-        let old_user_cap = env.storage().instance()
-            .get(&DataKey::UserDepositCap).unwrap_or(0);
-        let old_tvl_cap = env.storage().instance()
-            .get(&DataKey::TvLCap).unwrap_or(0);
-        
+
+        let old_user_cap = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0);
+        let old_tvl_cap = env.storage().instance().get(&DataKey::TvLCap).unwrap_or(0);
+
         env.storage().instance().set(&DataKey::UserDepositCap, &min);
         env.storage().instance().set(&DataKey::TvLCap, &max);
-        
+
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: min,
                 old_max: old_tvl_cap,
                 new_max: max,
-            }
+            },
         );
     }
 
@@ -872,9 +861,7 @@ impl NeuroWealthVault {
     /// # Returns
     /// The current TVL cap in USDC units (7 decimal places), or 0 if no cap
     pub fn get_tvl_cap(env: Env) -> i128 {
-        env.storage().instance()
-            .get(&DataKey::TvLCap)
-            .unwrap_or(0)
+        env.storage().instance().get(&DataKey::TvLCap).unwrap_or(0)
     }
 
     /// Returns the current per-user deposit cap.
@@ -885,7 +872,8 @@ impl NeuroWealthVault {
     /// # Returns
     /// The current per-user deposit cap in USDC units (7 decimal places), or 0 if no cap
     pub fn get_user_deposit_cap(env: Env) -> i128 {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::UserDepositCap)
             .unwrap_or(0)
     }
@@ -915,18 +903,17 @@ impl NeuroWealthVault {
     /// - The old agent will immediately lose access to rebalance()
     pub fn update_agent(env: Env, new_agent: Address) {
         Self::require_is_owner(&env);
-        
-        let old_agent = env.storage().instance()
-            .get(&DataKey::Agent).unwrap();
-        
+
+        let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+
         env.storage().instance().set(&DataKey::Agent, &new_agent);
-        
+
         env.events().publish(
-            (symbol_short!("agent_updated"),),
+            (symbol_short!("agent_upd"),),
             AgentUpdatedEvent {
                 old_agent: old_agent.clone(),
                 new_agent: new_agent.clone(),
-            }
+            },
         );
     }
 
@@ -955,29 +942,29 @@ impl NeuroWealthVault {
     /// - `new_total`: New total assets
     ///
     /// # Security
-    /// - Only the authorized agent can update total assets
-    /// - This is the primary mechanism for yield accrual
-    /// - Share price increases automatically as total_assets increases
-    pub fn update_total_assets(env: Env, agent: Address, new_total: i128) {
-        agent.require_auth();
-        Self::require_is_agent(&env);
-        
-        assert!(new_total >= 0, "Total assets cannot be negative");
-        
-        let old_total = env.storage().instance()
-            .get(&DataKey::TotalAssets).unwrap_or(0);
-        
-        env.storage().instance().set(&DataKey::TotalAssets, &new_total);
-        
+    /// - Only the owner can update total assets
+    /// - This should only be used for reconciliation, not for manipulating balances
+    pub fn update_total_assets(env: Env, new_total: i128) {
+        Self::require_is_owner(&env);
+
+        let old_total = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &new_total);
+
         env.events().publish(
-            (symbol_short!("assets_updated"),),
+            (symbol_short!("assets_up"),),
             AssetsUpdatedEvent {
                 old_total,
                 new_total,
-            }
+            },
         );
     }
-
 
     // ==========================================================================
     // READ FUNCTIONS
@@ -1003,45 +990,9 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn get_balance(env: Env, user: Address) -> i128 {
-        let user_shares: i128 = env.storage().persistent()
-            .get(&DataKey::Shares(user))
-            .unwrap_or(0);
-        
-        if user_shares == 0 {
-            return 0;
-        }
-
-        let total_shares: i128 = env.storage().instance()
-            .get(&DataKey::TotalShares)
-            .unwrap_or(0);
-        
-        if total_shares == 0 {
-            return 0;
-        }
-
-        Self::convert_to_assets(&env, user_shares)
-    }
-
-    /// Returns the number of shares owned by a specific user.
-    ///
-    /// Shares represent proportional ownership of the vault. As yield accrues,
-    /// the value of each share increases, but the number of shares remains constant.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment
-    /// * `user` - The user address to query
-    ///
-    /// # Returns
-    /// The user's share count
-    ///
-    /// # Panics
-    /// None
-    ///
-    /// # Events
-    /// None
-    pub fn get_shares(env: Env, user: Address) -> i128 {
-        env.storage().persistent()
-            .get(&DataKey::Shares(user))
+        env.storage()
+            .persistent()
+            .get(&DataKey::Balance(user))
             .unwrap_or(0)
     }
 
@@ -1063,7 +1014,8 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn get_total_deposits(env: Env) -> i128 {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::TotalDeposits)
             .unwrap_or(0)
     }
@@ -1129,9 +1081,7 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn get_agent(env: Env) -> Address {
-        env.storage().instance()
-            .get(&DataKey::Agent)
-            .unwrap()
+        env.storage().instance().get(&DataKey::Agent).unwrap()
     }
 
     /// Returns the contract owner address.
@@ -1150,9 +1100,7 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn get_owner(env: Env) -> Address {
-        env.storage().instance()
-            .get(&DataKey::Owner)
-            .unwrap()
+        env.storage().instance().get(&DataKey::Owner).unwrap()
     }
 
     /// Returns whether the vault is currently paused.
@@ -1169,7 +1117,8 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn is_paused(env: Env) -> bool {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
     }
@@ -1187,59 +1136,10 @@ impl NeuroWealthVault {
     /// # Panics
     /// None
     ///
-    /// # EventsSummary
-The vault contract currently emits events for deposit and withdraw but several state-changing admin functions emit nothing. The AI agent and any external indexers need these events to maintain accurate state without polling the chain constantly.
-
-Missing Events
-Function | Event Needed -- | -- initialize | VaultInitializedEvent pause | VaultPausedEvent unpause | VaultUnpausedEvent emergency_pause | EmergencyPausedEvent set_limits | LimitsUpdatedEvent update_agent | AgentUpdatedEvent update_total_assets | AssetsUpdatedEvent rebalance | RebalanceEvent (update existing)
-Expected Event Structs
-rust
-#[contracttype]
-pub struct VaultInitializedEvent {
-    pub agent: Address,
-    pub usdc_token: Address,
-    pub tvl_cap: i128,
-}
-
-#[contracttype]
-pub struct AgentUpdatedEvent {
-    pub old_agent: Address,
-    pub new_agent: Address,
-}
-
-#[contracttype]
-pub struct LimitsUpdatedEvent {
-    pub old_min: i128,
-    pub new_min: i128,
-    pub old_max: i128,
-    pub new_max: i128,
-}
-
-#[contracttype]
-pub struct RebalanceEvent {
-    pub protocol: Symbol,
-    pub expected_apy: i128, // in basis points e.g. 850 = 8.5%
-}
-
-#[contracttype]
-pub struct AssetsUpdatedEvent {
-    pub old_total: i128,
-    pub new_total: i128,
-}
-Tasks
-Define all missing event structs listed above
-Add env.events().publish(...) to each function that is missing one
-Ensure all event structs use #[contracttype] derive
-Write tests that assert each event is emitted correctly using env.events().all()
-Acceptance Criteria
-Every state-changing function emits at least one event
-Event data contains enough fields to reconstruct state changes off-chain
-Tests verify event emission for each function
+    /// # Events
     /// None
     pub fn get_version(env: Env) -> u32 {
-        env.storage().instance()
-            .get(&DataKey::Version)
-            .unwrap_or(1)
+        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
     }
 
     /// Returns the USDC token address.
@@ -1256,11 +1156,8 @@ Tests verify event emission for each function
     /// # Events
     /// None
     pub fn get_usdc_token(env: Env) -> Address {
-        env.storage().instance()
-            .get(&DataKey::UsdcToken)
-            .unwrap()
+        env.storage().instance().get(&DataKey::UsdcToken).unwrap()
     }
-
 
     // ==========================================================================
     // SHARE CONVERSION HELPERS
@@ -1346,8 +1243,11 @@ Tests verify event emission for each function
     /// - If the vault is paused
     #[inline]
     fn require_not_paused(env: &Env) {
-        let paused: bool = env.storage().instance()
-            .get(&DataKey::Paused).unwrap_or(false);
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
         assert!(!paused, "Vault is paused");
     }
 
@@ -1357,8 +1257,7 @@ Tests verify event emission for each function
     /// - If the caller is not the owner
     #[inline]
     fn require_is_owner(env: &Env) {
-        let owner: Address = env.storage().instance()
-            .get(&DataKey::Owner).unwrap();
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         owner.require_auth();
     }
 
@@ -1368,8 +1267,7 @@ Tests verify event emission for each function
     /// - If the caller is not the agent
     #[inline]
     fn require_is_agent(env: &Env) {
-        let agent: Address = env.storage().instance()
-            .get(&DataKey::Agent).unwrap();
+        let agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
         agent.require_auth();
     }
 
@@ -1402,12 +1300,16 @@ Tests verify event emission for each function
     /// - If user's new balance would exceed the deposit cap
     #[inline]
     fn require_within_deposit_cap(env: &Env, user: &Address, amount: i128) {
-        let cap: i128 = env.storage().instance()
-            .get(&DataKey::UserDepositCap).unwrap_or(0);
+        let cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0);
         if cap > 0 {
-            // Get current balance (share-based, includes yield)
-            let user_shares: i128 = env.storage().persistent()
-                .get(&DataKey::Shares(user.clone()))
+            let current_balance: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Balance(user.clone()))
                 .unwrap_or(0);
             
             let total_shares: i128 = env.storage().instance()
@@ -1433,12 +1335,17 @@ Tests verify event emission for each function
     /// - If total assets would exceed the TVL cap
     #[inline]
     fn require_within_tvl_cap(env: &Env, amount: i128) {
-        let cap: i128 = env.storage().instance()
-            .get(&DataKey::TvLCap).unwrap_or(0);
+        let cap: i128 = env.storage().instance().get(&DataKey::TvLCap).unwrap_or(0);
         if cap > 0 {
-            let total_assets: i128 = env.storage().instance()
-                .get(&DataKey::TotalAssets).unwrap_or(0);
-            assert!(total_assets + amount <= cap, "Exceeds TVL cap");
+            let total: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0);
+            assert!(total + amount <= cap, "Exceeds TVL cap");
         }
     }
 }
+
+#[cfg(test)]
+mod test;
