@@ -6,16 +6,25 @@
 //!
 //! This contract implements a non-custodial vault where users deposit USDC and an AI agent
 //! automatically deploys those funds across various yield-generating protocols on the Stellar
-//! blockchain. The vault maintains 1:1 parity between deposited assets and user balances.
+//! blockchain.
 //!
 //! ## Share Accounting Model
 //!
-//! Currently, this implementation uses a simple 1:1 asset accounting model where:
-//! - 1 deposited USDC = 1 vault share
-//! - Withdrawals return the exact USDC amount deposited (plus any yield earned externally)
+//! This implementation follows an ERC-4626-inspired share-based model where:
+//! - Users deposit USDC and receive vault shares representing proportional ownership
+//! - Total shares remain constant while yield is accrued
+//! - The value of each share increases as `total_assets` grows
+//! - Withdrawals burn shares and return the user's proportional share of total assets
 //!
-//! In Phase 2, this will be upgraded to a proper share-based system using the ERC-4626
-//! standard, where vault shares represent a proportional claim on total vault assets.
+//! Core math:
+//! - `shares_to_mint = (assets * total_shares) / total_assets`
+//!   - Bootstrap case: when `total_shares == 0 || total_assets == 0`, `shares_to_mint = assets`
+//! - `assets_to_return = (shares * total_assets) / total_shares`
+//!
+//! This ensures:
+//! - Automatic yield growth tracking
+//! - Fair distribution of earnings
+//! - Mathematically consistent deposits and withdrawals
 //!
 //! ## Asset Flow
 //!
@@ -87,6 +96,7 @@
 
 #![no_std]
 
+use core::cmp::min;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
 };
@@ -102,12 +112,23 @@ use soroban_sdk::{
 /// storage is used for per-user data that requires efficient access.
 #[contracttype]
 pub enum DataKey {
-    /// User's USDC balance (key: user Address)
-    /// Stored in persistent storage for efficient per-user access
+    /// User's principal USDC balance (key: user Address)
+    /// Stored in persistent storage for efficient per-user access.
+    /// This tracks deposited principal only and does NOT include yield.
     Balance(Address),
-    /// Total USDC deposits in the vault
-    /// Stored in instance storage (single value, frequently read)
+    /// User's share balance (key: user Address).
+    /// Represents proportional ownership of the vault's total assets.
+    Shares(Address),
+    /// Total USDC deposits (principal) in the vault.
+    /// Stored in instance storage (single value, frequently read).
+    /// This tracks deposited principal only and does NOT include yield.
     TotalDeposits,
+    /// Total vault shares in circulation.
+    /// Used for share-based accounting and conversions.
+    TotalShares,
+    /// Total managed assets for the vault (principal + yield).
+    /// This is the authoritative value used for share pricing.
+    TotalAssets,
     /// Authorized AI agent address
     /// Can only call rebalance() to move funds between yield strategies
     Agent,
@@ -147,6 +168,8 @@ pub struct DepositEvent {
     pub user: Address,
     /// Amount of USDC deposited (7 decimal places)
     pub amount: i128,
+    /// Number of vault shares minted for this deposit
+    pub shares: i128,
 }
 
 /// Emitted when a user withdraws USDC from the vault.
@@ -162,6 +185,8 @@ pub struct WithdrawEvent {
     pub user: Address,
     /// Amount of USDC withdrawn (7 decimal places)
     pub amount: i128,
+    /// Number of vault shares burned for this withdrawal
+    pub shares: i128,
 }
 
 /// Emitted when the AI agent rebalances funds between yield strategies.
@@ -335,6 +360,8 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKey::TotalDeposits, &0_i128);
+        env.storage().instance().set(&DataKey::TotalShares, &0_i128);
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::Owner, &agent);
         env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
@@ -401,6 +428,7 @@ impl NeuroWealthVault {
         let token_client = token::Client::new(&env, &usdc_token);
         token_client.transfer(&user, &env.current_contract_address(), &amount);
 
+        // Update per-user principal balance (does not include yield)
         let current_balance: i128 = env
             .storage()
             .persistent()
@@ -419,8 +447,46 @@ impl NeuroWealthVault {
             .instance()
             .set(&DataKey::TotalDeposits, &(total + amount));
 
-        env.events()
-            .publish((symbol_short!("deposit"),), DepositEvent { user, amount });
+        // Mint shares based on current share price and update total assets
+        let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
+        assert!(shares_to_mint > 0, "Shares to mint must be positive");
+
+        // Update user shares
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::Shares(user.clone()),
+            &(current_shares + shares_to_mint),
+        );
+
+        // Update total shares
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &(total_shares + shares_to_mint));
+
+        // Update total assets (principal + yield)
+        let total_assets = Self::get_total_assets_internal(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &(total_assets + amount));
+
+        env.events().publish(
+            (symbol_short!("deposit"),),
+            DepositEvent {
+                user,
+                amount,
+                // Shares minted for this deposit
+                shares: shares_to_mint,
+            },
+        );
     }
 
     // ==========================================================================
@@ -461,33 +527,90 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(amount);
 
-        let balance: i128 = env
+        // Share-based withdrawal:
+        // - Convert requested asset amount to shares
+        // - Burn shares from user
+        // - Return proportional assets based on current share price
+
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+        assert!(user_shares > 0, "Insufficient shares");
+
+        let total_shares = Self::get_total_shares_internal(&env);
+        let total_assets = Self::get_total_assets_internal(&env);
+        assert!(
+            total_shares > 0 && total_assets > 0,
+            "No assets to withdraw"
+        );
+
+        let shares_to_burn = Self::convert_to_shares_internal(&env, amount);
+        assert!(shares_to_burn > 0, "Shares to burn must be positive");
+        assert!(
+            user_shares >= shares_to_burn,
+            "Insufficient shares for requested amount"
+        );
+
+        // Calculate actual assets to return based on burned shares.
+        // Due to integer division, this may be slightly less than `amount`,
+        // but never more (prevents over-withdrawal due to rounding).
+        let usdc_to_return = Self::convert_to_assets_internal(&env, shares_to_burn);
+
+        // Update user shares and total shares
+        env.storage().persistent().set(
+            &DataKey::Shares(user.clone()),
+            &(user_shares - shares_to_burn),
+        );
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &(total_shares - shares_to_burn));
+
+        // Update total assets (principal + yield)
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &(total_assets - usdc_to_return));
+
+        // Update principal tracking: reduce user's principal balance and total deposits,
+        // but never below zero. Yield component does not affect principal accounting.
+        let principal_balance: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::Balance(user.clone()))
             .unwrap_or(0);
+        if principal_balance > 0 {
+            let principal_repaid = min(principal_balance, usdc_to_return);
 
-        assert!(balance >= amount, "Insufficient balance");
+            env.storage().persistent().set(
+                &DataKey::Balance(user.clone()),
+                &(principal_balance - principal_repaid),
+            );
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(user.clone()), &(balance - amount));
-
-        let total: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalDeposits)
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalDeposits, &(total - amount));
+            let total_deposits: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0);
+            env.storage().instance().set(
+                &DataKey::TotalDeposits,
+                &(total_deposits - principal_repaid),
+            );
+        }
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(&env.current_contract_address(), &user, &amount);
+        token_client.transfer(&env.current_contract_address(), &user, &usdc_to_return);
 
-        env.events()
-            .publish((symbol_short!("withdraw"),), WithdrawEvent { user, amount });
+        env.events().publish(
+            (symbol_short!("withdraw"),),
+            WithdrawEvent {
+                user,
+                amount: usdc_to_return,
+                shares: shares_to_burn,
+            },
+        );
     }
 
     // ==========================================================================
@@ -853,19 +976,21 @@ impl NeuroWealthVault {
 
     /// Updates the total assets tracked by the vault.
     ///
-    /// This function allows the owner to manually adjust the total assets
-    /// value, typically used for reconciliation or accounting corrections.
-    /// Use with caution as it affects TVL calculations.
+    /// This function allows the authorized AI agent to update the total
+    /// assets value to reflect realized yield from external strategies.
+    /// Total assets are expected to be monotonically non-decreasing except
+    /// for user deposits/withdrawals.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
+    /// * `agent` - The authorized AI agent address (must authorize)
     /// * `new_total` - New total assets value in USDC units (7 decimal places)
     ///
     /// # Returns
     /// Nothing. This function updates total assets and returns nothing.
     ///
     /// # Panics
-    /// - If the caller is not the owner
+    /// - If the caller is not the authorized agent
     ///
     /// # Events
     /// Emits `AssetsUpdatedEvent` with:
@@ -873,20 +998,24 @@ impl NeuroWealthVault {
     /// - `new_total`: New total assets
     ///
     /// # Security
-    /// - Only the owner can update total assets
-    /// - This should only be used for reconciliation, not for manipulating balances
-    pub fn update_total_assets(env: Env, new_total: i128) {
-        Self::require_is_owner(&env);
+    /// - Only the agent can update total assets
+    /// - This should only be used to reflect external yield, not to
+    ///   arbitrarily manipulate user balances
+    pub fn update_total_assets(env: Env, agent: Address, new_total: i128) {
+        // Agent-controlled yield update
+        let stored_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        assert_eq!(agent, stored_agent, "Only agent can update total assets");
+        agent.require_auth();
 
-        let old_total = env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalDeposits)
-            .unwrap_or(0);
+        let old_total = Self::get_total_assets_internal(&env);
+        assert!(
+            new_total >= old_total,
+            "Total assets cannot decrease via update_total_assets"
+        );
 
         env.storage()
             .instance()
-            .set(&DataKey::TotalDeposits, &new_total);
+            .set(&DataKey::TotalAssets, &new_total);
 
         env.events().publish(
             (symbol_short!("assets_up"),),
@@ -903,16 +1032,16 @@ impl NeuroWealthVault {
 
     /// Returns the USDC balance of a specific user.
     ///
-    /// This is the amount of USDC the user has deposited, excluding any
-    /// yield that may have been earned through the AI agent's strategies.
-    /// Yield is tracked separately by the AI agent off-chain.
+    /// This is the user's claim on the vault's total managed assets, based
+    /// on their share balance. It includes any yield that has been accrued
+    /// and reflected in `TotalAssets`.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
     /// * `user` - The user address to query
     ///
     /// # Returns
-    /// The user's USDC balance in raw units (7 decimal places)
+    /// The user's USDC-equivalent balance in raw units (7 decimal places)
     ///
     /// # Panics
     /// None
@@ -920,23 +1049,37 @@ impl NeuroWealthVault {
     /// # Events
     /// None
     pub fn get_balance(env: Env, user: Address) -> i128 {
-        env.storage()
+        let shares: i128 = env
+            .storage()
             .persistent()
-            .get(&DataKey::Balance(user))
-            .unwrap_or(0)
+            .get(&DataKey::Shares(user))
+            .unwrap_or(0);
+        if shares == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(&env);
+        let total_assets = Self::get_total_assets_internal(&env);
+
+        if total_shares == 0 || total_assets == 0 {
+            0
+        } else {
+            // User's pro-rata claim: (user_shares / total_shares) * total_assets
+            shares * total_assets / total_shares
+        }
     }
 
     /// Returns the total USDC deposited in the vault.
     ///
-    /// This is the sum of all user balances. It represents the on-chain
-    /// TVL. Funds deployed to external yield protocols are not included
-    /// in this figure (tracked separately by the AI agent).
+    /// This is the sum of all user principal balances. It represents the
+    /// total principal deposited by users and does NOT include yield that
+    /// may have been earned through external strategies.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
     ///
     /// # Returns
-    /// Total USDC deposits in raw units (7 decimal places)
+    /// Total USDC principal deposits in raw units (7 decimal places)
     ///
     /// # Panics
     /// None
@@ -948,6 +1091,36 @@ impl NeuroWealthVault {
             .instance()
             .get(&DataKey::TotalDeposits)
             .unwrap_or(0)
+    }
+
+    /// Returns the total managed assets of the vault (principal + yield).
+    ///
+    /// This value is used for share pricing and reflects the full value
+    /// backing all outstanding shares.
+    pub fn get_total_assets(env: Env) -> i128 {
+        Self::get_total_assets_internal(&env)
+    }
+
+    /// Returns the share balance of a specific user.
+    ///
+    /// This is the number of vault shares the user owns.
+    pub fn get_shares(env: Env, user: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Shares(user))
+            .unwrap_or(0)
+    }
+
+    /// Converts an asset amount (USDC) to the corresponding number of shares,
+    /// using the current share price.
+    pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
+        Self::convert_to_shares_internal(&env, assets)
+    }
+
+    /// Converts a share amount to the corresponding asset amount (USDC),
+    /// using the current share price.
+    pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
+        Self::convert_to_assets_internal(&env, shares)
     }
 
     /// Returns the authorized AI agent address.
@@ -1046,7 +1219,7 @@ impl NeuroWealthVault {
     }
 
     // ==========================================================================
-    // INTERNAL VALIDATION HELPERS
+    // INTERNAL HELPERS
     // ==========================================================================
 
     /// Validates that the vault is not paused.
@@ -1138,6 +1311,67 @@ impl NeuroWealthVault {
                 .get(&DataKey::TotalDeposits)
                 .unwrap_or(0);
             assert!(total + amount <= cap, "Exceeds TVL cap");
+        }
+    }
+
+    /// Returns the current total shares in circulation.
+    #[inline]
+    fn get_total_shares_internal(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0)
+    }
+
+    /// Returns the current total managed assets (principal + yield).
+    ///
+    /// If `TotalAssets` has not been explicitly set yet (e.g., right after
+    /// upgrade from a principal-only model), this falls back to `TotalDeposits`
+    /// to preserve continuity.
+    #[inline]
+    fn get_total_assets_internal(env: &Env) -> i128 {
+        match env.storage().instance().get(&DataKey::TotalAssets) {
+            Some(v) => v,
+            None => env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Internal helper: convert assets (USDC) to shares using current totals.
+    #[inline]
+    fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+
+        if total_shares == 0 || total_assets == 0 {
+            // Bootstrap: 1:1 mapping between assets and shares
+            assets
+        } else {
+            assets * total_shares / total_assets
+        }
+    }
+
+    /// Internal helper: convert shares to assets (USDC) using current totals.
+    #[inline]
+    fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+
+        if total_shares == 0 || total_assets == 0 {
+            0
+        } else {
+            shares * total_assets / total_shares
         }
     }
 }
