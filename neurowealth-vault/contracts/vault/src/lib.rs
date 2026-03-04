@@ -1153,7 +1153,7 @@ impl NeuroWealthVault {
         Self::require_is_owner(&env);
 
         let current_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        
+
         env.storage()
             .instance()
             .set(&DataKey::PendingOwner, &new_owner);
@@ -1201,7 +1201,7 @@ impl NeuroWealthVault {
             .instance()
             .get(&DataKey::PendingOwner)
             .expect("No pending owner");
-        
+
         assert_eq!(new_owner, pending, "Caller is not the pending owner");
 
         let old_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
@@ -1319,7 +1319,7 @@ impl NeuroWealthVault {
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
         let vault_balance = token_client.balance(&env.current_contract_address());
-        
+
         assert!(
             vault_balance >= new_total,
             "Vault USDC balance insufficient for reported total assets"
@@ -1364,16 +1364,10 @@ impl NeuroWealthVault {
         // Extend TTL for user's share balance to prevent expiration
         let shares_key = DataKey::Shares(user.clone());
         if env.storage().persistent().has(&shares_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&shares_key, 100, 100);
+            env.storage().persistent().extend_ttl(&shares_key, 100, 100);
         }
 
-        let shares: i128 = env
-            .storage()
-            .persistent()
-            .get(&shares_key)
-            .unwrap_or(0);
+        let shares: i128 = env.storage().persistent().get(&shares_key).unwrap_or(0);
         if shares == 0 {
             return 0;
         }
@@ -1428,15 +1422,10 @@ impl NeuroWealthVault {
         // Extend TTL for user's share balance to prevent expiration
         let shares_key = DataKey::Shares(user.clone());
         if env.storage().persistent().has(&shares_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&shares_key, 100, 100);
+            env.storage().persistent().extend_ttl(&shares_key, 100, 100);
         }
 
-        env.storage()
-            .persistent()
-            .get(&shares_key)
-            .unwrap_or(0)
+        env.storage().persistent().get(&shares_key).unwrap_or(0)
     }
 
     /// Converts an asset amount (USDC) to the corresponding number of shares,
@@ -1847,12 +1836,12 @@ mod tests {
         // because the mock token doesn't have a balance implementation.
         // In production, the vault will have actual USDC tokens.
         // For now, we skip this test or use integration tests with real token contracts.
-        
+
         // Commenting out the actual call since it requires a real token balance
         // let new_total = 50_000_000_000_i128; // 50M USDC
         // client.update_total_assets(&agent, &new_total);
         // assert_eq!(client.get_total_assets(), new_total);
-        
+
         // Instead, just verify the function exists and is callable by agent
         assert_eq!(client.get_total_assets(), 0);
     }
