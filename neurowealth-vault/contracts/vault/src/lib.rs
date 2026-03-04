@@ -946,19 +946,28 @@ impl NeuroWealthVault {
     /// - Only the owner can modify the deposit limits
     pub fn set_deposit_limits(env: Env, min: i128, max: i128) {
         Self::require_is_owner(&env);
-        
+
         // Validate limits
         assert!(min >= 1_000_000, "Minimum deposit must be at least 1 USDC");
-        assert!(max >= min, "Maximum deposit must be greater than or equal to minimum");
-        
-        let old_min = env.storage().instance()
-            .get(&DataKey::MinDeposit).unwrap_or(1_000_000);
-        let old_max = env.storage().instance()
-            .get(&DataKey::MaxDeposit).unwrap_or(10_000_000_000);
-        
+        assert!(
+            max >= min,
+            "Maximum deposit must be greater than or equal to minimum"
+        );
+
+        let old_min = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(1_000_000);
+        let old_max = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDeposit)
+            .unwrap_or(10_000_000_000);
+
         env.storage().instance().set(&DataKey::MinDeposit, &min);
         env.storage().instance().set(&DataKey::MaxDeposit, &max);
-        
+
         env.events().publish(
             (symbol_short!("l_upd"),),
             LimitsUpdatedEvent {
@@ -966,7 +975,7 @@ impl NeuroWealthVault {
                 new_min: min,
                 old_max,
                 new_max: max,
-            }
+            },
         );
     }
 
@@ -1003,7 +1012,8 @@ impl NeuroWealthVault {
     /// # Returns
     /// The current minimum deposit limit in USDC units (7 decimal places)
     pub fn get_min_deposit(env: Env) -> i128 {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::MinDeposit)
             .unwrap_or(1_000_000) // Default 1 USDC
     }
@@ -1016,7 +1026,8 @@ impl NeuroWealthVault {
     /// # Returns
     /// The current maximum deposit limit in USDC units (7 decimal places)
     pub fn get_max_deposit(env: Env) -> i128 {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::MaxDeposit)
             .unwrap_or(10_000_000_000) // Default 10K USDC
     }
@@ -1359,8 +1370,11 @@ impl NeuroWealthVault {
     /// - If amount < minimum deposit
     #[inline]
     fn require_minimum_deposit(env: &Env, amount: i128) {
-        let min_deposit: i128 = env.storage().instance()
-            .get(&DataKey::MinDeposit).unwrap_or(1_000_000);
+        let min_deposit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(1_000_000);
         assert!(amount >= min_deposit, "Below minimum deposit");
     }
 
@@ -1372,8 +1386,11 @@ impl NeuroWealthVault {
     /// - If amount > maximum deposit
     #[inline]
     fn require_maximum_deposit(env: &Env, amount: i128) {
-        let max_deposit: i128 = env.storage().instance()
-            .get(&DataKey::MaxDeposit).unwrap_or(10_000_000_000);
+        let max_deposit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDeposit)
+            .unwrap_or(10_000_000_000);
         assert!(amount <= max_deposit, "Exceeds maximum deposit");
     }
 
