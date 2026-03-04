@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feat/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: neurowealth-vault
+
+      - name: Install wasm-opt
+        run: cargo install wasm-opt --locked
+
+      - name: Build contract WASM (MVP-compatible)
+        working-directory: neurowealth-vault
+        run: |
+          RUSTFLAGS="-C target-cpu=mvp" cargo build \
+            --target wasm32-unknown-unknown \
+            --release
+          wasm-opt --strip-target-features --mvp-features \
+            target/wasm32-unknown-unknown/release/neurowealth_vault.wasm \
+            -o target/wasm32-unknown-unknown/release/neurowealth_vault.wasm
+
+      - name: Run tests
+        working-directory: neurowealth-vault
+        run: cargo test
