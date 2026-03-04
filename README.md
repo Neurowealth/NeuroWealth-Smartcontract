@@ -164,13 +164,16 @@ npm run dev        # http://localhost:3000
 Smart Contract
 The core Soroban vault contract handles all on-chain fund management.
 Key Functions
-FunctionWho Can CallDescriptioninitializeOwner (once)Set agent address and USDC tokendepositAny verified userDeposit USDC into the vaultwithdrawUser (their own funds)Withdraw USDC back to walletrebalanceAI Agent onlyMove funds between yield strategiesget_balanceAnyoneRead a user's current balanceget_total_depositsAnyoneRead total vault TVL
+FunctionWho Can CallDescriptioninitializeOwner (once)Set agent address and USDC tokendepositAny verified userDeposit USDC into the vaultwithdrawUser (their own funds)Withdraw USDC back to walletwithdraw_allUser (their own funds)Withdraw all USDC by burning all sharesrebalanceAI Agent onlyMove funds between yield strategiesget_balanceAnyoneRead a user's current balanceget_total_depositsAnyoneRead total vault TVLtransfer_ownershipOwner onlyInitiate two-step ownership transferaccept_ownershipPending owner onlyComplete ownership transfer
 Security Model
 
 Users can only withdraw their own funds — enforced at the contract level via user.require_auth()
 Only the designated AI agent keypair can call rebalance — no other address can move funds between protocols
 Minimum deposit: 1 USDC. Maximum per user: 10,000 USDC (configurable)
 Emergency pause functionality available to contract owner
+Two-step ownership transfer prevents accidental ownership loss
+Vault balance verification ensures reported assets match actual holdings
+TTL extension on critical storage prevents data expiration
 
 
 AI Agent
