@@ -87,6 +87,9 @@
 
 #![no_std]
 
+#[cfg(test)]
+mod test;
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, token,
     Address, BytesN, Env, Symbol, symbol_short,
@@ -355,7 +358,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::Version, &1_u32);
 
         env.events().publish(
-            (symbol_short!("vault_initialized"),),
+            (symbol_short!("vlt_init"),),
             VaultInitializedEvent {
                 agent: agent.clone(),
                 usdc_token: usdc_token.clone(),
@@ -574,9 +577,9 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("vault_paused"),),
+            (symbol_short!("paused"),),
             VaultPausedEvent { caller }
         );
     }
@@ -608,9 +611,9 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &false);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("vault_unpaused"),),
+            (symbol_short!("unpaused"),),
             VaultUnpausedEvent { caller }
         );
     }
@@ -640,9 +643,9 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        let caller = env.invoker();
+        let caller: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         env.events().publish(
-            (symbol_short!("emergency_paused"),),
+            (symbol_short!("emg_pause"),),
             EmergencyPausedEvent { caller }
         );
     }
@@ -684,7 +687,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TvLCap, &cap);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: old_user_cap,
@@ -726,7 +729,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::UserDepositCap, &cap);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: cap,
@@ -773,7 +776,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TvLCap, &max);
         
         env.events().publish(
-            (symbol_short!("limits_updated"),),
+            (symbol_short!("lim_upd"),),
             LimitsUpdatedEvent {
                 old_min: old_user_cap,
                 new_min: min,
@@ -835,13 +838,13 @@ impl NeuroWealthVault {
     pub fn update_agent(env: Env, new_agent: Address) {
         Self::require_is_owner(&env);
         
-        let old_agent = env.storage().instance()
+        let old_agent: Address = env.storage().instance()
             .get(&DataKey::Agent).unwrap();
         
         env.storage().instance().set(&DataKey::Agent, &new_agent);
         
         env.events().publish(
-            (symbol_short!("agent_updated"),),
+            (symbol_short!("agnt_upd"),),
             AgentUpdatedEvent {
                 old_agent: old_agent.clone(),
                 new_agent: new_agent.clone(),
@@ -882,7 +885,7 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::TotalDeposits, &new_total);
         
         env.events().publish(
-            (symbol_short!("assets_updated"),),
+            (symbol_short!("asst_upd"),),
             AssetsUpdatedEvent {
                 old_total,
                 new_total,
@@ -1072,54 +1075,7 @@ impl NeuroWealthVault {
     /// # Panics
     /// None
     ///
-    /// # EventsSummary
-The vault contract currently emits events for deposit and withdraw but several state-changing admin functions emit nothing. The AI agent and any external indexers need these events to maintain accurate state without polling the chain constantly.
-
-Missing Events
-Function | Event Needed -- | -- initialize | VaultInitializedEvent pause | VaultPausedEvent unpause | VaultUnpausedEvent emergency_pause | EmergencyPausedEvent set_limits | LimitsUpdatedEvent update_agent | AgentUpdatedEvent update_total_assets | AssetsUpdatedEvent rebalance | RebalanceEvent (update existing)
-Expected Event Structs
-rust
-#[contracttype]
-pub struct VaultInitializedEvent {
-    pub agent: Address,
-    pub usdc_token: Address,
-    pub tvl_cap: i128,
-}
-
-#[contracttype]
-pub struct AgentUpdatedEvent {
-    pub old_agent: Address,
-    pub new_agent: Address,
-}
-
-#[contracttype]
-pub struct LimitsUpdatedEvent {
-    pub old_min: i128,
-    pub new_min: i128,
-    pub old_max: i128,
-    pub new_max: i128,
-}
-
-#[contracttype]
-pub struct RebalanceEvent {
-    pub protocol: Symbol,
-    pub expected_apy: i128, // in basis points e.g. 850 = 8.5%
-}
-
-#[contracttype]
-pub struct AssetsUpdatedEvent {
-    pub old_total: i128,
-    pub new_total: i128,
-}
-Tasks
-Define all missing event structs listed above
-Add env.events().publish(...) to each function that is missing one
-Ensure all event structs use #[contracttype] derive
-Write tests that assert each event is emitted correctly using env.events().all()
-Acceptance Criteria
-Every state-changing function emits at least one event
-Event data contains enough fields to reconstruct state changes off-chain
-Tests verify event emission for each function
+    /// # Events
     /// None
     pub fn get_version(env: Env) -> u32 {
         env.storage().instance()

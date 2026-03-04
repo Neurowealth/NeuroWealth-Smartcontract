@@ -34,7 +34,7 @@ fn test_vault_initialized_event() {
     assert_eq!(events.len(), 1);
     
     let event = &events[0];
-    assert_eq!(event.0, (symbol_short!("vault_initialized"),));
+    assert_eq!(event.0, (symbol_short!("vlt_init"),));
     
     let event_data: VaultInitializedEvent = event.1.clone().try_into().unwrap();
     assert_eq!(event_data.agent, agent);
@@ -55,7 +55,7 @@ fn test_vault_paused_event() {
     let events = env.events().all();
     // Find the pause event (skip initialization event)
     let pause_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("vault_paused"),))
+        .filter(|e| e.0 == (symbol_short!("paused"),))
         .collect();
     assert_eq!(pause_events.len(), 1);
     
@@ -76,7 +76,7 @@ fn test_vault_unpaused_event() {
 
     let events = env.events().all();
     let unpause_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("vault_unpaused"),))
+        .filter(|e| e.0 == (symbol_short!("unpaused"),))
         .collect();
     assert_eq!(unpause_events.len(), 1);
     
@@ -96,7 +96,7 @@ fn test_emergency_paused_event() {
 
     let events = env.events().all();
     let emergency_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("emergency_paused"),))
+        .filter(|e| e.0 == (symbol_short!("emg_pause"),))
         .collect();
     assert_eq!(emergency_events.len(), 1);
     
@@ -121,7 +121,7 @@ fn test_limits_updated_event() {
 
     let events = env.events().all();
     let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
+        .filter(|e| e.0 == (symbol_short!("lim_upd"),))
         .collect();
     assert_eq!(limits_events.len(), 1);
     
@@ -147,7 +147,7 @@ fn test_limits_updated_event_from_set_tvl_cap() {
 
     let events = env.events().all();
     let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
+        .filter(|e| e.0 == (symbol_short!("lim_upd"),))
         .collect();
     assert_eq!(limits_events.len(), 1);
     
@@ -171,7 +171,7 @@ fn test_limits_updated_event_from_set_user_deposit_cap() {
 
     let events = env.events().all();
     let limits_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("limits_updated"),))
+        .filter(|e| e.0 == (symbol_short!("lim_upd"),))
         .collect();
     assert_eq!(limits_events.len(), 1);
     
@@ -193,7 +193,7 @@ fn test_agent_updated_event() {
 
     let events = env.events().all();
     let agent_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("agent_updated"),))
+        .filter(|e| e.0 == (symbol_short!("agnt_upd"),))
         .collect();
     assert_eq!(agent_events.len(), 1);
     
@@ -217,7 +217,7 @@ fn test_assets_updated_event() {
 
     let events = env.events().all();
     let assets_events: Vec<_> = events.iter()
-        .filter(|e| e.0 == (symbol_short!("assets_updated"),))
+        .filter(|e| e.0 == (symbol_short!("asst_upd"),))
         .collect();
     assert_eq!(assets_events.len(), 1);
     
