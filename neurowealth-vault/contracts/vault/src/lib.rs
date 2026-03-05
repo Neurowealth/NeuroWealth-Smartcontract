@@ -2202,7 +2202,7 @@ mod tests {
     /// Test that deposit() enforces minimum deposit
     /// Test that deposit() enforces minimum deposit
     #[test]
-    #[should_panic(expected = "Minimum deposit is 1 USDC")]
+    #[should_panic(expected = "Below minimum deposit")]
     fn test_deposit_enforces_minimum() {
         let env = Env::default();
         env.mock_all_auths();
