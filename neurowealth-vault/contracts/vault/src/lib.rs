@@ -98,7 +98,7 @@
 
 use core::cmp::min;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
+    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, Symbol,
 };
 
 // ============================================================================
@@ -317,6 +317,18 @@ pub struct OwnershipTransferCancelledEvent {
 pub struct AssetsUpdatedEvent {
     pub old_total: i128,
     pub new_total: i128,
+}
+
+/// Emitted when the contract is upgraded to a new WASM implementation.
+///
+/// # Topics
+/// - `SymbolShort("upgraded")` - Event identifier
+#[contracttype]
+pub struct UpgradedEvent {
+    /// The contract version before the upgrade
+    pub old_version: u32,
+    /// The contract version after the upgrade
+    pub new_version: u32,
 }
 
 // ============================================================================
@@ -1334,6 +1346,65 @@ impl NeuroWealthVault {
             AssetsUpdatedEvent {
                 old_total,
                 new_total,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - UPGRADES
+    // ==========================================================================
+
+    /// Upgrades the contract to a new WASM implementation.
+    ///
+    /// The owner must authorize this call. The new WASM hash must correspond
+    /// to a binary previously uploaded to the network via
+    /// `stellar contract install`. All storage state (user balances,
+    /// configuration, owner, agent) is preserved across upgrades.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `owner` - The owner address (must authorize)
+    /// * `new_wasm_hash` - Hash of the new WASM binary (32 bytes)
+    ///
+    /// # Returns
+    /// Nothing. This function upgrades the contract code in place.
+    ///
+    /// # Panics
+    /// - If the caller is not the stored owner
+    /// - If `new_wasm_hash` does not correspond to an uploaded WASM binary
+    ///
+    /// # Events
+    /// Emits `UpgradedEvent` with:
+    /// - `old_version`: Contract version before the upgrade
+    /// - `new_version`: Contract version after the upgrade (old + 1)
+    ///
+    /// # Security
+    /// - Only the owner can trigger an upgrade
+    /// - The version counter increments atomically with the WASM swap
+    /// - All user balances and state are preserved across upgrades
+    pub fn upgrade(env: Env, owner: Address, new_wasm_hash: BytesN<32>) {
+        owner.require_auth();
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        assert!(
+            owner == stored_owner,
+            "Not authorized: caller is not the owner"
+        );
+
+        let old_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+
+        let new_version = old_version + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        env.events().publish(
+            (symbol_short!("upgraded"),),
+            UpgradedEvent {
+                old_version,
+                new_version,
             },
         );
     }
