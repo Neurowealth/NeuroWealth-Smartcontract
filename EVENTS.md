@@ -216,6 +216,7 @@ pub struct UserDepositCapUpdatedEvent {
 ### 8c. CapsUpdatedEvent
 **Topic:** `"caps_upd"`
 
+
 Emitted when user deposit and TVL caps are updated in a single transaction via `set_caps`.
 
 ```rust
@@ -227,6 +228,19 @@ pub struct CapsUpdatedEvent {
 }
 ```
 
+### 9. UserStrategyUpdatedEvent
+
+Emitted when a user updates their on-chain strategy preference.
+
+```rust
+pub struct UserStrategyUpdatedEvent {
+    pub user: Address,
+    pub old_strategy: Symbol,
+    pub new_strategy: Symbol,
+}
+```
+
+**Topics**: `SymbolShort("user_strat")`
 
 ### 9. AgentUpdatedEvent
 **Topic:** `"agent"`

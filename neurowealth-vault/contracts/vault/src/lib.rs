@@ -133,6 +133,8 @@ use soroban_sdk::{
 pub enum VaultError {
     /// Supplied min limit is negative.
     NegativeMin = 1,
+    /// Unsupported user strategy symbol.
+    UnsupportedStrategy = 48,
     /// Supplied max limit is negative.
     NegativeMax = 2,
     /// max must be greater than or equal to min.
@@ -311,6 +313,9 @@ pub enum DataKey {
     /// The address of the Stellar DEX liquidity pool contract used by the
     /// Balanced/Growth strategies for on-chain liquidity provision.
     DexPool,
+    /// Per-user strategy symbol.
+    /// Controls how the agent should rebalance funds for this user.
+    UserStrategy(Address),
 }
 
 // ============================================================================
@@ -703,6 +708,15 @@ pub struct RebalanceFailedEvent {
     pub reason: Symbol,
 }
 
+/// Emitted when a user updates their on-chain strategy preference.
+#[allow(missing_docs)]
+#[contracttype]
+pub struct UserStrategyUpdatedEvent {
+    pub user: Address,
+    pub old_strategy: Symbol,
+    pub new_strategy: Symbol,
+}
+
 #[allow(missing_docs)]
 #[contracttype]
 pub struct UserInfo {
@@ -771,6 +785,7 @@ pub(crate) const TOPIC_UNPAUSED: Symbol = symbol_short!("unpaused");
 pub(crate) const TOPIC_EMERGENCY_PAUSED: Symbol = symbol_short!("emerg");
 pub(crate) const TOPIC_TVL_CAP_UPDATED: Symbol = symbol_short!("tvl_cap");
 pub(crate) const TOPIC_USER_CAP_UPDATED: Symbol = symbol_short!("user_cap");
+pub(crate) const TOPIC_USER_STRATEGY_UPDATED: Symbol = symbol_short!("user_str");
 pub(crate) const TOPIC_LIMITS_UPDATED: Symbol = symbol_short!("l_upd");
 pub(crate) const TOPIC_DEPOSIT_LIMITS_UPDATED: Symbol = symbol_short!("dep_lim");
 pub(crate) const TOPIC_CAPS_UPDATED: Symbol = symbol_short!("caps_upd");
@@ -1177,9 +1192,16 @@ impl NeuroWealthVault {
     /// - If amount would exceed the TVL cap.
     /// - If the USDC transfer fails.
     /// - If shares to mint rounds down to zero.
-    pub fn deposit(env: Env, user: Address, amount: i128) {
+pub fn deposit(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
         user.require_auth();
+
+        // Default per-user strategy on first deposit.
+        if !env.storage().persistent().has(&DataKey::UserStrategy(user.clone())) {
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserStrategy(user.clone()), &Self::strategy_symbol_balanced(&env));
+        }
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
@@ -3756,6 +3778,42 @@ impl NeuroWealthVault {
     /// let human_rate = rate as f64 / 10_000_000.0;   // → 1.05
     /// let user_assets = user_shares as f64 * human_rate;
     /// ```
+pub fn set_user_strategy(env: Env, user: Address, strategy: Symbol) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        // Validate strategy symbol against allowlist
+        Self::validate_user_strategy(&env, &strategy);
+
+        let old_strategy: Symbol = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserStrategy(user.clone()))
+            .unwrap_or(Self::strategy_symbol_balanced(&env));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserStrategy(user.clone()), &strategy);
+
+        env.events().publish(
+            (TOPIC_USER_STRATEGY_UPDATED,),
+            UserStrategyUpdatedEvent {
+                user,
+                old_strategy,
+                new_strategy: strategy,
+            },
+        );
+    }
+
+    /// Returns the configured strategy symbol for a user.
+    pub fn get_user_strategy(env: Env, user: Address) -> Symbol {
+        Self::require_initialized(&env);
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserStrategy(user))
+            .unwrap_or(Self::strategy_symbol_balanced(&env))
+    }
+
     pub fn get_exchange_rate(env: Env) -> i128 {
         Self::require_initialized(&env);
 
@@ -3978,7 +4036,39 @@ impl NeuroWealthVault {
         }
     }
 
+    #[inline]
+    fn strategy_symbol_balanced(env: &Env) -> Symbol {
+        let _ = env;
+        symbol_short!("balanced")
+    }
+
+    #[inline]
+    fn strategy_symbol_growth(env: &Env) -> Symbol {
+        let _ = env;
+        symbol_short!("growth")
+    }
+
+    #[inline]
+    fn strategy_symbol_defensive(env: &Env) -> Symbol {
+        let _ = env;
+        symbol_short!("defens")
+    }
+
+    fn validate_user_strategy(env: &Env, strategy: &Symbol) {
+        let supported = [
+            Self::strategy_symbol_balanced(env),
+            Self::strategy_symbol_growth(env),
+            Self::strategy_symbol_defensive(env),
+        ];
+        Self::require(
+            env,
+            supported.iter().any(|s| s == strategy),
+            VaultError::UnsupportedStrategy,
+        );
+    }
+
     /// Internal helper: convert assets (USDC) to shares using current totals.
+
     /// Uses floor division - safe for deposits (user gets fewer shares, vault benefits).
     ///
     /// # Inflation-attack note

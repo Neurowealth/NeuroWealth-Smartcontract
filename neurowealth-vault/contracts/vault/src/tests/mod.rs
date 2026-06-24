@@ -31,4 +31,6 @@ mod test_ttl;
 mod test_update_total_assets_blend;
 mod test_withdraw;
 mod test_yield;
+mod test_user_strategy;
 mod utils;
+
