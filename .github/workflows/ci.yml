@@ -108,7 +108,7 @@ jobs:
               cargo test --verbose
               ;;
             doc)
-              cargo doc --no-deps
+              RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
               ;;
             build-wasm)
               RUSTFLAGS="-C target-cpu=mvp" cargo build \

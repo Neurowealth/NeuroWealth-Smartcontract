@@ -408,3 +408,60 @@ fn test_invariant_rounding_edge_cases() {
     client.withdraw(&user_b, &1);
     assert_global_vault_invariants(&client, &users);
 }
+
+#[test]
+fn test_idle_deployed_total_invariant_across_rebalance_cycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
+    let user = Address::generate(&env);
+
+    client.set_blend_pool(&owner, &blend_pool);
+
+    // Helper to assert idle + deployed == total
+    let assert_asset_breakdown_invariant = |client: &NeuroWealthVaultClient| {
+        let (idle, deployed) = client.get_asset_breakdown();
+        let total = client.get_total_assets();
+        assert_eq!(
+            idle + deployed,
+            total,
+            "idle_balance + deployed_assets must equal total_assets"
+        );
+    };
+
+    // 1. Deposit
+    let deposit_amount = 10_000_000;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    assert_asset_breakdown_invariant(&client);
+
+    // 2. Rebalance to Blend
+    client.rebalance(&soroban_sdk::Symbol::new(&env, "blend"), &850_i128, &0_i128);
+    assert_asset_breakdown_invariant(&client);
+
+    // 3. Simulate Blend yield
+    token_client.mint(&blend_pool, &1_000_000);
+    let vault_balance = token_client.balance(&contract_id);
+    let blend_balance = blend_client.balance(&usdc_token, &contract_id);
+    let new_total = vault_balance + blend_balance;
+    client.update_total_assets(&agent, &new_total, &false, &0);
+    assert_asset_breakdown_invariant(&client);
+
+    // 4. Partial withdraw
+    client.withdraw(&user, &4_000_000);
+    assert_asset_breakdown_invariant(&client);
+
+    // 5. Rebalance to different protocol (none)
+    client.rebalance(&soroban_sdk::Symbol::new(&env, "none"), &0_i128, &0_i128);
+    assert_asset_breakdown_invariant(&client);
+
+    // 6. Verify final state
+    let (idle, deployed) = client.get_asset_breakdown();
+    let total = client.get_total_assets();
+    assert_eq!(idle + deployed, total);
+    assert_eq!(deployed, 0, "Deployed should be 0 after rebalance to none");
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@neurowealth/vault-client",
+  "version": "0.1.0",
+  "description": "Auto-generated TypeScript client for the NeuroWealth Vault Soroban smart contract on Stellar",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@stellar/stellar-sdk": ">=12.0.0"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "^12.0.0",
+    "typescript": "^5.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Neurowealth/NeuroWealth-Smartcontract.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "smart-contract",
+    "vault",
+    "defi",
+    "typescript"
+  ]
+}

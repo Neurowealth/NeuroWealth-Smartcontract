@@ -101,6 +101,8 @@
 //!
 //! ## Deposit USDC
 //! ```ignore
+//! // This example is ignored because doctests cannot construct a live Soroban Env.
+//! // For comprehensive deposit tests, see neurowealth-vault/contracts/vault/src/tests/test_deposit.rs
 //! let token_client = token::Client::new(&env, &usdc_token);
 //! token_client.transfer(&user, &vault_address, &amount);
 //! vault_client.deposit(&user, &amount);
@@ -108,6 +110,8 @@
 //!
 //! ## Withdraw USDC
 //! ```ignore
+//! // This example is ignored because doctests cannot construct a live Soroban Env.
+//! // For comprehensive withdrawal tests, see neurowealth-vault/contracts/vault/src/tests/test_withdraw.rs
 //! vault_client.withdraw(&user, &amount);
 //! ```
 
@@ -2916,7 +2920,7 @@ impl NeuroWealthVault {
 
     /// Configures the DEX liquidity pool contract address (owner only).
     ///
-    /// Mirrors [`Self::set_blend_pool`]. The pool interface is validated by probing
+    /// Mirrors the behavior of `set_blend_pool`. The pool interface is validated by probing
     /// its `balance` entrypoint before the address is stored, so an invalid pool
     /// address is rejected at configuration time. `CurrentProtocol` is initialized
     /// to `"none"` when not already set.
@@ -4353,7 +4357,7 @@ impl NeuroWealthVault {
 
     /// Returns the vault's asset breakdown as `(idle, deployed)`.
     ///
-    /// Combines [`Self::get_idle_balance`] and [`Self::get_deployed_assets`] into
+    /// Combines `get_idle_balance` and `get_deployed_assets` into
     /// a single call for convenience. Useful for dashboards and AI agents that need
     /// both values atomically in one RPC round-trip.
     ///

@@ -125,7 +125,14 @@ jobs:
             exit 1
           fi
 
-      - name: 📦 Upload spec as artifact
+      - name: � TypeScript typecheck vault-client
+        working-directory: packages/vault-client
+        run: |
+          echo "Type-checking generated TypeScript client..."
+          npm install
+          npx tsc --noEmit
+
+      - name: �📦 Upload spec as artifact
         uses: actions/upload-artifact@v4
         with:
           name: contract-spec
