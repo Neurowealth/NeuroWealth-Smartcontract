@@ -2179,7 +2179,7 @@
     },
     "VaultError::CallerIsNotPendingOwner": {
       "code": 29,
-      "description": "Caller is not the pending owner."
+      "description": "Caller is not the pending owner (or no pending ownership transfer exists)."
     },
     "VaultError::OnlyAgentCanUpdateTotalAssets": {
       "code": 30,
