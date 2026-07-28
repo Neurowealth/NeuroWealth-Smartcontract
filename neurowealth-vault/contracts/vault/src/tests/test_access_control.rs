@@ -610,7 +610,7 @@ fn test_withdraw_blocked_while_paused() {
     mint_and_deposit(&env, &client, &usdc_token, &user, amount);
 
     client.pause(&owner);
-    client.withdraw(&user, &amount);
+    client.withdraw(&user, &amount, &None);
 }
 
 #[test]
@@ -627,7 +627,7 @@ fn test_withdraw_all_blocked_while_paused() {
     mint_and_deposit(&env, &client, &usdc_token, &user, amount);
 
     client.pause(&owner);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 }
 
 #[test]

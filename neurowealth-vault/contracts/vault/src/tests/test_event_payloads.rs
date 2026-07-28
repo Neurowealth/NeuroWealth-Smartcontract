@@ -137,7 +137,7 @@ fn snapshot_withdraw_event_all_fields() {
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000);
     let withdraw_amount: i128 = 4_000_000;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
     assert_eq!(events.len(), 1, "exactly one WithdrawEvent expected");
@@ -658,7 +658,7 @@ fn snapshot_event_ordering_deposit_precedes_withdraw() {
     let user = Address::generate(&env);
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 8_000_000);
-    client.withdraw(&user, &3_000_000_i128);
+    client.withdraw(&user, &3_000_000_i128, &None);
 
     let dep_events = find_events_by_topic(env.events().all(), &env, TOPIC_DEPOSIT);
     let wd_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);

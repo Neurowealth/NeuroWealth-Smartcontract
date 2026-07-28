@@ -122,7 +122,7 @@ fn test_withdraw_blocked_while_paused() {
     assert!(client.is_paused());
 
     let balance = client.get_balance(&user);
-    client.withdraw(&user, &balance);
+    client.withdraw(&user, &balance, &None);
 }
 
 #[test]

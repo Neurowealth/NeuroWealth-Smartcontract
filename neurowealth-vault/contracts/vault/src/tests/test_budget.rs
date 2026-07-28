@@ -74,7 +74,7 @@ fn test_budget_withdraw_no_blend() {
     mint_and_deposit(&env, &client, &usdc_token, &user, amount);
 
     let (cpu, mem) = measure(&env, || {
-        client.withdraw(&user, &amount);
+        client.withdraw(&user, &amount, &None);
     });
 
     std::println!("[budget] withdraw (no Blend)  cpu={cpu}  mem={mem}");
@@ -106,7 +106,7 @@ fn test_budget_withdraw_with_blend_pull() {
     client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
 
     let (cpu, mem) = measure(&env, || {
-        client.withdraw(&user, &amount);
+        client.withdraw(&user, &amount, &None);
     });
 
     std::println!("[budget] withdraw (Blend pull)  cpu={cpu}  mem={mem}");

@@ -32,7 +32,7 @@ fn test_integration_withdraw_updates_current_protocol_to_none() {
     // User withdraws their entire entitled amount via `withdraw` (not
     // `withdraw_all`). Since the vault has zero idle balance, the full
     // amount must be pulled from Blend, leaving exactly zero remaining.
-    client.withdraw(&user, &deposit_amount);
+    client.withdraw(&user, &deposit_amount, &None);
 
     // Vault should have pulled everything out of Blend.
     assert_eq!(blend_client.supplied(&usdc_token), 0);
@@ -74,7 +74,7 @@ fn test_integration_withdraw_partial_blend_drain_keeps_current_protocol() {
     // Withdraw less than the full position; Blend should still hold a
     // residual balance afterward.
     let partial_amount = 10_000_000_i128;
-    client.withdraw(&user, &partial_amount);
+    client.withdraw(&user, &partial_amount, &None);
 
     assert!(
         blend_client.supplied(&usdc_token) > 0,

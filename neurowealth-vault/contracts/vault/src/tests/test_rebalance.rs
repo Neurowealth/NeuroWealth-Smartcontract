@@ -418,7 +418,7 @@ fn test_blend_supply_and_withdraw_with_events() {
 
     // User withdraws half their balance
     let withdraw_amount = 10_000_000_i128; // 10 USDC
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     // Verify funds were pulled from Blend and given to user
     assert_eq!(

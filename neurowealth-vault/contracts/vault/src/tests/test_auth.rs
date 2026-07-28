@@ -309,7 +309,7 @@ fn test_user_withdraw_with_scoped_auth() {
         },
     }]);
 
-    client.withdraw(&user, &amount);
+    client.withdraw(&user, &amount, &None);
     assert_eq!(client.get_shares(&user), 0);
 }
 
@@ -326,7 +326,7 @@ fn test_withdraw_requires_user_auth() {
 
     env.mock_auths(&[]);
 
-    let result = client.try_withdraw(&user, &amount);
+    let result = client.try_withdraw(&user, &amount, &None);
     assert!(
         result.is_err(),
         "withdraw must fail without the user's authorization"
@@ -566,7 +566,7 @@ fn test_withdraw_all_requires_user_auth() {
 
     env.mock_auths(&[]);
 
-    let result = client.try_withdraw_all(&user);
+    let result = client.try_withdraw_all(&user, &None);
     assert!(
         result.is_err(),
         "withdraw_all must fail without the user's authorization"

@@ -203,7 +203,7 @@ fn test_user_withdraw_pulls_from_dex() {
 
     // User withdraws — the vault pulls the needed liquidity back from the DEX.
     let withdraw_amount = 30_000_000;
-    vault_client.withdraw(&user, &withdraw_amount);
+    vault_client.withdraw(&user, &withdraw_amount, &None);
 
     assert_eq!(token_client.balance(&user), withdraw_amount);
     assert_eq!(token_client.balance(&dex_pool), amount - withdraw_amount);

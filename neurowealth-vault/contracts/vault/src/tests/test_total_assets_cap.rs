@@ -119,7 +119,7 @@ fn test_deposit_yield_withdraw_cap_regression() {
     client.update_total_assets(&agent, &15_000_000_i128, &false, &0);
 
     // Step 3: user1 withdraws 5 USDC  →  TotalAssets shrinks
-    client.withdraw(&user1, &5_000_000_i128);
+    client.withdraw(&user1, &5_000_000_i128, &None);
     let assets_after_withdraw = client.get_total_assets();
 
     // Step 4: user2 deposits up to what remains under the cap

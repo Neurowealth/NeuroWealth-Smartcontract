@@ -210,7 +210,7 @@ fuzz_target!(|data: &[u8]| {
                     if amount <= 0 || amount > balance {
                         return;
                     }
-                    client.withdraw(&user, &amount);
+                    client.withdraw(&user, &amount, &None);
                 }
                 2 => {
                     // Deposit followed by immediate partial withdrawal (round-trip test)

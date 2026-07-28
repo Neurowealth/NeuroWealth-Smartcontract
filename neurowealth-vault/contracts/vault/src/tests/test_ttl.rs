@@ -293,7 +293,7 @@ fn test_touch_after_full_withdrawal_does_not_panic() {
     let user = Address::generate(&env);
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     assert_eq!(client.get_shares(&user), 0, "shares must be 0 after withdraw_all");
     // Must not panic regardless of whether the key is retained or removed

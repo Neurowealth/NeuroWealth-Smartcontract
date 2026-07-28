@@ -40,7 +40,7 @@ fn test_withdraw_underflow() {
     // Try to withdraw 11 USDC — more than the user holds.
     // The contract asserts share sufficiency before the subtraction, so the
     // message is "vault: insufficient shares for requested amount".
-    client.withdraw(&user, &11_000_000);
+    client.withdraw(&user, &11_000_000, &None);
 }
 
 #[test]

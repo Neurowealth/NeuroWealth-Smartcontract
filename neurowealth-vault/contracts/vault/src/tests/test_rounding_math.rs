@@ -34,7 +34,7 @@ fn test_deposit_withdraw_never_exceeds_total_assets() {
     let vault_balance_before = token_client.balance(&contract_id);
 
     // Withdraw everything
-    let withdrawn_amount = client.withdraw_all(&user);
+    let withdrawn_amount = client.withdraw_all(&user, &None);
 
     let total_assets_after = client.get_total_assets();
     let vault_balance_after = token_client.balance(&contract_id);
@@ -104,7 +104,7 @@ fn test_multi_user_deposit_withdraw_invariants() {
         let _user_shares_before = client.get_shares(user);
         let _user_balance_before = client.get_balance(user);
 
-        let withdrawn_amount = client.withdraw_all(user);
+        let withdrawn_amount = client.withdraw_all(user, &None);
         total_withdrawn += withdrawn_amount;
 
         // Invariant: Withdrawn amount should be reasonable
@@ -276,7 +276,7 @@ fn test_zero_near_zero_rounding_edges() {
     client.update_total_assets(&agent, &(min_deposit + tiny_yield), &false, &0);
 
     // Withdraw should work even with tiny amounts
-    let withdrawn = client.withdraw_all(&user);
+    let withdrawn = client.withdraw_all(&user, &None);
     assert!(withdrawn >= 0, "Withdrawal should work with tiny amounts");
     assert!(
         withdrawn <= min_deposit + tiny_yield,
@@ -294,8 +294,8 @@ fn test_zero_near_zero_rounding_edges() {
     client.deposit(&small_user, &small_deposit);
 
     // Both users should be able to withdraw
-    let big_withdrawn = client.withdraw_all(&big_user);
-    let small_withdrawn = client.withdraw_all(&small_user);
+    let big_withdrawn = client.withdraw_all(&big_user, &None);
+    let small_withdrawn = client.withdraw_all(&small_user, &None);
 
     assert!(big_withdrawn > 0, "Big user should withdraw something");
     assert!(
@@ -420,9 +420,9 @@ fn test_extreme_rounding_scenarios() {
     client.update_total_assets(&agent, &(total_deposited + tiny_yield), &false, &0);
 
     // All users withdraw - should handle rounding gracefully
-    let withdrawn1 = client.withdraw_all(&user1);
-    let withdrawn2 = client.withdraw_all(&user2);
-    let withdrawn3 = client.withdraw_all(&user3);
+    let withdrawn1 = client.withdraw_all(&user1, &None);
+    let withdrawn2 = client.withdraw_all(&user2, &None);
+    let withdrawn3 = client.withdraw_all(&user3, &None);
     let total_withdrawn = withdrawn1 + withdrawn2 + withdrawn3;
 
     // Check each withdrawal
@@ -486,7 +486,7 @@ fn test_preview_functions_match_actual_conversions() {
 
     // Preview withdrawal should match actual
     let previewed_assets = client.preview_shares_to_assets(&actual_shares);
-    let withdrawn_assets = client.withdraw_all(&user);
+    let withdrawn_assets = client.withdraw_all(&user, &None);
 
     // Should be very close (allowing for 1 unit rounding difference)
     let diff = (previewed_assets - withdrawn_assets).abs();
@@ -541,7 +541,7 @@ fn test_preview_withdraw_matches_actual_withdraw_rounding() {
 
     // Actual withdraw should burn same number of shares as preview_withdraw
     let shares_before = client.get_shares(&user);
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
     let shares_after = client.get_shares(&user);
     let actual_shares_burned = shares_before - shares_after;
 
@@ -651,7 +651,7 @@ fn test_dust_withdrawal_at_high_share_price() {
 
     // Actual withdraw of dust amount should succeed (not revert)
     let shares_before = client.get_shares(&user);
-    client.withdraw(&user, &dust_amount);
+    client.withdraw(&user, &dust_amount, &None);
     let shares_after = client.get_shares(&user);
     let shares_burned = shares_before - shares_after;
 
@@ -963,7 +963,7 @@ fn test_withdraw_all_returns_proportional_assets() {
 
     // Expected: user1 holds 60 % of shares → 60 % of 15M = 9M.
     let expected_user1 = user1_shares * total_assets / total_shares;
-    let withdrawn1 = client.withdraw_all(&user1);
+    let withdrawn1 = client.withdraw_all(&user1, &None);
 
     assert_eq!(
         withdrawn1, expected_user1,
@@ -1009,7 +1009,7 @@ fn test_ceil_burn_prevents_free_withdrawal_at_high_price() {
 
     // Actual withdraw must burn >= 1 share.
     let shares_before = client.get_shares(&user);
-    client.withdraw(&user, &1_i128);
+    client.withdraw(&user, &1_i128, &None);
     let shares_after = client.get_shares(&user);
     assert!(
         shares_before - shares_after >= 1,
@@ -1046,7 +1046,7 @@ fn test_sequential_partial_withdrawals_ceil_each_time() {
         if shares_before == 0 {
             break;
         }
-        client.withdraw(&user, &1_000_000_i128);
+        client.withdraw(&user, &1_000_000_i128, &None);
         cumulative_withdrawn += 1_000_000_i128;
     }
 

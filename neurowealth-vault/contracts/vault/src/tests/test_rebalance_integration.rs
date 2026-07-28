@@ -488,7 +488,7 @@ fn test_integration_asset_accounting_invariant_across_full_cycle() {
     assert_eq!(vault_usdc_balance(&env, &usdc_token, &contract_id), 0);
 
     // User A withdraws
-    client.withdraw(&user_a, &amount_a);
+    client.withdraw(&user_a, &amount_a, &None);
     let expected_in_blend = blend_client.supplied(&usdc_token);
     assert_eq!(
         expected_in_blend, amount_b,
@@ -645,7 +645,7 @@ fn test_integration_withdraw_all_updates_current_protocol_to_none() {
     assert_eq!(blend_client.supplied(&usdc_token), deposit_amount);
 
     // User withdraws everything
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     // Vault should have pulled everything from Blend
     assert_eq!(blend_client.supplied(&usdc_token), 0);
@@ -726,7 +726,7 @@ fn test_integration_canonical_full_lifecycle_flow() {
     // User A withdraws their full position (including yield)
     // Should burn 10M shares and receive 11M USDC
     let expected_withdraw_a = 11_000_000_i128;
-    client.withdraw(&user_a, &expected_withdraw_a);
+    client.withdraw(&user_a, &expected_withdraw_a, &None);
 
     assert_eq!(token_client.balance(&user_a), expected_withdraw_a);
     assert_eq!(client.get_shares(&user_a), 0);
@@ -750,7 +750,7 @@ fn test_integration_canonical_full_lifecycle_flow() {
     // --- STEP 6: Final withdrawal with yield ---
     // User B withdraws remaining funds
     let expected_withdraw_b = 11_000_000_i128;
-    client.withdraw(&user_b, &expected_withdraw_b);
+    client.withdraw(&user_b, &expected_withdraw_b, &None);
 
     assert_eq!(token_client.balance(&user_b), expected_withdraw_b);
     assert_eq!(client.get_total_assets(), 0);
@@ -1031,7 +1031,7 @@ fn test_protocol_changed_event_on_user_withdraw_draining_blend() {
     assert_eq!(events_before_wd.len(), 1);
 
     // User drains the vault — Blend balance hits 0, set_current_protocol("none") fires
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     let events_after_wd =
         find_events_by_topic(env.events().all(), &env, TOPIC_PROTOCOL_CHANGED);
@@ -1146,7 +1146,7 @@ fn test_full_lifecycle_deposit_rebalance_yield_withdraw() {
     assert_eq!(user_a_entitlement, 11_000_000_i128);
 
     // ── PHASE 4: USER A WITHDRAWS (from Blend) ───────────────────────────────
-    client.withdraw(&user_a, &user_a_entitlement);
+    client.withdraw(&user_a, &user_a_entitlement, &None);
 
     // User A received yield-bearing amount
     assert_eq!(
@@ -1192,7 +1192,7 @@ fn test_full_lifecycle_deposit_rebalance_yield_withdraw() {
     assert_eq!(pce2.new_protocol, symbol_short!("none"));
 
     // ── PHASE 6: USER B WITHDRAWS (from idle vault) ───────────────────────────
-    client.withdraw(&user_b, &remaining_assets);
+    client.withdraw(&user_b, &remaining_assets, &None);
 
     assert_eq!(
         token_client.balance(&user_b),

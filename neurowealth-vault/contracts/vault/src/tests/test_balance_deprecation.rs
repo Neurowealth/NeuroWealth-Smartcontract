@@ -123,7 +123,7 @@ fn withdraw_uses_shares_not_balance_key() {
     let shares_before = client.get_shares(&user);
 
     // Withdraw 30 USDC
-    client.withdraw(&user, &300_000_000);
+    client.withdraw(&user, &300_000_000, &None);
 
     let shares_after = client.get_shares(&user);
     let balance_after = client.get_balance(&user);

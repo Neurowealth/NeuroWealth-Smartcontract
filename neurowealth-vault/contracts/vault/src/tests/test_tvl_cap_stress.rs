@@ -271,7 +271,7 @@ fn test_tvl_cap_interleaved_deposits_and_withdrawals() {
     assert_eq!(client.get_total_deposits(), tvl_cap);
 
     // user_a partially withdraws → frees headroom
-    client.withdraw(&user_a, &withdraw_a);
+    client.withdraw(&user_a, &withdraw_a, &None);
     assert_tvl_invariant(&client, tvl_cap);
     assert!(client.get_total_deposits() < tvl_cap);
 

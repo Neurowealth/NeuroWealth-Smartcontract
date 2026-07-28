@@ -169,7 +169,7 @@ fn test_withdraw_emits_withdraw_event_with_correct_payload() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     let withdraw_amount = 3_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
     assert!(!withdraw_events.is_empty(), "Withdraw should emit an event");
@@ -200,7 +200,7 @@ fn test_withdraw_all_emits_withdraw_event() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    let withdrawn = client.withdraw_all(&user);
+    let withdrawn = client.withdraw_all(&user, &None);
 
     assert_eq!(withdrawn, deposit_amount, "Should withdraw full balance");
 
@@ -755,7 +755,7 @@ fn test_withdraw_all_partial_liquidity_emits_burned_shares() {
     // shares_to_burn = 2M * 10M / 10M = 2M (assuming 1:1 ratio)
     let expected_shares_to_burn = client.convert_to_shares(&expected_available_usdc);
 
-    let withdrawn = client.withdraw_all(&user);
+    let withdrawn = client.withdraw_all(&user, &None);
     let shares_after = client.get_shares(&user);
 
     // Verify we got partial liquidity
@@ -907,7 +907,7 @@ fn test_blend_withdraw_event_reports_actual_withdrawn_with_shortfall() {
     let requested_withdraw = 2_000_000_i128;
     let expected_actual = 500_000_i128; // Only what pool can give
 
-    client.withdraw(&user, &requested_withdraw);
+    client.withdraw(&user, &requested_withdraw, &None);
 
     // Calculate actual withdrawn from user's balance change
     let user_balance_after = token_client.balance(&user);

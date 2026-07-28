@@ -83,7 +83,7 @@ fn test_tiny_deposit_no_value_creation() {
         token_client.mint(&user, &deposit_amount);
         client.deposit(&user, &deposit_amount);
 
-        let withdrawn = client.withdraw_all(&user);
+        let withdrawn = client.withdraw_all(&user, &None);
 
         assert!(
             withdrawn <= deposit_amount,
@@ -121,12 +121,12 @@ fn test_tiny_withdrawal_no_value_creation() {
 
     // 5 partial withdrawals of 1 USDC each
     for _ in 0..5 {
-        client.withdraw(&user, &USDC);
+        client.withdraw(&user, &USDC, &None);
         total_withdrawn += USDC;
     }
 
     // Drain whatever remains
-    let remaining = client.withdraw_all(&user);
+    let remaining = client.withdraw_all(&user, &None);
     total_withdrawn += remaining;
 
     assert!(

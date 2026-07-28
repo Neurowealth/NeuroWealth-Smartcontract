@@ -32,7 +32,7 @@ fn test_withdraw_before_init_panics() {
     env.mock_all_auths();
     let (_contract_id, client) = setup_uninitialized(&env);
     let user = Address::generate(&env);
-    client.withdraw(&user, &1_000_000);
+    client.withdraw(&user, &1_000_000, &None);
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_withdraw_all_before_init_panics() {
     env.mock_all_auths();
     let (_contract_id, client) = setup_uninitialized(&env);
     let user = Address::generate(&env);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 }
 
 #[test]

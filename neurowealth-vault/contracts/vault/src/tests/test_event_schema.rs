@@ -69,7 +69,7 @@ fn test_event_schema_core_events() {
 
     // Test withdraw event
     let withdraw_amount = 2_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
     assert_eq!(
@@ -528,7 +528,7 @@ fn test_all_event_topics_schema_compliance() {
 
     // Core lifecycle events
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
-    client.withdraw(&user, &2_000_000_i128);
+    client.withdraw(&user, &2_000_000_i128, &None);
 
     // Administrative events
     client.pause(&owner);
@@ -762,7 +762,7 @@ fn test_deposit_withdraw_user_indexed_topic() {
     );
 
     let withdraw_amount = 2_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
     assert_eq!(withdraw_events.len(), 1, "One withdraw event expected");

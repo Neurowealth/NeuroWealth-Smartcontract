@@ -212,7 +212,7 @@ fn test_withdraw_fails_when_paused() {
     let user = Address::generate(&env);
 
     client.pause(&owner);
-    client.withdraw(&user, &1_000_000);
+    client.withdraw(&user, &1_000_000, &None);
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn test_withdraw_rejects_zero_amount() {
 
     let user = Address::generate(&env);
 
-    client.withdraw(&user, &0);
+    client.withdraw(&user, &0, &None);
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn test_withdraw_fails_insufficient_balance() {
 
     let user = Address::generate(&env);
 
-    client.withdraw(&user, &1_000_000);
+    client.withdraw(&user, &1_000_000, &None);
 }
 
 #[test]

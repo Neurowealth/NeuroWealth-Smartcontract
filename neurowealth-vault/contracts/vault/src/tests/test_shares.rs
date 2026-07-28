@@ -38,7 +38,7 @@ fn test_total_shares_consistency_after_multiple_operations() {
 
     let total_after_deposits = client.get_total_shares();
 
-    client.withdraw(&user1, &3_000_000_i128);
+    client.withdraw(&user1, &3_000_000_i128, &None);
 
     let total_after_withdraw = client.get_total_shares();
     assert_eq!(total_after_withdraw, total_after_deposits - 3_000_000_i128);
@@ -240,7 +240,7 @@ fn test_withdraw_burns_correct_shares() {
 
     let shares_before = client.get_shares(&user);
     let withdraw_amount = 4_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let shares_after = client.get_shares(&user);
     assert!(shares_after < shares_before, "Withdrawal burns shares");
@@ -299,7 +299,7 @@ fn test_multi_user_principal_tracking_isolation() {
     assert_eq!(client.get_balance(&user2), deposit2);
     assert_eq!(client.get_total_assets(), deposit1 + deposit2);
 
-    client.withdraw(&user1, &2_000_000_i128);
+    client.withdraw(&user1, &2_000_000_i128, &None);
 
     assert_eq!(client.get_balance(&user1), deposit1 - 2_000_000_i128);
     assert_eq!(client.get_balance(&user2), deposit2);
@@ -331,7 +331,7 @@ fn test_withdraw_never_over_withdraws() {
     let shares_before = client.get_shares(&user);
     let balance_before = client.get_balance(&user);
 
-    client.withdraw(&user, &10_000_000_i128);
+    client.withdraw(&user, &10_000_000_i128, &None);
 
     let shares_after = client.get_shares(&user);
     // At 1.5x price (15M assets / 10M shares), 10M assets = 6,666,667 shares (ceiling division)
@@ -436,7 +436,7 @@ fn test_withdraw_burns_proportional_shares_after_yield() {
     let shares_before = client.get_shares(&user);
     let withdraw_amount = 5_000_000_i128;
 
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let shares_after = client.get_shares(&user);
     // At 2x price (20M assets / 10M shares), 5M assets = 2.5M shares
@@ -461,7 +461,7 @@ fn test_full_withdrawal_burns_all_shares() {
 
     assert_eq!(client.get_shares(&user), deposit);
 
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_balance(&user), 0);

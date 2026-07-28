@@ -108,7 +108,7 @@
 //!
 //! ## Withdraw USDC
 //! ```ignore
-//! vault_client.withdraw(&user, &amount);
+//! vault_client.withdraw(&user, &amount, &None);
 //! ```
 
 // `missing_docs` cannot be denied crate-wide: `#[contract]`, `#[contracttype]`,
@@ -1637,7 +1637,14 @@ impl NeuroWealthVault {
     /// - If user has insufficient balance or shares.
     /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
     /// - If the USDC transfer fails.
-    pub fn withdraw(env: Env, user: Address, amount: i128) {
+    /// Withdraws USDC from the vault. Supports optional slippage protection
+    /// via `min_amount_out`. If the actual USDC received after pool withdrawals
+    /// is less than `min_amount_out`, the transaction reverts.
+    ///
+    /// Pass `None` for `min_amount_out` to skip the slippage check (current
+    /// behavior). Pass `Some(amount)` to require at least that many stroops
+    /// returned.
+    pub fn withdraw(env: Env, user: Address, amount: i128, min_amount_out: Option<i128>) {
         Self::require_initialized(&env);
         user.require_auth();
 
@@ -1653,6 +1660,8 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
+
+        let min_out = min_amount_out.unwrap_or(0);
 
         // We use actual_to_return to track how much we can really give back.
         // Initially, we assume we can fulfill the whole request.
@@ -1670,15 +1679,25 @@ impl NeuroWealthVault {
                     .expect("vault: math error");
 
                 // Attempt to withdraw from the active protocol (Blend or DEX).
-                // If this returns less than needed, we will reconcile below
+                // The protocol's internal min_out is passed to protect against
+                // slippage during the liquidity removal itself.
                 let _withdrawn =
-                    Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, 0);
+                    Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, min_out);
 
                 // RECONCILIATION: Check actual available USDC after the withdrawal.
                 // We cap the withdrawal to what the vault actually has available.
                 let available_usdc = token_client.balance(&env.current_contract_address());
                 actual_to_return = min(amount, available_usdc);
             }
+        }
+
+        // Slippage check: if the user specified a minimum, ensure we meet or exceed it.
+        if min_out > 0 {
+            Self::require(
+                &env,
+                actual_to_return >= min_out,
+                VaultError::MinOutNotMet,
+            );
         }
 
         Self::require(
@@ -1802,11 +1821,13 @@ impl NeuroWealthVault {
     /// - If user has no shares to withdraw.
     /// - If the vault has no assets.
     /// - If the USDC transfer fails.
-    pub fn withdraw_all(env: Env, user: Address) -> i128 {
+    pub fn withdraw_all(env: Env, user: Address, min_amount_out: Option<i128>) -> i128 {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
+
+        let min_out = min_amount_out.unwrap_or(0);
 
         // Check if funds are deployed in Blend and need to be retrieved
         let current_protocol: Symbol = env
@@ -1848,7 +1869,7 @@ impl NeuroWealthVault {
                 let needed = entitled_amount
                     .checked_sub(vault_balance)
                     .expect("vault: math error");
-                let _ = Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, 0);
+                let _ = Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, min_out);
 
                 // RECONCILIATION: Check actual available USDC after the potential withdrawal
                 let available_usdc = token_client.balance(&env.current_contract_address());
@@ -1862,6 +1883,16 @@ impl NeuroWealthVault {
                     shares_to_burn = Self::convert_to_shares_internal_ceil(&env, usdc_to_return);
                 }
             }
+        }
+
+        // Slippage check: if the user specified a minimum, ensure the vault
+        // can satisfy it before updating state or transferring funds.
+        if min_out > 0 {
+            Self::require(
+                &env,
+                usdc_to_return >= min_out,
+                VaultError::MinOutNotMet,
+            );
         }
 
         Self::require(&env, usdc_to_return > 0, VaultError::NoAssetsToReturn);

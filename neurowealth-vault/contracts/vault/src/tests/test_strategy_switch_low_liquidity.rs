@@ -240,7 +240,7 @@ fn test_user_withdraw_blend_low_liquidity_sufficient_idle() {
     assert_eq!(vault_usdc_balance(&env, &usdc_token, &vault_id), half);
 
     // user_a withdraws their share — fully covered by idle vault funds.
-    client.withdraw(&user_a, &half);
+    client.withdraw(&user_a, &half, &None);
     assert_eq!(
         TestTokenClient::new(&env, &usdc_token).balance(&user_a),
         half,

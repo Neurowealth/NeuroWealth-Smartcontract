@@ -108,7 +108,7 @@ fn test_withdraw_share_underflow_is_checked() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Request more than deposited; share conversion exceeds the user's holdings.
-    client.withdraw(&user, &11_000_000_i128);
+    client.withdraw(&user, &11_000_000_i128, &None);
 }
 
 /// A large balance can be fully withdrawn, confirming the withdraw-side checked
@@ -130,7 +130,7 @@ fn test_large_balance_full_withdraw() {
     token.mint(&user, &amount);
     client.deposit(&user, &amount);
 
-    let returned = client.withdraw_all(&user);
+    let returned = client.withdraw_all(&user, &None);
     assert_eq!(returned, amount, "full large balance withdrawn");
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_total_shares(), 0);
