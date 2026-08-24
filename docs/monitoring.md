@@ -26,9 +26,31 @@ Monitor these metrics continuously across every ledger window.
 
 These conditions indicate abnormal behavior and require prompt investigation.
 
+### TVL Drop Thresholds (Exploit Detection)
+
+Define tiered alert rules based on TotalAssets decrease severity and event correlation:
+
+| Severity | TVL Drop Condition | Event Correlation Check | Response |
+|----------|-------------------|------------------------|----------|
+| **Critical** | `TotalAssets_now < TotalAssets_prev * 0.95` (5%+ drop) | No matching `WithdrawEvent` in same ledger | **Immediate**: Page on-call, pause vault, investigate for exploit |
+| **Critical** | `TotalAssets_now < TotalAssets_prev * 0.90` (10%+ drop) | Any condition | **Immediate**: Page on-call, pause vault, investigate for exploit |
+| **High** | `TotalAssets_now < TotalAssets_prev * 0.98` (2%+ drop) | No matching `WithdrawEvent` or `RebalanceEvent` in same ledger | **Within 15 min**: Alert team, review transaction logs |
+| **Medium** | `TotalAssets_now < TotalAssets_prev * 0.99` (1%+ drop) | No matching events AND repeated over 3+ consecutive ledgers | **Within 1 hour**: Review for gradual drain or accounting drift |
+
+### Share Supply Anomalies
+
+Monitor share supply changes that don't correlate with user actions:
+
+| Anomaly | Condition | Severity | Response |
+|---------|-----------|----------|----------|
+| Unauthorized share minting | `get_total_shares()` increases without `DepositEvent` in same ledger | **Critical** | Immediate vault pause, exploit investigation |
+| Unauthorized share burning | `get_total_shares()` decreases without `WithdrawEvent` in same ledger | **Critical** | Immediate vault pause, exploit investigation |
+| Share-asset ratio manipulation | `(TotalAssets / TotalShares)` decreases by >0.1% without user events | **High** | Alert team, review for share price manipulation |
+
+### General Anomalies
+
 | Anomaly | Condition | Severity |
 |---------|-----------|----------|
-| Sudden TVL drop | `TotalAssets_now < TotalAssets_1h_ago * 0.80` | Critical |
 | Extended pause | `Paused == true` for more than 24 h | High |
 | Withdrawal spike | `withdrawal_volume_1h > withdrawal_volume_30d_avg * 3` | High |
 | Cap saturation | Repeated `Error(Contract, #41)` rejections | Medium |
@@ -98,12 +120,58 @@ manual review.
 
 ## 4. Alert Examples
 
-```
-ALERT: tvl_drop_20pct
-  condition: get_total_assets() < TotalAssets_1h_ago * 0.80
-  severity: critical
-  action: Page on-call; suspend agent rebalance authority until reviewed
+### TVL Drop & Exploit Detection Alerts
 
+```
+ALERT: tvl_critical_drop_5pct_no_withdraw
+  condition: get_total_assets() < TotalAssets_prev * 0.95 
+             AND no WithdrawEvent in current ledger
+  severity: critical
+  action: Page on-call immediately; pause vault via emergency_pause(); 
+          investigate for active exploit or contract vulnerability
+
+ALERT: tvl_critical_drop_10pct
+  condition: get_total_assets() < TotalAssets_prev * 0.90
+  severity: critical  
+  action: Page on-call immediately; pause vault via emergency_pause();
+          investigate for exploit regardless of withdraw events
+
+ALERT: tvl_high_drop_2pct_no_events
+  condition: get_total_assets() < TotalAssets_prev * 0.98
+             AND no WithdrawEvent or RebalanceEvent in current ledger
+  severity: high
+  action: Alert team within 15 minutes; review transaction logs;
+          prepare to pause if pattern continues
+
+ALERT: tvl_medium_gradual_drain
+  condition: get_total_assets() < TotalAssets_prev * 0.99
+             AND no matching events AND repeated over 3+ consecutive ledgers
+  severity: medium
+  action: Review within 1 hour for gradual drain or accounting drift;
+          check yield calculation accuracy
+
+ALERT: unauthorized_share_minting
+  condition: get_total_shares() > previous_total_shares 
+             AND no DepositEvent in current ledger
+  severity: critical
+  action: Immediate vault pause; investigate for share inflation exploit
+
+ALERT: unauthorized_share_burning  
+  condition: get_total_shares() < previous_total_shares
+             AND no WithdrawEvent in current ledger
+  severity: critical
+  action: Immediate vault pause; investigate for unauthorized share destruction
+
+ALERT: share_price_manipulation
+  condition: (get_total_assets() / get_total_shares()) < previous_share_price * 0.999
+             AND no user events (deposit/withdraw) in current ledger
+  severity: high
+  action: Alert team; review for share price manipulation attempts
+```
+
+### General Operational Alerts
+
+```
 ALERT: pause_duration_exceeded
   condition: Paused == true AND current_ledger > pause_start_ledger + 17280
   note: 17280 ledgers ≈ 24 h at ~5 s/ledger
@@ -120,16 +188,76 @@ ALERT: tvl_cap_approach
   severity: medium
   action: Consider raising cap or preparing user communication
 
-ALERT: share_price_decrease
-  condition: (get_total_assets() / get_total_shares()) < previous_share_price
-  severity: critical
-  action: Halt new deposits; investigate slashing or accounting error
-
 ALERT: rapid_rebalance_attempts
   condition: rebalance() called more than once within MinRebalanceInterval
   severity: medium
   action: Audit agent key; verify no unauthorized rebalance calls
 ```
+
+---
+
+## 4.1. Exploit Detection Methodology
+
+### Event Correlation Analysis
+
+To detect potential exploits, monitoring systems must correlate `TotalAssets` changes with corresponding on-chain events:
+
+#### Expected Event Patterns
+- **TotalAssets increase**: Should correlate with `DepositEvent` or yield accrual via `update_total_assets()`
+- **TotalAssets decrease**: Should correlate with `WithdrawEvent` or `RebalanceEvent` (moving funds to lower-yielding protocol)
+- **Share supply increase**: Should correlate with `DepositEvent` 
+- **Share supply decrease**: Should correlate with `WithdrawEvent`
+
+#### Suspicious Patterns (Potential Exploit Indicators)
+1. **Unexplained TVL drops**: TotalAssets decrease without matching withdrawal events
+2. **Share inflation**: Share supply increases without deposit events  
+3. **Share deflation**: Share supply decreases without withdrawal events
+4. **Yield manipulation**: Share price (TotalAssets/TotalShares) decreases without user activity
+5. **Flash loan attacks**: Large same-ledger deposit → rebalance → withdrawal sequences
+
+### Monitoring Implementation
+
+```typescript
+interface ExploitDetector {
+  // Check for TVL drops without corresponding events
+  checkTVLIntegrity(currentLedger: number): {
+    severity: 'critical' | 'high' | 'medium' | 'none';
+    reason: string;
+    recommendedAction: string;
+  };
+  
+  // Verify share supply changes have matching events  
+  checkShareSupplyIntegrity(currentLedger: number): boolean;
+  
+  // Detect abnormal transaction patterns
+  checkFlashLoanAttacks(currentLedger: number): boolean;
+}
+```
+
+### Response Procedures by Severity
+
+#### Critical Severity Response (< 5 minutes)
+1. **Automatic**: Trigger `emergency_pause()` if configured
+2. **Manual**: Page on-call engineer immediately  
+3. **Investigation**: Check recent transactions for:
+   - Unauthorized function calls
+   - Unexpected rebalance patterns
+   - Share price manipulation
+   - Flash loan attack patterns
+4. **Communication**: Notify users of temporary pause via status page
+5. **Recovery**: Only unpause after thorough investigation and fix deployment
+
+#### High Severity Response (< 15 minutes)  
+1. **Alert**: Notify monitoring team
+2. **Analysis**: Review transaction logs and event correlation
+3. **Preparation**: Prepare emergency pause if pattern escalates
+4. **Documentation**: Log findings for pattern analysis
+
+#### Medium Severity Response (< 1 hour)
+1. **Review**: Analyze for gradual drains or accounting drift
+2. **Validation**: Verify yield calculation accuracy
+3. **Monitoring**: Increase alerting sensitivity for 24 hours
+4. **Reporting**: Document findings in incident log
 
 ---
 
