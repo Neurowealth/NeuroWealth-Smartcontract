@@ -179,6 +179,41 @@
       ]
     },
     {
+      "name": "auto_compound",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Withdraw accrued yield from the current protocol and immediately reinvest it to compound growth",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "CompoundEvent"
+      ],
+      "security": "Only authorized agent keypair can call this function",
+      "authorized_caller": "agent",
+      "constraints": [
+        "vault must not be paused",
+        "min_out must be non-negative",
+        "current protocol must be a configured yield protocol",
+        "subject to rebalance cooldown"
+      ],
+      "notes": [
+        "Single-transaction withdraw of accrued yield and re-deposit into the same protocol",
+        "Updates TotalAssets to reflect compounded amount",
+        "Performs slippage check against min_out parameter"
+      ]
+    },
+    {
       "name": "pause",
       "category": "administration",
       "access": "owner-only",
@@ -374,7 +409,7 @@
       "name": "set_rebalance_cooldown",
       "category": "administration",
       "access": "owner-only",
-      "description": "Set minimum ledgers between rebalance calls (0 = no cooldown)",
+      "description": "Set minimum ledgers between rebalance and auto_compound calls (0 = no cooldown)",
       "parameters": [
         {
           "name": "env",
@@ -393,7 +428,7 @@
       "name": "get_rebalance_cooldown",
       "category": "queries",
       "access": "public",
-      "description": "Get the minimum ledger interval between rebalances",
+      "description": "Get the minimum ledger interval between rebalance and auto_compound calls",
       "parameters": [
         {
           "name": "env",
@@ -410,7 +445,7 @@
       "name": "get_last_rebalance_ledger",
       "category": "queries",
       "access": "public",
-      "description": "Get the ledger sequence of the last successful rebalance",
+      "description": "Get the ledger sequence of the last successful rebalance or auto_compound",
       "parameters": [
         {
           "name": "env",
@@ -1473,6 +1508,23 @@
           "name": "amount_withdrawn",
           "type": "i128",
           "description": "Amount withdrawn from the current protocol"
+        }
+      ]
+    },
+    {
+      "name": "CompoundEvent",
+      "topic": "compound",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "amount_compounded",
+          "type": "i128",
+          "description": "Amount of accrued yield withdrawn and reinvested, in USDC raw units (7 decimals)"
+        },
+        {
+          "name": "total_assets_after",
+          "type": "i128",
+          "description": "Total vault assets after compounding, in USDC raw units (7 decimals)"
         }
       ]
     },
