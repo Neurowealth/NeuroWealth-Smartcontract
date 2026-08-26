@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { openAiUsage, errorRate } from './metrics';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -37,6 +38,8 @@ Only output valid JSON matching this exact schema. If the user wants to withdraw
     response_format: { type: 'json_object' },
   });
 
+  openAiUsage.inc({ model: 'gpt-4-turbo', action: 'parseIntent' });
+
   const result = completion.choices[0].message.content;
   if (!result) {
     throw new Error("Failed to parse intent: Empty response from OpenAI");
@@ -60,6 +63,7 @@ Only output valid JSON matching this exact schema. If the user wants to withdraw
 
     return parsed;
   } catch (error) {
+    errorRate.inc({ type: 'intent_parse_error' });
     console.error("Error parsing intent:", error);
     throw error;
   }

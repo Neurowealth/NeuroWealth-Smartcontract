@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { startEventListener } from './eventListener';
 import { evaluateYield } from './yieldComparison';
+import { startMetricsServer } from './metrics';
 
 /**
  * Main entry point for the NeuroWealth AI Agent backend.
@@ -8,6 +9,9 @@ import { evaluateYield } from './yieldComparison';
 async function main() {
   console.log("Starting NeuroWealth AI Agent...");
   
+  // Start metrics server
+  startMetricsServer();
+
   // Start the event listener to detect real-time deposits and withdrawals
   await startEventListener();
 

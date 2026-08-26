@@ -2,6 +2,7 @@ import { SorobanRpc } from '@stellar/stellar-sdk';
 import { Pool } from 'pg';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';
+import { stellarRpcLatency, errorRate } from './metrics';
 
 const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const server = new SorobanRpc.Server(rpcUrl);
@@ -29,6 +30,7 @@ export async function startEventListener() {
 
     setInterval(async () => {
       try {
+        const endTimer = stellarRpcLatency.startTimer({ method: 'getEvents' });
         const response = await server.getEvents({
           startLedger,
           filters: [
@@ -41,6 +43,7 @@ export async function startEventListener() {
           ],
           limit: 100,
         });
+        endTimer();
 
         for (const event of response.events) {
           const topics = event.topic.map(t => t.toString());
@@ -81,6 +84,7 @@ export async function startEventListener() {
           startLedger = Math.max(startLedger, event.ledger + 1);
         }
       } catch (error) {
+        errorRate.inc({ type: 'stellar_rpc_error' });
         console.error("Error polling Soroban events:", error);
       }
     }, 5000); // 5 second interval
