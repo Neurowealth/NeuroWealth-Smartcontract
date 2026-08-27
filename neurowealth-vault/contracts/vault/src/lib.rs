@@ -139,6 +139,7 @@
 pub mod topics;
 
 use core::cmp::min;
+use share_math::{assets_from_shares, shares_ceil, shares_floor};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
@@ -1922,9 +1923,10 @@ impl NeuroWealthVault {
             .set(&DataKey::TotalAssets, &new_total_assets);
 
         // Record deposit ledger for flash-loan protection (#659).
-        env.storage()
-            .persistent()
-            .set(&DataKey::LastDepositLedger(user.clone()), &env.ledger().sequence());
+        env.storage().persistent().set(
+            &DataKey::LastDepositLedger(user.clone()),
+            &env.ledger().sequence(),
+        );
 
         // Record deposit timestamp & accumulated deposited value for APY tracking (#642)
         let now_ts = env.ledger().timestamp();
@@ -1936,9 +1938,10 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::UserDepositedValue(user.clone()))
             .unwrap_or(0_i128);
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserDepositedValue(user.clone()), &curr_val.saturating_add(amount));
+        env.storage().persistent().set(
+            &DataKey::UserDepositedValue(user.clone()),
+            &curr_val.saturating_add(amount),
+        );
 
         env.events().publish(
             (TOPIC_DEPOSIT, user.clone()),
@@ -2202,7 +2205,11 @@ impl NeuroWealthVault {
                 0
             };
 
-            Self::require(&env, amount <= max_withdrawable, VaultError::InsufficientShares);
+            Self::require(
+                &env,
+                amount <= max_withdrawable,
+                VaultError::InsufficientShares,
+            );
         }
 
         // Check if funds are deployed in Blend and need to be retrieved
@@ -2582,12 +2589,24 @@ impl NeuroWealthVault {
         // Transfer USDC to new vault and call deposit on behalf of user
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(&env.current_contract_address(), &migration_target, &assets_to_transfer);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &migration_target,
+            &assets_to_transfer,
+        );
 
         // Call deposit on new vault on behalf of user using cross-contract call
         // The new vault must implement a deposit function with signature (Env, Address, i128)
-        let deposit_args: Vec<Val> = vec![&env, user.clone().into_val(&env), assets_to_transfer.into_val(&env)];
-        env.invoke_contract::<()>(&migration_target, &Symbol::new(&env, "deposit"), deposit_args);
+        let deposit_args: Vec<Val> = vec![
+            &env,
+            user.clone().into_val(&env),
+            assets_to_transfer.into_val(&env),
+        ];
+        env.invoke_contract::<()>(
+            &migration_target,
+            &Symbol::new(&env, "deposit"),
+            deposit_args,
+        );
 
         // Emit migration event
         env.events().publish(
@@ -2668,7 +2687,11 @@ impl NeuroWealthVault {
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
         let unlocked_shares = total_user_shares - existing_locked;
-        Self::require(&env, shares <= unlocked_shares, VaultError::InsufficientUnlockedShares);
+        Self::require(
+            &env,
+            shares <= unlocked_shares,
+            VaultError::InsufficientUnlockedShares,
+        );
 
         // Calculate lock expiry ledger
         let current_ledger = env.ledger().sequence();
@@ -2743,7 +2766,11 @@ impl NeuroWealthVault {
 
         // Check if lock period has ended
         let current_ledger = env.ledger().sequence();
-        Self::require(&env, current_ledger >= expiry_ledger, VaultError::LockPeriodNotEnded);
+        Self::require(
+            &env,
+            current_ledger >= expiry_ledger,
+            VaultError::LockPeriodNotEnded,
+        );
 
         // Clear locked shares and expiry
         env.storage()
@@ -2877,7 +2904,9 @@ impl NeuroWealthVault {
                 .get(&DataKey::CurrentProtocol)
                 .unwrap_or(symbol_short!("none"));
 
-            if current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex") {
+            if current_protocol == symbol_short!("blend")
+                || current_protocol == symbol_short!("dex")
+            {
                 // Calculate how much we need to withdraw
                 let needed = amount
                     .checked_sub(vault_balance)
@@ -3465,8 +3494,10 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::Paused, &true);
 
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events()
-            .publish((topics::TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
+        env.events().publish(
+            (topics::TOPIC_EMERGENCY_PAUSED,),
+            EmergencyPausedEvent { owner },
+        );
     }
 
     /// Resets the circuit breaker and unpauses the vault.
@@ -3474,15 +3505,15 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         owner.require_auth();
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        Self::require(
-            &env,
-            owner == stored_owner,
-            VaultError::OnlyOwnerCanUnpause,
-        );
-        env.storage().instance().set(&DataKey::ConsecutiveFailures, &0_u32);
+        Self::require(&env, owner == stored_owner, VaultError::OnlyOwnerCanUnpause);
+        env.storage()
+            .instance()
+            .set(&DataKey::ConsecutiveFailures, &0_u32);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.events()
-            .publish((topics::TOPIC_CIRCUIT_BREAKER_RESET,), CircuitBreakerResetEvent { owner });
+        env.events().publish(
+            (topics::TOPIC_CIRCUIT_BREAKER_RESET,),
+            CircuitBreakerResetEvent { owner },
+        );
     }
 
     /// Owner-callable emergency harvest fallback for agent-key outages.
@@ -3625,10 +3656,7 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
 
-        let old_target: Option<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::MigrationTarget);
+        let old_target: Option<Address> = env.storage().instance().get(&DataKey::MigrationTarget);
 
         env.storage()
             .instance()
@@ -4271,7 +4299,10 @@ impl NeuroWealthVault {
     pub fn set_max_acceptable_mev_loss(env: Env, max_loss_stroops: i128) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
-        assert!(max_loss_stroops >= 0, "max_loss_stroops must be non-negative");
+        assert!(
+            max_loss_stroops >= 0,
+            "max_loss_stroops must be non-negative"
+        );
         env.storage()
             .instance()
             .set(&DataKey::MaxAcceptableMevLoss, &max_loss_stroops);
@@ -6930,6 +6961,17 @@ impl NeuroWealthVault {
         owner.require_auth();
     }
 
+    /// Validates that `caller` matches the stored owner.
+    ///
+    /// Used by entrypoints that take an explicit `owner: Address` parameter
+    /// (as opposed to [`require_is_owner`], which fetches the owner from
+    /// storage and requires that address to sign).
+    #[inline]
+    fn require_owner(env: &Env, caller: &Address) {
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(env, caller == &stored_owner, VaultError::CallerIsNotOwner);
+    }
+
     /// Validates that the caller is the AI agent.
     ///
     /// # Panics
@@ -7098,23 +7140,9 @@ impl NeuroWealthVault {
     /// for the full mitigation rationale.
     #[inline]
     fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
-        if assets == 0 {
-            return 0;
-        }
-
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-
-        if total_shares == 0 || total_assets == 0 {
-            // Bootstrap: 1:1 mapping between assets and shares
-            assets
-        } else {
-            assets
-                .checked_mul(total_shares)
-                .expect("vault: share conversion overflow")
-                .checked_div(total_assets)
-                .expect("vault: conversion div error")
-        }
+        shares_floor(assets, total_shares, total_assets).expect("vault: share conversion overflow")
     }
 
     /// Internal helper: convert assets (USDC) to shares using current totals.
@@ -7122,57 +7150,18 @@ impl NeuroWealthVault {
     /// Prevents dust attacks where floor division could result in 0 shares burned.
     #[inline]
     fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
-        if assets == 0 {
-            return 0;
-        }
-
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-
-        if total_shares == 0 || total_assets == 0 {
-            // Bootstrap: 1:1 mapping between assets and shares
-            // Ceiling of assets is just assets (assets >= 1)
-            assets
-        } else {
-            // Ceiling division: (a + b - 1) / b
-            // shares = ceil(assets * total_shares / total_assets)
-            let product = assets
-                .checked_mul(total_shares)
-                .expect("vault: conversion mul overflow");
-            // total_assets >= 1 in this branch, so the subtraction cannot underflow;
-            // use checked ops throughout for a consistent, explicit failure mode.
-            let numerator = product
-                .checked_add(
-                    total_assets
-                        .checked_sub(1)
-                        .expect("vault: conversion sub underflow"),
-                )
-                .expect("vault: conversion add overflow");
-            numerator
-                .checked_div(total_assets)
-                .expect("vault: conversion div error")
-        }
+        shares_ceil(assets, total_shares, total_assets).expect("vault: conversion overflow")
     }
 
     /// Internal helper: convert shares to assets (USDC) using current totals.
     #[inline]
     fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
-        if shares == 0 {
-            return 0;
-        }
-
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-
-        if total_shares == 0 || total_assets == 0 {
-            0
-        } else {
-            shares
-                .checked_mul(total_assets)
-                .expect("vault: share to asset conversion overflow")
-                .checked_div(total_shares)
-                .expect("vault: conversion div error")
-        }
+        assets_from_shares(shares, total_shares, total_assets)
+            .expect("vault: share to asset conversion overflow")
     }
 
     /// Updates [`DataKey::CurrentProtocol`] and emits [`ProtocolChangedEvent`] on change.
@@ -7235,9 +7224,7 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::BlendPool)
-            .unwrap_or_else(|| {
-                panic_with_error!(env, VaultError::BlendPoolNotConfigured)
-            });
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -7359,9 +7346,7 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::BlendPool)
-            .unwrap_or_else(|| {
-                panic_with_error!(env, VaultError::BlendPoolNotConfigured)
-            });
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -7441,9 +7426,7 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::DexPool)
-            .unwrap_or_else(|| {
-                panic_with_error!(env, VaultError::DexPoolNotConfigured)
-            });
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -7562,9 +7545,7 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::DexPool)
-            .unwrap_or_else(|| {
-                panic_with_error!(env, VaultError::DexPoolNotConfigured)
-            });
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -7708,7 +7689,9 @@ impl NeuroWealthVault {
         if amount <= 0 {
             return Err(VaultError::MinWithdrawalMustBePositive);
         }
-        env.storage().instance().set(&DataKey::MinWithdrawal, &amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinWithdrawal, &amount);
         Ok(())
     }
 
@@ -7726,11 +7709,18 @@ impl NeuroWealthVault {
     // ==========================================================================
 
     /// Configures the withdrawal queue parameters (owner-only).
-    pub fn set_queue_config(env: Env, owner: Address, max_size: u32, ttl_sec: u64) -> Result<(), VaultError> {
+    pub fn set_queue_config(
+        env: Env,
+        owner: Address,
+        max_size: u32,
+        ttl_sec: u64,
+    ) -> Result<(), VaultError> {
         Self::require_initialized(&env);
         owner.require_auth();
         Self::require_owner(&env, &owner);
-        env.storage().instance().set(&DataKey::MaxQueueSize, &max_size);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxQueueSize, &max_size);
         env.storage().instance().set(&DataKey::QueueTtl, &ttl_sec);
         Ok(())
     }
@@ -7738,8 +7728,16 @@ impl NeuroWealthVault {
     /// Returns the withdrawal queue max size and TTL config.
     pub fn get_queue_config(env: Env) -> (u32, u64) {
         Self::require_initialized(&env);
-        let max_size = env.storage().instance().get(&DataKey::MaxQueueSize).unwrap_or(100u32);
-        let ttl = env.storage().instance().get(&DataKey::QueueTtl).unwrap_or(86400u64);
+        let max_size = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxQueueSize)
+            .unwrap_or(100u32);
+        let ttl = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueTtl)
+            .unwrap_or(86400u64);
         (max_size, ttl)
     }
 
@@ -7750,8 +7748,16 @@ impl NeuroWealthVault {
         Self::require_positive_amount(&env, amount);
 
         let (max_size, _ttl) = Self::get_queue_config(env.clone());
-        let head: u64 = env.storage().instance().get(&DataKey::QueueHead).unwrap_or(0);
-        let tail: u64 = env.storage().instance().get(&DataKey::QueueTail).unwrap_or(0);
+        let head: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueHead)
+            .unwrap_or(0);
+        let tail: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueTail)
+            .unwrap_or(0);
 
         let current_queue_len = tail.saturating_sub(head);
         if current_queue_len >= max_size as u64 {
@@ -7770,8 +7776,12 @@ impl NeuroWealthVault {
             cancelled: false,
         };
 
-        env.storage().persistent().set(&DataKey::WithdrawalRequest(request_id), &request);
-        env.storage().instance().set(&DataKey::QueueTail, &request_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::WithdrawalRequest(request_id), &request);
+        env.storage()
+            .instance()
+            .set(&DataKey::QueueTail, &request_id);
 
         env.events().publish(
             (symbol_short!("queue"), user.clone()),
@@ -7800,27 +7810,43 @@ impl NeuroWealthVault {
         }
 
         let (_max_size, ttl) = Self::get_queue_config(env.clone());
-        let mut head: u64 = env.storage().instance().get(&DataKey::QueueHead).unwrap_or(0);
-        let tail: u64 = env.storage().instance().get(&DataKey::QueueTail).unwrap_or(0);
+        let mut head: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueHead)
+            .unwrap_or(0);
+        let tail: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueTail)
+            .unwrap_or(0);
 
         let mut processed = 0u32;
         let now = env.ledger().timestamp();
 
         while head < tail && processed < batch_size {
             head += 1;
-            if let Some(mut req) = env.storage().persistent().get::<DataKey, WithdrawalRequest>(&DataKey::WithdrawalRequest(head)) {
+            if let Some(mut req) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, WithdrawalRequest>(&DataKey::WithdrawalRequest(head))
+            {
                 if req.fulfilled || req.cancelled {
                     continue;
                 }
 
                 if ttl > 0 && now > req.timestamp.saturating_add(ttl) {
                     req.cancelled = true;
-                    env.storage().persistent().set(&DataKey::WithdrawalRequest(head), &req);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::WithdrawalRequest(head), &req);
                     continue;
                 }
 
                 req.fulfilled = true;
-                env.storage().persistent().set(&DataKey::WithdrawalRequest(head), &req);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::WithdrawalRequest(head), &req);
                 processed += 1;
             }
         }
@@ -7849,13 +7875,17 @@ impl NeuroWealthVault {
         }
 
         req.cancelled = true;
-        env.storage().persistent().set(&DataKey::WithdrawalRequest(request_id), &req);
+        env.storage()
+            .persistent()
+            .set(&DataKey::WithdrawalRequest(request_id), &req);
     }
 
     /// Gets details for a queued withdrawal request.
     pub fn get_withdrawal_request(env: Env, request_id: u64) -> Option<WithdrawalRequest> {
         Self::require_initialized(&env);
-        env.storage().persistent().get(&DataKey::WithdrawalRequest(request_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::WithdrawalRequest(request_id))
     }
 
     // ==========================================================================
@@ -7867,14 +7897,19 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         owner.require_auth();
         Self::require_owner(&env, &owner);
-        env.storage().instance().set(&DataKey::MaxBatchSize, &max_size);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &max_size);
         Ok(())
     }
 
     /// Gets the maximum allowed batch deposit size.
     pub fn get_max_batch_size(env: Env) -> u32 {
         Self::require_initialized(&env);
-        env.storage().instance().get(&DataKey::MaxBatchSize).unwrap_or(50u32)
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(50u32)
     }
 
     /// Batch deposit function allowing agent or owner to process multiple user deposits.
@@ -7965,7 +8000,8 @@ impl NeuroWealthVault {
         }
 
         let gain = current_val - deposited_val;
-        (gain.saturating_mul(365).saturating_mul(100)) / (deposited_val.saturating_mul(days_held as i128))
+        (gain.saturating_mul(365).saturating_mul(100))
+            / (deposited_val.saturating_mul(days_held as i128))
     }
 }
 

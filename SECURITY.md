@@ -278,6 +278,30 @@ This register documents every owner-only and agent-only capability, the blast ra
 | get_user_deposit_timestamp | - | - | - | anyone |
 | get_user_realized_apy | - | - | - | anyone |
 
+### Agent Key Compromise Adversarial Testing (Issue #673)
+
+If the AI agent hot key is stolen, the attacker inherits **only** the agent's designated permissions (`rebalance`, `harvest`, `update_total_assets` increases, `submit_mev_report`, `submit_apy_prediction`, and `process_withdrawal_queue`). They must not be able to steal funds, change ownership, rewrite storage, pause the vault, upgrade WASM, retarget protocol pools, or arbitrarily manipulate `TotalAssets`.
+
+On-chain coverage lives in
+[`neurowealth-vault/contracts/vault/src/tests/test_agent_compromise_scenarios.rs`](neurowealth-vault/contracts/vault/src/tests/test_agent_compromise_scenarios.rs)
+(scenario-oriented, this issue) and
+[`test_adversarial_agent_simulation.rs`](neurowealth-vault/contracts/vault/src/tests/test_adversarial_agent_simulation.rs)
+(per-entrypoint blast-radius snapshots, Issue #596). Together they are the
+Soroban analogue of `test/OwnerCompromiseBlastRadius.test.ts`.
+
+| Attack scenario | Expected result | Test |
+|-----------------|-----------------|------|
+| Agent calls owner-only configuration (`set_caps`, `transfer_ownership`, caps/limits/TTL/timelock/migration/queue helpers) | Rejected; privileged storage unchanged | `test_agent_cannot_*` |
+| Agent withdraws another user's funds (`withdraw`, `withdraw_all`, `emergency_withdraw`) | Auth failure; victim shares unchanged | `test_agent_cannot_withdraw_victim_funds` |
+| Agent writes `Shares` / `Owner` / `TotalShares` through any public entrypoint | No mutation | `test_agent_cannot_modify_contract_storage_directly` |
+| Agent pauses / unpauses / emergency-pauses | `OnlyOwnerCanPause` (or equivalent) | `test_agent_cannot_pause_the_vault` |
+| Agent schedules / executes / cancels a WASM upgrade | Rejected; no pending upgrade | `test_agent_cannot_schedule_upgrade` |
+| Agent sets Blend/DEX pool to a drain contract | `OnlyOwnerCanConfigurePool` | `test_agent_cannot_set_blend_pool_to_drain_address` |
+| Agent inflates or decreases `TotalAssets` arbitrarily | Solvency check / owner co-sign | `test_agent_cannot_inflate_total_assets_beyond_backing` |
+| Agent front-runs a user deposit then inflates the share price | Inflation rejected; victim principal intact | `test_agent_cannot_front_run_user_deposit` |
+
+Operational response (pause, rotate agent via timelock, user comms) remains in [`docs/AGENT_KEY_COMPROMISE_RUNBOOK.md`](docs/AGENT_KEY_COMPROMISE_RUNBOOK.md). Formal guarantees on the share-pricing math the agent *can* move (via backed `update_total_assets` increases) are in [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md).
+
 ### Emergency Harvest Fallback (Issue #506)
 
 When the agent key is lost, compromised, or mid-rotation via the

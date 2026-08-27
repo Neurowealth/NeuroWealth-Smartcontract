@@ -1,8 +1,5 @@
 import OpenAI from 'openai';
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import { openAiKeyManager } from './openAiKeyManager';
 
 export interface ParsedIntent {
   action: 'deposit' | 'withdraw' | 'balance' | 'earnings' | 'switch_strategy' | 'get_apy';
@@ -13,14 +10,16 @@ export interface ParsedIntent {
 /**
  * Parses natural language user messages into structured vault operations.
  * Supported intents: deposit, withdraw, balance, earnings, switch_strategy, get_apy
+ * Uses OpenAI API key rotation for reliability and availability (#712).
  */
 export async function parseIntent(message: string): Promise<ParsedIntent> {
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4-turbo',
-    messages: [
-      {
-        role: 'system',
-        content: `You are an intent parser for the NeuroWealth DeFi bot.
+  const result = await openAiKeyManager.executeWithRotation(async (openai: OpenAI) => {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4-turbo',
+      messages: [
+        {
+          role: 'system',
+          content: `You are an intent parser for the NeuroWealth DeFi bot.
 Parse the user's message into a JSON object with the following schema:
 {
   "action": "deposit" | "withdraw" | "balance" | "earnings" | "switch_strategy" | "get_apy",
@@ -28,19 +27,21 @@ Parse the user's message into a JSON object with the following schema:
   "strategy": "conservative" | "balanced" | "growth" (optional, for deposit or switch_strategy)
 }
 Only output valid JSON matching this exact schema. If the user wants to withdraw everything, set amount to "all".`
-      },
-      {
-        role: 'user',
-        content: message,
-      },
-    ],
-    response_format: { type: 'json_object' },
-  });
+        },
+        {
+          role: 'user',
+          content: message,
+        },
+      ],
+      response_format: { type: 'json_object' },
+    });
 
-  const result = completion.choices[0].message.content;
-  if (!result) {
-    throw new Error("Failed to parse intent: Empty response from OpenAI");
-  }
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("Failed to parse intent: Empty response from OpenAI");
+    }
+    return content;
+  });
 
   try {
     const parsed = JSON.parse(result) as ParsedIntent;

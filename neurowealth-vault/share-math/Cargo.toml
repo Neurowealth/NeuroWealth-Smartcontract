@@ -1,0 +1,13 @@
+[package]
+name = "share-math"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure share-accounting arithmetic extracted from the NeuroWealth vault for formal verification"
+publish = false
+
+[lib]
+doctest = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -819,6 +819,44 @@ fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
 
     client.set_blend_pool(&owner, &blend_pool);
+
+    let user = Address::generate(&env);
+    let deposit_amount = 10_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+
+    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
+
+    // Limit pool withdrawals so exit is incomplete (only 1M of 10M returns)
+    blend_client.set_max_withdraw_limit(&1_000_000_i128);
+
+    // Attempt rebalance to none — must abort gracefully
+    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+
+    // CurrentProtocol must not change on failed exit
+    assert_eq!(
+        client.get_current_protocol(),
+        symbol_short!("blend"),
+        "CurrentProtocol must not change on failed exit"
+    );
+
+    // RebalanceFailedEvent must be emitted
+    let failed_events = find_events_by_topic(env.events().all(), &env, symbol_short!("reb_fail"));
+    assert!(
+        !failed_events.is_empty(),
+        "RebalanceFailedEvent must be emitted on incomplete exit"
+    );
+
+    // Total assets must be conserved (idle + deployed = deposit_amount)
+    let idle = client.get_idle_balance();
+    let deployed = client.get_deployed_assets();
+    assert_eq!(
+        idle + deployed,
+        deposit_amount,
+        "Total assets must be conserved after failed exit"
+    );
+}
+
 // ─── Issue #383: pool-address rotation while funds are deployed ─────────────
 //
 // Companion to the `set_blend_pool`/`set_dex_pool` fund-stranding issue.
@@ -852,38 +890,6 @@ fn test_blend_pool_rotation_while_deployed_strands_funds() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    // Deploy to blend
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
-
-    assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
-
-    // Limit pool withdrawals so exit is incomplete (only 1M of 10M returns)
-    blend_client.set_max_withdraw_limit(&1_000_000_i128);
-
-    // Attempt rebalance to none — must abort gracefully
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
-
-    // CurrentProtocol must not change on failed exit
-    assert_eq!(
-        client.get_current_protocol(),
-        symbol_short!("blend"),
-        "CurrentProtocol must not change on failed exit"
-    );
-
-    // RebalanceFailedEvent must be emitted
-    let failed_events = find_events_by_topic(env.events().all(), &env, symbol_short!("reb_fail"));
-    assert!(
-        !failed_events.is_empty(),
-        "RebalanceFailedEvent must be emitted on incomplete exit"
-    );
-
-    // Total assets must be conserved (idle + deployed = deposit_amount)
-    let idle = client.get_idle_balance();
-    let deployed = client.get_deployed_assets();
-    assert_eq!(
-        idle + deployed,
-        deposit_amount,
-        "Total assets must be conserved after failed exit"
     // Deploy funds to the old pool.
     client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);

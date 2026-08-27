@@ -274,6 +274,8 @@ Our CI pipeline (defined in `.github/workflows/ci.yml`) runs on every push and p
 4. **Build WASM**: Successful build of the contract WASM.
 5. **Dependency Audit**: `cargo-deny check` runs against the policy in [`deny.toml`](deny.toml), blocking dependencies with disallowed licenses or known security advisories.
 6. **Fuzz Tests** *(conditional)*: PRs that modify files under `neurowealth-vault/contracts/vault/src/` automatically trigger the `deposit_withdraw_sequence` fuzz target with short bounds (`-runs=1000 -max_total_time=120`). The same target runs with extended bounds on the weekly schedule. See [Running Fuzz Tests](#running-fuzz-tests) for local reproduction steps.
+7. **Kani proofs**: `cargo kani -p share-math` must pass. See [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md) and `./scripts/run-kani-proofs.sh`.
+8. **Vault UI tests**: `packages/vault-ui` `npm test` (axe-core WCAG 2.1 AA + notification unit tests).
 
 ### Public Function Auth Gate
 
