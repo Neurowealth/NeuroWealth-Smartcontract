@@ -10,6 +10,10 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Agent-compromise adversarial suite (Issue #673):** Added `test_agent_compromise_scenarios.rs` covering owner-only calls, victim withdrawals, storage mutation, pause/upgrade/pool retarget, arbitrary `TotalAssets` manipulation, and deposit front-running. Documented the threat model in `SECURITY.md`.
+- **Formal verification of share accounting (Issue #672):** Extracted mint/burn/redeem math into the `share-math` crate, added Kani proofs for conservation, non-negative balances, monotonic exchange rate, round-trip value, and vault-favouring rounding, and wired `cargo kani -p share-math` into CI. Spec and maintenance process: `docs/FORMAL_VERIFICATION.md`.
+- **WCAG 2.1 AA vault UI (Issue #668):** Keyboard access, skip link, ARIA labels, AA contrast, rem-based type, axe-core in Vitest, and `docs/ACCESSIBILITY.md`.
+- **Push notifications (Issue #669):** Web Push + PWA service worker, per-type preferences, batching, email fallback (Resend/SendGrid), and `docs/NOTIFICATIONS.md`.
 - Document `harvest()` in README, ARCHITECTURE, SECURITY, and the state machine; add dedicated idle/deployed asset breakdown tests (Issues #499, #498, #501).
 <!-- If this PR bumps get_version(), note the new Version value here. -->
 - **Cross-contract call surface audit (Issue #566):** Added comprehensive table of all 8 external contract invocations across USDC Token, Blend Pool, and DEX Pool contracts, detailing expected success paths, revert behaviors, partial-fill mechanisms, vault accounting reactions, and mapping edge cases to regression tests in `ARCHITECTURE.md`.

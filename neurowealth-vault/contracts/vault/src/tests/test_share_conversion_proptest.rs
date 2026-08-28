@@ -27,50 +27,7 @@
 extern crate std;
 
 use proptest::prelude::*;
-
-// ---------------------------------------------------------------------------
-// Pure-math helpers — mirror the exact formulas from lib.rs
-// ---------------------------------------------------------------------------
-
-/// `convert_to_shares_internal` — floor(assets × total_shares / total_assets).
-///
-/// Returns `None` only on integer overflow (not expected within tested bounds).
-fn shares_floor(assets: i128, total_shares: i128, total_assets: i128) -> Option<i128> {
-    if assets == 0 {
-        return Some(0);
-    }
-    // Bootstrap: when the pool is empty either side, 1:1 mapping (lib.rs line 4238-4239).
-    if total_shares == 0 || total_assets == 0 {
-        return Some(assets);
-    }
-    assets.checked_mul(total_shares).map(|p| p / total_assets)
-}
-
-/// `convert_to_shares_internal_ceil` — ceil(assets × total_shares / total_assets).
-///
-/// Ceiling division: (a × b + d − 1) / d where d = total_assets (lib.rs line 4268-4283).
-fn shares_ceil(assets: i128, total_shares: i128, total_assets: i128) -> Option<i128> {
-    if assets == 0 {
-        return Some(0);
-    }
-    if total_shares == 0 || total_assets == 0 {
-        return Some(assets);
-    }
-    let product = assets.checked_mul(total_shares)?;
-    let numerator = product.checked_add(total_assets.checked_sub(1)?)?;
-    Some(numerator / total_assets)
-}
-
-/// `convert_to_assets_internal` — floor(shares × total_assets / total_shares).
-fn assets_from_shares(shares: i128, total_shares: i128, total_assets: i128) -> Option<i128> {
-    if shares == 0 {
-        return Some(0);
-    }
-    if total_shares == 0 || total_assets == 0 {
-        return Some(0);
-    }
-    shares.checked_mul(total_assets).map(|p| p / total_shares)
-}
+use share_math::{assets_from_shares, shares_ceil, shares_floor};
 
 // ---------------------------------------------------------------------------
 // Input strategy

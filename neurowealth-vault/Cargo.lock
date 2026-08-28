@@ -762,6 +762,7 @@ name = "neurowealth-vault"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "share-math",
  "soroban-sdk",
 ]
 
@@ -1232,6 +1233,10 @@ dependencies = [
  "digest",
  "keccak",
 ]
+
+[[package]]
+name = "share-math"
+version = "0.1.0"
 
 [[package]]
 name = "shlex"

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { VaultClient, VaultErrorCode, UserStrategy } from '@neurowealth/vault-client';
+import { useState, useEffect, useCallback, useId } from 'react';
+import { VaultClient, VaultError, VaultErrorCode, UserStrategy } from '@neurowealth/vault-client';
 
 const DECIMAL_PLACES = 7n;
 const DECIMAL_PLACES_NUM = 7;
@@ -36,6 +36,11 @@ export default function DepositWithdrawModal() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [gasEstimate, setGasEstimate] = useState<string | null>(null);
   const [deployed, setDeployed] = useState<bigint>(0n);
+  const amountId = useId();
+  const amountHintId = useId();
+  const amountErrorId = useId();
+  const strategyId = useId();
+  const headingId = useId();
 
   const publicKey = '';
 
@@ -64,7 +69,6 @@ export default function DepositWithdrawModal() {
     refreshState();
   }, [refreshState]);
 
-  // Recompute preview when inputs change
   useEffect(() => {
     const raw = parseFloat(amount);
     if (!isFinite(raw) || raw <= 0) {
@@ -102,11 +106,11 @@ export default function DepositWithdrawModal() {
 
     try {
       if (mode === 'deposit') {
-        const result = await client.deposit(client as any, publicKey, assetsRaw);
+        const result = await client.deposit(client as never, publicKey, assetsRaw);
         setTxHash(result.hash ?? null);
         setStatus('success');
       } else {
-        const result = await client.withdraw(client as any, publicKey, assetsRaw);
+        const result = await client.withdraw(client as never, publicKey, assetsRaw);
         setTxHash(result.hash ?? null);
         setStatus('success');
       }
@@ -124,7 +128,7 @@ export default function DepositWithdrawModal() {
     }
   };
 
-  const simulateGas = async () => {
+  const simulateGas = useCallback(async () => {
     try {
       const sim = await client.simulate(mode === 'deposit' ? 'deposit' : 'withdraw', [
         publicKey,
@@ -134,30 +138,40 @@ export default function DepositWithdrawModal() {
     } catch {
       setGasEstimate('~100');
     }
-  };
+  }, [amount, client, mode, publicKey]);
 
   useEffect(() => {
     if (status === 'loading') {
-      simulateGas();
+      void simulateGas();
     }
-  }, [status]);
+  }, [status, simulateGas]);
 
   const showLiquidityWarning = deployed > 0n;
+  const describedBy = [amountHintId, status === 'error' && errorMsg ? amountErrorId : null]
+    .filter(Boolean)
+    .join(' ');
 
   return (
-    <div className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200">
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-semibold text-gray-900">
+    <section className="max-w-xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200" aria-labelledby={headingId}>
+      <form
+        className="p-6"
+        onSubmit={e => {
+          e.preventDefault();
+          if (canSubmit) void handleSubmit();
+        }}
+      >
+        <div className="flex items-center justify-between mb-6 gap-4">
+          <h2 id={headingId} className="text-2xl font-semibold text-gray-900">
             {mode === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
           </h2>
-          <div className="flex rounded-md shadow-sm" role="group">
+          <div className="flex rounded-md shadow-sm" role="group" aria-label="Transaction type">
             <button
               type="button"
               onClick={() => setMode('deposit')}
+              aria-pressed={mode === 'deposit'}
               className={`px-4 py-2 text-sm font-medium rounded-l-lg border ${
                 mode === 'deposit'
-                  ? 'bg-primary-600 text-white border-primary-600'
+                  ? 'bg-primary-700 text-white border-primary-700'
                   : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
               }`}
             >
@@ -166,9 +180,10 @@ export default function DepositWithdrawModal() {
             <button
               type="button"
               onClick={() => setMode('withdraw')}
+              aria-pressed={mode === 'withdraw'}
               className={`px-4 py-2 text-sm font-medium rounded-r-lg border ${
                 mode === 'withdraw'
-                  ? 'bg-primary-600 text-white border-primary-600'
+                  ? 'bg-primary-700 text-white border-primary-700'
                   : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
               }`}
             >
@@ -178,30 +193,42 @@ export default function DepositWithdrawModal() {
         </div>
 
         {isPaused && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-700">Vault is paused. Deposits and withdrawals are disabled.</p>
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg" role="alert">
+            <p className="text-sm text-red-800">Vault is paused. Deposits and withdrawals are disabled.</p>
           </div>
         )}
 
-        <label className="block text-sm font-medium text-gray-700 mb-1">Amount (USDC)</label>
+        <label htmlFor={amountId} className="block text-sm font-medium text-gray-900 mb-1">
+          Amount (USDC)
+        </label>
         <input
+          id={amountId}
           type="number"
           min="0"
           step="0.01"
+          inputMode="decimal"
           value={amount}
           onChange={e => setAmount(e.target.value)}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 mb-4"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900 mb-1"
           placeholder="0.00"
           disabled={isPaused}
+          aria-invalid={status === 'error'}
+          aria-describedby={describedBy}
         />
+        <p id={amountHintId} className="text-sm text-gray-700 mb-4">
+          Enter the USDC amount to {mode}. Preview updates as you type.
+        </p>
 
         {mode === 'deposit' && (
           <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Strategy preference</label>
+            <label htmlFor={strategyId} className="block text-sm font-medium text-gray-900 mb-1">
+              Strategy preference
+            </label>
             <select
+              id={strategyId}
               value={strategy}
               onChange={e => setStrategy(e.target.value as UserStrategy)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
               disabled={isPaused}
             >
               {STRATEGIES.map(s => (
@@ -215,13 +242,13 @@ export default function DepositWithdrawModal() {
 
         {showLiquidityWarning && (
           <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <p className="text-sm text-yellow-800">
+            <p className="text-sm text-yellow-900">
               Amount may vary based on pool liquidity.
             </p>
           </div>
         )}
 
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4 text-sm text-gray-700 space-y-2">
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4 text-sm text-gray-900 space-y-2">
           <div className="flex justify-between">
             <span>Preview shares to mint:</span>
             <span className="font-mono">
@@ -253,38 +280,38 @@ export default function DepositWithdrawModal() {
         </div>
 
         {gasEstimate && status === 'loading' && (
-          <div className="mb-4 text-xs text-gray-500">Estimated gas: {gasEstimate}</div>
+          <div className="mb-4 text-sm text-gray-700">Estimated gas: {gasEstimate}</div>
         )}
 
         <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={!canSubmit}
-          className="w-full py-3 rounded-lg bg-primary-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-700"
+          type="submit"
+          disabled={!canSubmit || status === 'loading'}
+          className="w-full py-3 rounded-lg bg-primary-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-700"
         >
           {status === 'loading' ? 'Confirming...' : mode === 'deposit' ? 'Deposit' : 'Withdraw'}
         </button>
 
         {status === 'success' && txHash && (
-          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
-            <p className="text-green-800">Transaction submitted!</p>
+          <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm" role="status" aria-live="polite">
+            <p className="text-green-900">Transaction submitted!</p>
             <a
               href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
               target="_blank"
               rel="noreferrer"
-              className="text-primary-600 underline"
+              className="text-primary-700 underline"
             >
               View transaction
+              <span className="sr-only"> (opens in a new tab)</span>
             </a>
           </div>
         )}
 
         {status === 'error' && errorMsg && (
-          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          <div id={amountErrorId} className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800" role="alert">
             {errorMsg}
           </div>
         )}
-      </div>
-    </div>
+      </form>
+    </section>
   );
 }

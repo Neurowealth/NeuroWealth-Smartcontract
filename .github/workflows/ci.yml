@@ -19,6 +19,27 @@ env:
   WASM_SIZE_LIMIT_BYTES: 1500000
 
 jobs:
+  # Secret scan (#605): fails the build if any commit in the PR (or push)
+  # introduces a Stellar secret seed, .env contents, or anything else the
+  # gitleaks ruleset in .gitleaks.toml matches. Full history is fetched so
+  # every commit in the range is scanned, not just the merge result.
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
   ci-matrix:
     name: CI Matrix
     runs-on: ubuntu-latest
@@ -41,6 +62,12 @@ jobs:
           - name: "Vault Client Typecheck"
             step: "vault-client-typecheck"
             working_directory: "packages/vault-client"
+          - name: "Vault UI Accessibility & Notifications"
+            step: "vault-ui-test"
+            working_directory: "packages/vault-ui"
+          - name: "Frontend Lint"
+            step: "frontend-lint"
+            working_directory: "frontend"
           - name: "Build WASM"
             step: "build-wasm"
             working_directory: "neurowealth-vault"
@@ -123,6 +150,14 @@ jobs:
               npm ci
               npm run typecheck
               npm run test
+              ;;
+            vault-ui-test)
+              npm install
+              npm run test
+              ;;
+            frontend-lint)
+              npm ci
+              npm run lint
               ;;
             build-wasm)
               RUSTFLAGS="-C target-cpu=mvp" cargo build \
@@ -230,6 +265,18 @@ jobs:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
           retention-days: 14
+
+  kani-share-math:
+    name: Kani Share-Accounting Proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run Kani proofs
+        uses: model-checking/kani-github-action@v1.1
+        with:
+          args: --manifest-path neurowealth-vault/Cargo.toml -p share-math
 
   cargo-deny:
     name: Dependency Audit (cargo-deny)

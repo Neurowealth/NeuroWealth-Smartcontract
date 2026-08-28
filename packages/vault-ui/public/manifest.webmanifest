@@ -1,0 +1,17 @@
+{
+  "name": "NeuroWealth Vault",
+  "short_name": "NeuroWealth",
+  "description": "Deposit, withdraw, and track USDC yield in the NeuroWealth vault.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#1d4ed8",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

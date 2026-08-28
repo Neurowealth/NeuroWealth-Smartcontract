@@ -112,3 +112,6 @@ pub const TOPIC_EMERGENCY_WITHDRAWAL: Symbol = symbol_short!("em_wd");
 pub const TOPIC_CIRCUIT_BREAKER_TRIGGERED: Symbol = symbol_short!("cb_trig");
 /// Topic for `CircuitBreakerResetEvent`.
 pub const TOPIC_CIRCUIT_BREAKER_RESET: Symbol = symbol_short!("cb_reset");
+/// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
+/// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
+pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");

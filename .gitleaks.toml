@@ -1,0 +1,29 @@
+# Gitleaks configuration for NeuroWealth-Smartcontract (#605).
+#
+# Extends the default gitleaks ruleset and adds a Stellar-specific rule:
+# ed25519 secret seeds ("S" + 55 base32 chars) must never be committed.
+# Run locally with:   gitleaks git --redact -v .
+# Pre-commit hook:    scripts/pre-commit-gitleaks.sh
+# CI enforcement:     .github/workflows/ci.yml (secret-scan job)
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stellar-secret-key"
+description = "Stellar ed25519 secret seed (S...)"
+regex = '''\bS[A-Z2-7]{55}\b'''
+keywords = ["S"]
+
+[rules.allowlist]
+# Vendored JS SDK sources/tests contain well-known documentation example
+# seeds (e.g. in @stellar/stellar-base). Never commit node_modules anyway.
+paths = ['''node_modules/''']
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  # Binary/build outputs are not sources of truth for secrets.
+  '''(^|/)target/''',
+  '''\.wasm$''',
+]

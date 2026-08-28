@@ -1,17 +1,26 @@
 import { SorobanRpc } from '@stellar/stellar-sdk';
-import { Pool } from 'pg';
+import { pool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';
-import { stellarRpcLatency, errorRate } from './metrics';
+import logger from './logger';
+import { withRetry } from './retry';
+
+export { pool };
 
 const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
-const server = new SorobanRpc.Server(rpcUrl);
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+export const server = new SorobanRpc.Server(rpcUrl);
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
+
+let eventInterval: ReturnType<typeof setInterval> | null = null;
+
+export function stopEventListener() {
+  if (eventInterval) {
+    clearInterval(eventInterval);
+    eventInterval = null;
+    logger.info('Event listener stopped');
+  }
+}
 
 /**
  * Listens for on-chain deposit and withdraw events from the vault contract.
@@ -19,36 +28,38 @@ const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
  */
 export async function startEventListener() {
   if (!VAULT_CONTRACT_ID) {
-    console.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
+    logger.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
     return;
   }
 
   try {
-    const latestLedgerResponse = await server.getLatestLedger();
+    const latestLedgerResponse = await withRetry(
+      () => server.getLatestLedger(),
+      'getLatestLedger',
+    );
     let startLedger = latestLedgerResponse.sequence;
-    console.log(`Starting event listener from ledger ${startLedger}...`);
+    logger.info({ startLedger }, 'Starting event listener');
 
-    setInterval(async () => {
+    eventInterval = setInterval(async () => {
       try {
-        const endTimer = stellarRpcLatency.startTimer({ method: 'getEvents' });
-        const response = await server.getEvents({
-          startLedger,
-          filters: [
-            {
-              type: 'contract',
-              contractIds: [VAULT_CONTRACT_ID],
-              // We listen for any events on this contract, then filter locally
-              // because stellar-sdk requires exact XDR representations for topics in queries
-            }
-          ],
-          limit: 100,
-        });
-        endTimer();
+        const response = await withRetry(
+          () => server.getEvents({
+            startLedger,
+            filters: [
+              {
+                type: 'contract',
+                contractIds: [VAULT_CONTRACT_ID],
+              }
+            ],
+            limit: 100,
+          }),
+          'getEvents',
+        );
 
         for (const event of response.events) {
           const topics = event.topic.map(t => t.toString());
           let eventType = '';
-          
+
           if (topics.some(t => t.includes('deposit'))) {
             eventType = 'deposit';
           } else if (topics.some(t => t.includes('withdraw'))) {
@@ -57,40 +68,34 @@ export async function startEventListener() {
 
           if (!eventType) continue;
 
-          console.log(`Detected ${eventType} event! Ledger: ${event.ledger}`);
+          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
 
-          // Log to PostgreSQL for audit trail
           await logEventToDb(eventType, event.id, event.ledger);
 
-          // If deposit, trigger immediate yield evaluation
           if (eventType === 'deposit') {
-            console.log(`New deposit detected. Evaluating yield opportunities...`);
-            const userStrategy = 'balanced'; // Default or fetched from DB
-            const currentProtocol = 'none'; // Assume funds are idle after deposit
-            
+            logger.info('New deposit detected, evaluating yield');
+            const userStrategy = 'balanced';
+            const currentProtocol = 'none';
+
             const decision = await evaluateYield(userStrategy, currentProtocol, 0);
-            
+
             if (decision.shouldRebalance) {
-              console.log(`[Action Required] Submitting rebalance transaction to move funds to ${decision.targetProtocol}`);
-              // TODO: Submit Soroban rebalance transaction here
+              logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
             }
           }
 
-          // Trigger security alerting system
-          const alertPayload = { type: eventType, amount: 150000 }; // Mocked event payload 
+          const alertPayload = { type: eventType, amount: 150000 };
           await processEventForAlerts(alertPayload);
 
-          // Advance the ledger marker
           startLedger = Math.max(startLedger, event.ledger + 1);
         }
       } catch (error) {
-        errorRate.inc({ type: 'stellar_rpc_error' });
-        console.error("Error polling Soroban events:", error);
+        logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
       }
-    }, 5000); // 5 second interval
+    }, 5000);
 
   } catch (error) {
-    console.error("Failed to initialize event listener:", error);
+    logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to initialize event listener');
   }
 }
 
@@ -103,6 +108,6 @@ async function logEventToDb(type: string, eventId: string, ledger: number) {
       );
     }
   } catch (error) {
-    console.error("Database logging failed:", error);
+    logger.error({ error: error instanceof Error ? error.message : error }, 'Database logging failed');
   }
 }
