@@ -61,6 +61,7 @@ Only output valid JSON matching this exact schema. If the user wants to withdraw
 
     return parsed;
   } catch (error) {
+    errorRate.inc({ type: 'intent_parse_error' });
     console.error("Error parsing intent:", error);
     throw error;
   }
