@@ -104,7 +104,15 @@ const TVL_CAP: i128 = 1_000_000_000_000;
 const USER_CAP: i128 = 500_000_000_000;
 const TOKEN_FLOAT: i128 = 1_000_000_000_000_000;
 
-fn setup(env: &Env) -> (NeuroWealthVaultClient<'static>, Address, Address, Address, Address) {
+fn setup(
+    env: &Env,
+) -> (
+    NeuroWealthVaultClient<'static>,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
     let deployer = Address::generate(env);
     let owner = deployer.clone();
     let agent = Address::generate(env);
@@ -232,7 +240,7 @@ fuzz_target!(|data: &[u8]| {
             // ── harvest ────────────────────────────────────────────────────
             2 => {
                 assets_before_harvest = client.get_total_assets();
-                client.harvest(&agent, &min_out);
+                client.harvest(&min_out);
                 // Yield harvest must never decrease TotalAssets
                 let assets_after = client.get_total_assets();
                 assert!(
@@ -243,7 +251,7 @@ fuzz_target!(|data: &[u8]| {
             // ── rebalance ──────────────────────────────────────────────────
             _ => {
                 let expected_apy: i128 = 500; // 5% in bps
-                client.rebalance(&agent, &protocols[proto_idx], &expected_apy, &min_out);
+                client.rebalance(&protocols[proto_idx], &expected_apy, &min_out);
             }
         }));
 

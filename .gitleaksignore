@@ -1,0 +1,5 @@
+# Triaged findings that are not secrets (see docs/SECRETS_HYGIENE.md).
+#
+# ETHEREUM_USDC_TOKEN_ADDRESS in packages/bridge/.env.example is the PUBLIC
+# mainnet USDC token contract address — not a credential.
+9e8ebfde99bbdb7bfe977aecfcc2617ad63a2cd0:packages/bridge/.env.example:generic-api-key:13

@@ -210,6 +210,104 @@ FUNCTION_METADATA = {
         "requires_auth": True,
         "state_changing": True
     },
+    "batch_deposit": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Deposit multiple USDC entries atomically and receive vault shares",
+        "requires_auth": True,
+        "state_changing": True,
+        "constraints": [
+            "entry count must be <= max batch size (0 = unlimited)",
+            "all entries must use the configured USDC token",
+            "batch consumes both deposit and batch-deposit rate-limit buckets"
+        ],
+        "events": ["DepositEvent"]
+    },
+    "set_rate_limit": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Configure a fixed-window call rate limit for a supported function category",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["RateLimitConfigUpdatedEvent"],
+        "constraints": [
+            "max_calls == 0 disables the category",
+            "enabled categories require a non-zero window",
+            "unknown categories are rejected"
+        ]
+    },
+    "set_rate_limit_config": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Alias for set_rate_limit",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["RateLimitConfigUpdatedEvent"]
+    },
+    "get_rate_limit": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the configured rate-limit allowance for a category",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
+    "get_rate_limit_config": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the configured rate-limit allowance for a category",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
+    "get_global_rate_limit_state": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the current global rate-limit usage bucket",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
+    "get_user_rate_limit_state": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the current per-user rate-limit usage bucket",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
+    "set_max_batch_size": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Set the maximum number of entries accepted by batch_deposit",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["BatchSizeLimitUpdatedEvent"]
+    },
+    "set_batch_size_limit": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Alias for set_max_batch_size",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["BatchSizeLimitUpdatedEvent"]
+    },
+    "get_max_batch_size": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the maximum batch_deposit entry count",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
+    "get_batch_size_limit": {
+        "category": "queries",
+        "access": "public",
+        "description": "Get the maximum batch_deposit entry count",
+        "requires_auth": False,
+        "state_changing": False,
+        "query_only": True
+    },
     "set_rebalance_cooldown": {
         "category": "administration",
         "access": "owner-only",
@@ -467,53 +565,53 @@ FUNCTION_METADATA = {
         "query_only": True
     },
     "touch_user_ttl": {
-        "category": "queries",
+        "category": "maintenance",
         "access": "public",
-        "description": "Extend persistent TTL for user shares entry",
+        "description": "Extend persistent TTL for user shares entry with a per-user rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "storage_type": "persistent",
-        "query_only": True
+        "state_changing": True,
+        "storage_type": "mixed",
+        "query_only": False
     },
     "preview_deposit_to_shares": {
         "category": "queries",
         "access": "public",
-        "description": "Preview shares minted for asset amount (floor)",
+        "description": "Preview shares minted for asset amount (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "query_only": True
+        "state_changing": True,
+        "query_only": False
     },
     "preview_shares_to_assets": {
         "category": "queries",
         "access": "public",
-        "description": "Preview assets returned for share amount (floor)",
+        "description": "Preview assets returned for share amount (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "query_only": True
+        "state_changing": True,
+        "query_only": False
     },
     "preview_withdraw": {
         "category": "queries",
         "access": "public",
-        "description": "Preview shares burned for withdrawal amount (ceil)",
+        "description": "Preview shares burned for withdrawal amount (ceil), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "query_only": True
+        "state_changing": True,
+        "query_only": False
     },
     "convert_to_shares": {
         "category": "queries",
         "access": "public",
-        "description": "Convert asset amount to shares (floor)",
+        "description": "Convert asset amount to shares (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "query_only": True
+        "state_changing": True,
+        "query_only": False
     },
     "convert_to_assets": {
         "category": "queries",
         "access": "public",
-        "description": "Convert share amount to assets (floor)",
+        "description": "Convert share amount to assets (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": False,
-        "query_only": True
+        "state_changing": True,
+        "query_only": False
     },
     "get_dex_pool": {
         "category": "queries",
@@ -852,6 +950,20 @@ class ContractSpecGenerator:
     def _get_types(self) -> Dict[str, Any]:
         """Get custom type definitions."""
         return {
+            "RateLimitConfig": {
+                "description": "Owner-configured fixed-window call allowance",
+                "fields": [
+                    {"name": "max_calls", "type": "u32", "description": "Maximum accepted calls per window"},
+                    {"name": "window_ledgers", "type": "u32", "description": "Window length in ledgers"}
+                ]
+            },
+            "RateLimitState": {
+                "description": "Current usage of a fixed-window rate-limit bucket",
+                "fields": [
+                    {"name": "window_start", "type": "u32", "description": "Window start ledger"},
+                    {"name": "calls", "type": "u32", "description": "Accepted calls in the current window"}
+                ]
+            },
             "UserInfo": {
                 "description": "Complete user information snapshot",
                 "fields": [

@@ -203,6 +203,45 @@ Soroban persistent entries (such as each user's `Shares` record) accrue state re
 - **Explicit Maintenance**: Off-chain indexers or maintenance jobs should call the permissionless `touch_user_ttl(user)` to refresh a user's `Shares` TTL. State-changing calls (`deposit`, `withdraw`) already rewrite `Shares` and refresh its TTL during normal operation.
 - **Risk**: A long-dormant user who never transacts and whose entry is never touched could see their `Shares` entry expire and require restoration. Active users, and any indexer running `touch_user_ttl`, are unaffected.
 
+### 6. Fee-on-Transfer / Deflationary Asset Risk (Issue #603)
+
+Every accounting path in the vault (`deposit`, `withdraw`, `rebalance`)
+assumes the amount **received** by a token transfer equals the amount
+**requested**. Today this holds because the vault's configured asset is
+Stellar's canonical USDC (a Stellar Asset Contract): SAC transfers move the
+exact requested amount with no protocol-level fee.
+
+**This assumption would silently break** in either of these scenarios:
+- The underlying USDC issuer ever introduced fee-on-transfer or
+  rebasing/deflationary semantics on the Stellar Asset Contract.
+- The vault's configured `usdc_token` address were ever misconfigured to
+  point at a wrapper or non-standard token that does not deliver the full
+  requested amount on transfer.
+
+**Impact if it happened silently:** `get_total_assets()` / `get_shares()`
+accounting would diverge from the vault's actual physical token balance —
+shares would be backed by fewer tokens than recorded, socializing the loss
+across all holders on the next redemption.
+
+**Rejection stance:** this vault does **not** support fee-on-transfer or
+deflationary assets, and does not plan to add support. If the configured
+asset's transfer semantics ever changed to violate the "received == requested"
+assumption:
+1. **Do not treat this as a vault bug to patch around.** The correct response
+   is to pause the vault (`pause()`) and initiate the owner-compromise-style
+   incident response (see the runbook below), not to add fee-compensation
+   logic to the accounting math — that logic is itself a well-known attack
+   surface (see the ERC-4626 inflation-attack class of vulnerabilities).
+2. Any future integration with a *different* asset must independently verify
+   (and this document must be updated to record) that the asset has fixed,
+   fee-free transfer semantics before it is wired into `usdc_token`.
+
+**Detection:** `test_transfer_delta_sanity.rs` pins this assumption in CI —
+it measures the actual token balance delta around every fund-moving call
+(`deposit`, `withdraw`, `rebalance`) against the requested amount and fails
+immediately if they ever diverge, so a regression (or a misconfigured test
+token in a future integration) is caught before it reaches a real deployment.
+
 ## Centralization-Risk Register
 
 This register documents every owner-only and agent-only capability, the blast radius if the corresponding key is compromised, and the existing mitigation status.
@@ -264,43 +303,6 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
 | get_apy_prediction | - | - | - | anyone |
-| set_min_withdrawal | yes | - | - | - |
-| get_min_withdrawal | - | - | - | anyone |
-| set_queue_config | yes | - | - | - |
-| get_queue_config | - | - | - | anyone |
-| queue_withdrawal | - | - | yes | - |
-| process_withdrawal_queue | yes | yes | - | - |
-| cancel_withdrawal_request | - | - | yes | - |
-| get_withdrawal_request | - | - | - | anyone |
-| set_max_batch_size | yes | - | - | - |
-| get_max_batch_size | - | - | - | anyone |
-| batch_deposit | yes | yes | - | - |
-| get_user_deposit_timestamp | - | - | - | anyone |
-| get_user_realized_apy | - | - | - | anyone |
-
-### Agent Key Compromise Adversarial Testing (Issue #673)
-
-If the AI agent hot key is stolen, the attacker inherits **only** the agent's designated permissions (`rebalance`, `harvest`, `update_total_assets` increases, `submit_mev_report`, `submit_apy_prediction`, and `process_withdrawal_queue`). They must not be able to steal funds, change ownership, rewrite storage, pause the vault, upgrade WASM, retarget protocol pools, or arbitrarily manipulate `TotalAssets`.
-
-On-chain coverage lives in
-[`neurowealth-vault/contracts/vault/src/tests/test_agent_compromise_scenarios.rs`](neurowealth-vault/contracts/vault/src/tests/test_agent_compromise_scenarios.rs)
-(scenario-oriented, this issue) and
-[`test_adversarial_agent_simulation.rs`](neurowealth-vault/contracts/vault/src/tests/test_adversarial_agent_simulation.rs)
-(per-entrypoint blast-radius snapshots, Issue #596). Together they are the
-Soroban analogue of `test/OwnerCompromiseBlastRadius.test.ts`.
-
-| Attack scenario | Expected result | Test |
-|-----------------|-----------------|------|
-| Agent calls owner-only configuration (`set_caps`, `transfer_ownership`, caps/limits/TTL/timelock/migration/queue helpers) | Rejected; privileged storage unchanged | `test_agent_cannot_*` |
-| Agent withdraws another user's funds (`withdraw`, `withdraw_all`, `emergency_withdraw`) | Auth failure; victim shares unchanged | `test_agent_cannot_withdraw_victim_funds` |
-| Agent writes `Shares` / `Owner` / `TotalShares` through any public entrypoint | No mutation | `test_agent_cannot_modify_contract_storage_directly` |
-| Agent pauses / unpauses / emergency-pauses | `OnlyOwnerCanPause` (or equivalent) | `test_agent_cannot_pause_the_vault` |
-| Agent schedules / executes / cancels a WASM upgrade | Rejected; no pending upgrade | `test_agent_cannot_schedule_upgrade` |
-| Agent sets Blend/DEX pool to a drain contract | `OnlyOwnerCanConfigurePool` | `test_agent_cannot_set_blend_pool_to_drain_address` |
-| Agent inflates or decreases `TotalAssets` arbitrarily | Solvency check / owner co-sign | `test_agent_cannot_inflate_total_assets_beyond_backing` |
-| Agent front-runs a user deposit then inflates the share price | Inflation rejected; victim principal intact | `test_agent_cannot_front_run_user_deposit` |
-
-Operational response (pause, rotate agent via timelock, user comms) remains in [`docs/AGENT_KEY_COMPROMISE_RUNBOOK.md`](docs/AGENT_KEY_COMPROMISE_RUNBOOK.md). Formal guarantees on the share-pricing math the agent *can* move (via backed `update_total_assets` increases) are in [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md).
 
 ### Emergency Harvest Fallback (Issue #506)
 
@@ -745,3 +747,63 @@ Additionally, ensure:
 - [ ] TVL cap enforced
 - [ ] Integration with USDC token tested
 - [ ] Integration with Blend protocol tested (Phase 2)
+
+## On-chain rate-limit controls
+
+Rate limiting is enforced inside `NeuroWealthVault`, before any token transfer or
+external protocol invocation. It is a defense against transaction spam, block
+space abuse, protocol churn, TTL-maintenance griefing, and repeated expensive
+share-conversion calls. It complements—not replaces—the pause switch, TVL and
+per-user deposit caps, user authentication, and the existing
+`MinRebalanceInterval` cooldown.
+
+The owner uses `set_rate_limit(category, max_calls, window_ledgers)` to configure
+six bounded categories: per-user `deposit`, per-user `withdraw`, global
+`rebalance`, per-user `touch_ttl`, global `preview`, and per-user `batch_dep`.
+`rebalance`, `harvest`, and `emergency_harvest` share the same global bucket so
+harvest cannot be used to bypass the rebalance frequency policy. Every preview
+and conversion method shares one global bucket so changing the method name does
+not evade computational protection. A zero `max_calls` explicitly disables a
+category; an enabled category must have a non-zero ledger window.
+
+`batch_deposit` has two independent protections: an owner-configured maximum
+entry count (`set_max_batch_size`, default 50; zero means unlimited) and the
+per-user deposit/batch frequency buckets. A batch is counted once in each
+frequency bucket, not once per entry. This bounds the transfer/event loop while
+preserving atomic all-or-nothing semantics.
+
+### State and monitoring
+
+Policies and counters use the appended `DataKey::RateLimitConfig`,
+`DataKey::RateLimitGlobalState`, `DataKey::RateLimitUserState`, and
+`DataKey::MaxBatchSize` entries in instance storage. Counters are keyed by the
+user address for user-scoped categories and by category for global categories.
+They are fixed-window counters based only on `env.ledger().sequence()` and are
+reset by overwriting the bucket after the configured window. Instance storage
+is intentional: a persistent TTL expiry must not give a caller a free reset.
+The trade-off is a small per-user instance key for each category used; sybil
+addresses remain economically constrained by transaction fees and the vault's
+other caps.
+
+`RateLimitConfigUpdatedEvent` (`rate_cfg`) and
+`BatchSizeLimitUpdatedEvent` (`batch_lim`) provide configuration audit trails.
+`RateLimitExceededEvent` (`rate_hit`) includes the category, optional user,
+current ledger, window start, maximum, and observed count. It is emitted
+immediately before the contract returns `VaultError::RateLimitExceeded`.
+Operators should consume both the event stream and failed transaction error
+codes, since an over-limit transaction itself is reverted by the host.
+
+### Operational guidance
+
+- Set non-zero, workload-specific values before mainnet operation and verify
+  them with `get_rate_limit` and the state getters.
+- Keep `MinRebalanceInterval` non-zero as a second independent control on agent
+  churn; lowering one policy does not silently remove the other.
+- Treat preview functions as state-writing contract calls when submitted on
+  chain. RPC simulations do not commit state, so they are useful for display
+  but are not a substitute for the transaction-level guard.
+- Alert on repeated `rate_hit` events, especially global preview/rebalance hits
+  and a single address exhausting deposit, withdrawal, or TTL buckets.
+- Rate limits do not stop a user from creating many addresses; retain the TVL
+  cap, user deposit cap, fee policy, and authentication checks as the sybil
+  resistance layer.

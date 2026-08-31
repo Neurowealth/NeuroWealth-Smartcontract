@@ -397,3 +397,55 @@ fn test_blend_approval_ttl_affects_supply_to_blend_approval_ledger() {
         "approval expiration should reflect custom BlendApprovalTtl, not default"
     );
 }
+
+/// The legacy `set_blend_approval_ttl` mutates the same shared TTL storage as
+/// `set_approval_ttl` and must leave the same audit trail (#591).
+#[test]
+fn test_set_blend_approval_ttl_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_blend_approval_ttl(&owner, &50_000_u32);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_APPROVAL_TTL_UPDATED);
+    assert_eq!(
+        events.len(),
+        1,
+        "set_blend_approval_ttl must emit an ApprovalTtlUpdatedEvent"
+    );
+
+    let (_, _, data) = &events[0];
+    let event = ApprovalTtlUpdatedEvent::try_from_val(&env, data)
+        .expect("should be a valid ApprovalTtlUpdatedEvent");
+    assert_eq!(
+        event.old_ttl, DEFAULT_APPROVAL_TTL,
+        "old_ttl before any explicit configuration is the default TTL"
+    );
+    assert_eq!(event.new_ttl, 50_000);
+}
+
+/// A subsequent `set_approval_ttl` reports the value configured through the
+/// legacy setter as `old_ttl`, proving the two setters share one audit trail.
+#[test]
+fn test_blend_and_shared_ttl_setters_share_audit_trail() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_blend_approval_ttl(&owner, &50_000_u32);
+    client.set_approval_ttl(&20_000_u32);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_APPROVAL_TTL_UPDATED);
+    assert_eq!(events.len(), 2);
+
+    let (_, _, data) = &events[1];
+    let event = ApprovalTtlUpdatedEvent::try_from_val(&env, data)
+        .expect("should be a valid ApprovalTtlUpdatedEvent");
+    assert_eq!(event.old_ttl, 50_000);
+    assert_eq!(event.new_ttl, 20_000);
+}

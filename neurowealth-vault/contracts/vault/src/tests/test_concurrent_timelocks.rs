@@ -5,7 +5,10 @@
 //! use independent two-step timelocks on separate storage keys.
 
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 /// Helper to create a fake WASM hash for testing.
 fn fake_wasm_hash(env: &Env, seed: u8) -> soroban_sdk::BytesN<32> {
@@ -25,14 +28,16 @@ fn test_both_timelocks_pending_simultaneously() {
     // Schedule an upgrade
     let upgrade_hash = fake_wasm_hash(&env, 1);
     client.schedule_upgrade(&owner, &upgrade_hash);
-    let (pending_hash, upgrade_expiry) = client.get_pending_upgrade()
+    let (pending_hash, upgrade_expiry) = client
+        .get_pending_upgrade()
         .expect("pending upgrade should exist");
     assert_eq!(pending_hash, upgrade_hash);
 
     // While upgrade is pending, propose an agent update
     let new_agent = Address::generate(&env);
     client.update_agent(&new_agent);
-    let (pending_agent, agent_expiry) = client.get_pending_agent_update()
+    let (pending_agent, agent_expiry) = client
+        .get_pending_agent_update()
         .expect("pending agent should exist");
     assert_eq!(pending_agent, new_agent);
 
@@ -65,10 +70,14 @@ fn test_cancel_upgrade_agent_update_remains() {
 
     // Cancel upgrade
     client.cancel_upgrade(&owner);
-    assert!(client.get_pending_upgrade().is_none(), "upgrade should be cancelled");
+    assert!(
+        client.get_pending_upgrade().is_none(),
+        "upgrade should be cancelled"
+    );
 
     // Agent update should still be pending
-    let (remaining_agent, _) = client.get_pending_agent_update()
+    let (remaining_agent, _) = client
+        .get_pending_agent_update()
         .expect("agent update should still be pending");
     assert_eq!(remaining_agent, new_agent);
 }
@@ -93,11 +102,15 @@ fn test_cancel_agent_update_upgrade_remains() {
     assert!(client.get_pending_agent_update().is_some());
 
     // Cancel agent update
-    client.cancel_agent_update(&owner);
-    assert!(client.get_pending_agent_update().is_none(), "agent update should be cancelled");
+    client.cancel_agent_update();
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "agent update should be cancelled"
+    );
 
     // Upgrade should still be pending
-    let (remaining_hash, _) = client.get_pending_upgrade()
+    let (remaining_hash, _) = client
+        .get_pending_upgrade()
         .expect("upgrade should still be pending");
     assert_eq!(remaining_hash, upgrade_hash);
 }
@@ -133,13 +146,20 @@ fn test_execute_upgrade_agent_remains_pending() {
     // Execute upgrade (will fail on fake hash, but that's after the timelock gate)
     let upgrade_result = client.try_execute_upgrade(&owner);
     // We expect it to fail on the WASM hash not being available, not on timelock
-    assert!(upgrade_result.is_err(), "upgrade should fail on WASM hash (after timelock passes)");
+    assert!(
+        upgrade_result.is_err(),
+        "upgrade should fail on WASM hash (after timelock passes)"
+    );
 
     // Agent update should still be pending (independent timelock)
-    let (remaining_agent, agent_expiry) = client.get_pending_agent_update()
+    let (remaining_agent, agent_expiry) = client
+        .get_pending_agent_update()
         .expect("agent update should still be pending");
     assert_eq!(remaining_agent, new_agent);
-    assert!(agent_expiry > upgrade_expiry, "agent expiry should be later than upgrade expiry");
+    assert!(
+        agent_expiry > upgrade_expiry,
+        "agent expiry should be later than upgrade expiry"
+    );
 }
 
 /// Test: Confirm agent update while upgrade is still pending.
@@ -172,11 +192,15 @@ fn test_confirm_agent_update_upgrade_remains_pending() {
 
     // Confirm agent update
     client.confirm_agent_update();
-    assert!(client.get_pending_agent_update().is_none(), "agent update should be confirmed");
+    assert!(
+        client.get_pending_agent_update().is_none(),
+        "agent update should be confirmed"
+    );
     assert_eq!(client.get_agent(), new_agent, "agent should be updated");
 
     // Upgrade should still be pending
-    let (remaining_hash, _) = client.get_pending_upgrade()
+    let (remaining_hash, _) = client
+        .get_pending_upgrade()
         .expect("upgrade should still be pending");
     assert_eq!(remaining_hash, upgrade_hash);
 }
@@ -210,7 +234,10 @@ fn test_independent_timelock_windows() {
     client.update_agent(&new_agent);
     let (_, agent_expiry) = client.get_pending_agent_update().unwrap();
     assert!(agent_expiry > 10000);
-    assert!(agent_expiry > upgrade_expiry, "agent expiry should be later than upgrade expiry");
+    assert!(
+        agent_expiry > upgrade_expiry,
+        "agent expiry should be later than upgrade expiry"
+    );
 
     // Extend TTL for safety
     env.as_contract(&contract_id, || {
@@ -222,7 +249,10 @@ fn test_independent_timelock_windows() {
 
     // Upgrade is now executable (fails on WASM hash)
     let upgrade_result = client.try_execute_upgrade(&owner);
-    assert!(upgrade_result.is_err(), "upgrade should fail on hash (after timelock)");
+    assert!(
+        upgrade_result.is_err(),
+        "upgrade should fail on hash (after timelock)"
+    );
 
     // Agent update is NOT yet executable
     let agent_result = client.try_confirm_agent_update();
@@ -303,7 +333,7 @@ fn test_cancel_and_repropse_independently() {
 
     // Cancel both
     client.cancel_upgrade(&owner);
-    client.cancel_agent_update(&owner);
+    client.cancel_agent_update();
     assert!(client.get_pending_upgrade().is_none());
     assert!(client.get_pending_agent_update().is_none());
 

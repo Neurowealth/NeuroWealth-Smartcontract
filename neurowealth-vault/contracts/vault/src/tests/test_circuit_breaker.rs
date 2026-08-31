@@ -10,7 +10,10 @@
 //! while idle funds remain in the vault.
 
 use super::utils::*;
-use crate::{EmergencyPausedEvent, TOPIC_EMERGENCY_PAUSED};
+use crate::{
+    EmergencyPausedEvent, MaxConsecutiveFailuresUpdatedEvent, DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    TOPIC_EMERGENCY_PAUSED, TOPIC_MAX_FAILURES_UPDATED,
+};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, TryFromVal};
 
 /// Deploys a vault, configures Blend, deposits `amount`, and forces the Blend
@@ -197,4 +200,54 @@ fn test_lowering_threshold_triggers_pause_on_next_failure() {
         client.is_paused(),
         "lowering threshold to at/below current count must trigger auto-pause on next failure"
     );
+}
+
+/// `set_max_consecutive_failures` must leave an audit trail: the first
+/// configuration reports the built-in default as `old_threshold`.
+#[test]
+fn test_set_max_consecutive_failures_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_max_consecutive_failures(&5);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_MAX_FAILURES_UPDATED);
+    assert_eq!(
+        events.len(),
+        1,
+        "exactly one max-failures-updated event expected"
+    );
+
+    let (_, _, data) = &events[0];
+    let event = MaxConsecutiveFailuresUpdatedEvent::try_from_val(&env, data)
+        .expect("should be a valid MaxConsecutiveFailuresUpdatedEvent");
+    assert_eq!(
+        event.old_threshold, DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        "old_threshold before any explicit configuration is the default"
+    );
+    assert_eq!(event.new_threshold, 5);
+}
+
+/// A second call reports the previously configured threshold as
+/// `old_threshold`, not the all-time default.
+#[test]
+fn test_set_max_consecutive_failures_event_reflects_previous_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.set_max_consecutive_failures(&5);
+    client.set_max_consecutive_failures(&2);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_MAX_FAILURES_UPDATED);
+    assert_eq!(events.len(), 2);
+
+    let (_, _, data) = &events[1];
+    let event = MaxConsecutiveFailuresUpdatedEvent::try_from_val(&env, data)
+        .expect("should be a valid MaxConsecutiveFailuresUpdatedEvent");
+    assert_eq!(event.old_threshold, 5);
+    assert_eq!(event.new_threshold, 2);
 }

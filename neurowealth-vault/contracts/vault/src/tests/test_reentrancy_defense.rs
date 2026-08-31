@@ -17,13 +17,17 @@
 //! - In `deposit()`, user shares, total shares, total assets, and total deposits are
 //!   updated *before* `token_client.transfer` is invoked.
 
+extern crate std;
+
 use super::utils::*;
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, testutils::Address as _, Address, Env, Symbol,
+    contract, contractimpl, contracttype, symbol_short, testutils::Address as _, Address, Env,
+    Symbol,
 };
 
 // Data keys for the ReentrantMockToken storage
 #[derive(Clone)]
+#[contracttype]
 pub enum MockTokenDataKey {
     Balance(Address),
     Allowance(Address, Address),
@@ -97,9 +101,10 @@ impl ReentrantMockToken {
             .get(&MockTokenDataKey::Balance(to.clone()))
             .unwrap_or(0);
 
-        env.storage()
-            .persistent()
-            .set(&MockTokenDataKey::Balance(from.clone()), &(from_bal - amount));
+        env.storage().persistent().set(
+            &MockTokenDataKey::Balance(from.clone()),
+            &(from_bal - amount),
+        );
         env.storage()
             .persistent()
             .set(&MockTokenDataKey::Balance(to.clone()), &(to_bal + amount));
@@ -160,17 +165,24 @@ fn test_reentrant_withdraw_blocked_by_cei_ordering() {
     env.mock_all_auths();
 
     // Register ReentrantMockToken
-    let mock_token_id = env.register(ReentrantMockToken, ());
+    let mock_token_id = env.register_contract(None, ReentrantMockToken);
     let mock_token_client = ReentrantMockTokenClient::new(&env, &mock_token_id);
 
+    let deployer = Address::generate(&env);
     let owner = Address::generate(&env);
     let agent = Address::generate(&env);
+    let salt = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
-    // Register Vault Contract
-    let vault_id = env.register(NeuroWealthVault, ());
+    // Register a vault at the address derived from its deployer and salt so
+    // initialize's anti-front-running check is exercised by this test too.
+    let vault_id = env
+        .deployer()
+        .with_address(deployer.clone(), salt.clone())
+        .deployed_address();
+    env.register_contract(&vault_id, NeuroWealthVault);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
 
-    vault_client.initialize(&owner, &owner, &agent, &mock_token_id);
+    vault_client.initialize(&deployer, &owner, &agent, &mock_token_id, &salt);
 
     let user = Address::generate(&env);
     let amount = 10_000_000_i128; // 10 USDC
@@ -185,12 +197,7 @@ fn test_reentrant_withdraw_blocked_by_cei_ordering() {
 
     // Configure mock token to attempt a second re-entrant withdraw of 10_000_000
     // during the token transfer of the first withdraw.
-    mock_token_client.set_reentrancy(
-        &vault_id,
-        &symbol_short!("withdrw"),
-        &user,
-        &amount,
-    );
+    mock_token_client.set_reentrancy(&vault_id, &symbol_short!("withdrw"), &user, &amount);
 
     // Mint additional mock tokens to vault so transfer succeeds on token side
     mock_token_client.mint(&vault_id, &amount);
@@ -202,7 +209,10 @@ fn test_reentrant_withdraw_blocked_by_cei_ordering() {
         vault_client.withdraw(&user, &amount);
     }));
 
-    assert!(res.is_err(), "Re-entrant withdrawal attempt must fail and revert");
+    assert!(
+        res.is_err(),
+        "Re-entrant withdrawal attempt must fail and revert"
+    );
 }
 
 #[test]
@@ -212,16 +222,22 @@ fn test_reentrant_deposit_cei_state_integrity() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let mock_token_id = env.register(ReentrantMockToken, ());
+    let mock_token_id = env.register_contract(None, ReentrantMockToken);
     let mock_token_client = ReentrantMockTokenClient::new(&env, &mock_token_id);
 
+    let deployer = Address::generate(&env);
     let owner = Address::generate(&env);
     let agent = Address::generate(&env);
+    let salt = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
-    let vault_id = env.register(NeuroWealthVault, ());
+    let vault_id = env
+        .deployer()
+        .with_address(deployer.clone(), salt.clone())
+        .deployed_address();
+    env.register_contract(&vault_id, NeuroWealthVault);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
 
-    vault_client.initialize(&owner, &owner, &agent, &mock_token_id);
+    vault_client.initialize(&deployer, &owner, &agent, &mock_token_id, &salt);
 
     let user = Address::generate(&env);
     let amount = 5_000_000_i128;
@@ -229,12 +245,7 @@ fn test_reentrant_deposit_cei_state_integrity() {
     mock_token_client.mint(&user, &(amount * 4));
 
     // Configure mock token to attempt a re-entrant deposit during transfer
-    mock_token_client.set_reentrancy(
-        &vault_id,
-        &symbol_short!("deposit"),
-        &user,
-        &amount,
-    );
+    mock_token_client.set_reentrancy(&vault_id, &symbol_short!("deposit"), &user, &amount);
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         vault_client.deposit(&user, &amount);

@@ -160,16 +160,16 @@ export default function DepositWithdrawModal() {
           if (canSubmit) void handleSubmit();
         }}
       >
-        <div className="flex items-center justify-between mb-6 gap-4">
+        <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-4">
           <h2 id={headingId} className="text-2xl font-semibold text-gray-900">
             {mode === 'deposit' ? 'Deposit USDC' : 'Withdraw USDC'}
           </h2>
-          <div className="flex rounded-md shadow-sm" role="group" aria-label="Transaction type">
+          <div className="flex w-full sm:w-auto rounded-md shadow-sm" role="group" aria-label="Transaction type">
             <button
               type="button"
               onClick={() => setMode('deposit')}
               aria-pressed={mode === 'deposit'}
-              className={`px-4 py-2 text-sm font-medium rounded-l-lg border ${
+              className={`flex-1 sm:flex-none px-6 py-3 text-base font-medium rounded-l-lg border ${
                 mode === 'deposit'
                   ? 'bg-primary-700 text-white border-primary-700'
                   : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
@@ -181,7 +181,7 @@ export default function DepositWithdrawModal() {
               type="button"
               onClick={() => setMode('withdraw')}
               aria-pressed={mode === 'withdraw'}
-              className={`px-4 py-2 text-sm font-medium rounded-r-lg border ${
+              className={`flex-1 sm:flex-none px-6 py-3 text-base font-medium rounded-r-lg border ${
                 mode === 'withdraw'
                   ? 'bg-primary-700 text-white border-primary-700'
                   : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
@@ -194,11 +194,11 @@ export default function DepositWithdrawModal() {
 
         {isPaused && (
           <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg" role="alert">
-            <p className="text-sm text-red-800">Vault is paused. Deposits and withdrawals are disabled.</p>
+            <p className="text-base text-red-800">Vault is paused. Deposits and withdrawals are disabled.</p>
           </div>
         )}
 
-        <label htmlFor={amountId} className="block text-sm font-medium text-gray-900 mb-1">
+        <label htmlFor={amountId} className="block text-base font-medium text-gray-900 mb-2">
           Amount (USDC)
         </label>
         <input
@@ -209,26 +209,26 @@ export default function DepositWithdrawModal() {
           inputMode="decimal"
           value={amount}
           onChange={e => setAmount(e.target.value)}
-          className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900 mb-1"
+          className="w-full rounded-lg border border-gray-300 px-4 py-3 text-lg text-gray-900 mb-2"
           placeholder="0.00"
           disabled={isPaused}
           aria-invalid={status === 'error'}
           aria-describedby={describedBy}
         />
-        <p id={amountHintId} className="text-sm text-gray-700 mb-4">
+        <p id={amountHintId} className="text-sm text-gray-700 mb-6">
           Enter the USDC amount to {mode}. Preview updates as you type.
         </p>
 
         {mode === 'deposit' && (
-          <div className="mb-4">
-            <label htmlFor={strategyId} className="block text-sm font-medium text-gray-900 mb-1">
+          <div className="mb-6">
+            <label htmlFor={strategyId} className="block text-base font-medium text-gray-900 mb-2">
               Strategy preference
             </label>
             <select
               id={strategyId}
               value={strategy}
               onChange={e => setStrategy(e.target.value as UserStrategy)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-gray-900"
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base text-gray-900"
               disabled={isPaused}
             >
               {STRATEGIES.map(s => (
@@ -241,23 +241,23 @@ export default function DepositWithdrawModal() {
         )}
 
         {showLiquidityWarning && (
-          <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <p className="text-sm text-yellow-900">
+          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <p className="text-base text-yellow-900">
               Amount may vary based on pool liquidity.
             </p>
           </div>
         )}
 
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4 text-sm text-gray-900 space-y-2">
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 mb-6 text-base text-gray-900 space-y-3">
           <div className="flex justify-between">
             <span>Preview shares to mint:</span>
-            <span className="font-mono">
+            <span className="font-mono font-medium">
               {previewShares !== null ? formatUsdc(previewShares) : '—'}
             </span>
           </div>
           <div className="flex justify-between">
             <span>Exchange rate:</span>
-            <span className="font-mono">
+            <span className="font-mono font-medium">
               {previewShares !== null && totalAssets > 0n
                 ? `${(Number(totalAssets) / Number(previewShares)).toFixed(4)}`
                 : '1.0000'}
@@ -265,28 +265,28 @@ export default function DepositWithdrawModal() {
           </div>
           <div className="flex justify-between">
             <span>Preview shares to burn:</span>
-            <span className="font-mono">
+            <span className="font-mono font-medium">
               {previewBurn !== null ? formatUsdc(previewBurn) : '—'}
             </span>
           </div>
           <div className="flex justify-between">
             <span>Your balance:</span>
-            <span className="font-mono">{formatUsdc(balance)} USDC</span>
+            <span className="font-mono font-medium">{formatUsdc(balance)} USDC</span>
           </div>
           <div className="flex justify-between">
             <span>Vault TVL:</span>
-            <span className="font-mono">{formatUsdc(totalAssets)} USDC</span>
+            <span className="font-mono font-medium">{formatUsdc(totalAssets)} USDC</span>
           </div>
         </div>
 
         {gasEstimate && status === 'loading' && (
-          <div className="mb-4 text-sm text-gray-700">Estimated gas: {gasEstimate}</div>
+          <div className="mb-6 text-base text-gray-700">Estimated gas: {gasEstimate}</div>
         )}
 
         <button
           type="submit"
           disabled={!canSubmit || status === 'loading'}
-          className="w-full py-3 rounded-lg bg-primary-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-700"
+          className="w-full py-4 rounded-lg bg-primary-700 text-white text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-800"
         >
           {status === 'loading' ? 'Confirming...' : mode === 'deposit' ? 'Deposit' : 'Withdraw'}
         </button>

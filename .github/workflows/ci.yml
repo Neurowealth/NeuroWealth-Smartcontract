@@ -19,6 +19,27 @@ env:
   WASM_SIZE_LIMIT_BYTES: 1500000
 
 jobs:
+  # Secret scan (#605): fails the build if any commit in the PR (or push)
+  # introduces a Stellar secret seed, .env contents, or anything else the
+  # gitleaks ruleset in .gitleaks.toml matches. Full history is fetched so
+  # every commit in the range is scanned, not just the merge result.
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
   ci-matrix:
     name: CI Matrix
     runs-on: ubuntu-latest

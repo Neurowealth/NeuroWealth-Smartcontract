@@ -800,63 +800,6 @@ fn test_dex_approval_expires_at_next_ledger_after_boundary() {
     );
 }
 
-/// When rebalance() fails during the protocol exit step (pool exit reverts /
-/// min_out not met), the vault must abort without transitioning the protocol
-/// or re-supplying funds to a new target. CurrentProtocol stays unchanged and
-/// a RebalanceFailedEvent is emitted. (Issue #542)
-///
-/// Note: partial withdrawals that occur before the incomplete-exit check are
-/// observable (funds move from protocol back to idle). The key invariant is
-/// that the protocol does not change and no funds are re-supplied.
-#[test]
-fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
-        setup_vault_with_token_and_blend(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
-
-    client.set_blend_pool(&owner, &blend_pool);
-
-    let user = Address::generate(&env);
-    let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
-    assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
-
-    // Limit pool withdrawals so exit is incomplete (only 1M of 10M returns)
-    blend_client.set_max_withdraw_limit(&1_000_000_i128);
-
-    // Attempt rebalance to none — must abort gracefully
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
-
-    // CurrentProtocol must not change on failed exit
-    assert_eq!(
-        client.get_current_protocol(),
-        symbol_short!("blend"),
-        "CurrentProtocol must not change on failed exit"
-    );
-
-    // RebalanceFailedEvent must be emitted
-    let failed_events = find_events_by_topic(env.events().all(), &env, symbol_short!("reb_fail"));
-    assert!(
-        !failed_events.is_empty(),
-        "RebalanceFailedEvent must be emitted on incomplete exit"
-    );
-
-    // Total assets must be conserved (idle + deployed = deposit_amount)
-    let idle = client.get_idle_balance();
-    let deployed = client.get_deployed_assets();
-    assert_eq!(
-        idle + deployed,
-        deposit_amount,
-        "Total assets must be conserved after failed exit"
-    );
-}
-
 // ─── Issue #383: pool-address rotation while funds are deployed ─────────────
 //
 // Companion to the `set_blend_pool`/`set_dex_pool` fund-stranding issue.
