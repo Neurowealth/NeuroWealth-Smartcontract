@@ -9,9 +9,9 @@
 // Most events publish a single-element topic tuple, `(TOPIC_X,)`. Three
 // events additionally publish an indexed `Address` as topic 1 so indexers can
 // filter per user without scanning payloads: [`TOPIC_DEPOSIT`],
-// [`TOPIC_WITHDRAW]`, and [`TOPIC_USER_STATEGY_UPDATED]`.
+// [`TOPIC_WITHDRAW`], and [`TOPIC_USER_STATEGY_UPDATED`].
 
-#!warn(missing_docs)
+#![warn(missing_docs)]
 
 use soroban_sdk::{ symbol_short, Symbol };
 
@@ -38,18 +38,18 @@ pub const TOPIC_TVL_CAP_UPDATED: Symbol = symbol_short!("tvl_cap");
 pub const TOPIC_USER_CAP_UPDATED: Symbol = symbol_short!("user_cap");
 /// Topic for `LimitsUpdatedEvent`, published by the deprecated `set_limits`.
 ///
-/// Prefer [`TOPIC_DEPOSIT_LIMITS_UPDATED] for new indexers.
+/// Prefer [`TOPIC_DEPOSIT_LIMITS_UPDATED`] for new indexers.
 pub const TOPIC_LIMITS_UPDATED: Symbol = symbol_short!("l_upd");
 /// Topic for `DepositLimitsUpdatedEvent`, published by `set_deposit_limits`.
 pub const TOPIC_DEPOSIT_LIMITS_UPDATED: Symbol = symbol_short!("dep_lim");
 /// Topic for `CapsUpdatedEvent`, published by `set_caps`.
 pub const TOPIC_CAPS_UPDATED: Symbol = symbol_short!("caps_upd");
 /// Topic for `AgentUpdatedEvent`, published by `confirm_agent_update` alongside
-/// [`TOPIC_AGENT_UPDATE_CONFIRMED)` for legacy indexer compatibility.
+/// [`TOPIC_AGENT_UPDATE_CONFIRMED`] for legacy indexer compatibility.
 pub const TOPIC_AGENT_UPDATED: Symbol = symbol_short!("agent");
 /// Topic for `OwnershipTransferInitiatedEvent`, published by `transfer_ownership`.
 pub const TOPIC_OWNERSHIP_INITIATED: Symbol = symbol_short!("own_init");
-/// Topic for `OwnershipTransferredEvent`, published by `accept_ownership`.
+/// Topic for `OwnershipTransferedEvent`, published by `accept_ownership`.
 pub const TOPIC_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("own_xfer");
 /// Topic for `OwnershipTransferCancelledEvent`, published by `cancel_ownership_transfer`.
 pub const TOPIC_OWNERSHIP_CANCELLED: Symbol = symbol_short!("own_cncl");
@@ -86,18 +86,18 @@ pub const TOPIC_AGENT_UPDATE_CANCELLED : Symbol = symbol_short!("agt_cncl");
 /// Topic for `UpgradeScheduledEvent`, published by `schedule_upgrade` (timelock step 1).
 pub const TOPIC_UPGRADE_SCHEDULED: Symbol = symbol_short!("upg_sched");
 /// Topic for `UpgradeCancelledEvent`, published by `cancel_upgrade`.
-pub const TOPIC_UPG*RADE_CANCELLED: Symbol = symbol_short!("upg_cncl");
+pub const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("upg_cncl");
 /// Topic for `RebalanceCooldownUpdatedEvent`, published by `set_rebalance_cooldown`.
 pub const TOPIC_REBALANCE_COOLDOWN_UPDATED: Symbol = symbol_short!("reb_cd");
 /// Topic for `ApprovalTtlUpdatedEvent`, published by `set_approval_ttl`.
 pub const TOPIC_APPROVAL_TTL_UPDATED: Symbol = symbol_short!("ttl_upd");
 /// Topic for `HarvestEvent`, published when accrued yield is harvested and compounded.
-pub const TOPIC_HARVEST: Symbol = symbol_short("harvest");
+pub const TOPIC_HARVEST: Symbol = symbol_short!("harvest");
 /// Topic for `EmergencyHarvestEvent`, published when the owner triggers an
 /// emergency harvest fallback during an agent-key outage or rotation.
-pub const TOPIC_EMERGENCY_HARVEST: Symbol = symbol_short("em_harv");
+pub const TOPIC_EMERGENCY_HARVEST: Symbol = symbol_short!("em_harv");
 /// Topic for `CompoundEvent`, published when the agent auto-compounds yield.
-pub const TOPIC_COMPOUND: Symbol = symbol_short("compound");
+pub const TOPIC_COMPOUND: Symbol = symbol_short!("compound");
 /// Topic 0 for `SharesMigratedEvent`; topic 1 is the migrating user's `Address`.
 pub const TOPIC_MIGRATE: Symbol = symbol_short!("migrate");
 /// Topic for `MigrationTargetUpdatedEvent`, published when the owner sets/updates migration target.
@@ -109,11 +109,13 @@ pub const TOPIC_SHARES_LOCKED: Symbol = symbol_short!("lock");
 /// Topic 0 for `SharesUnlockedEvent`; topic 1 is the user's `Address`.
 pub const TOPIC_SHARES_UNLOCKED: Symbol = symbol_short!("unlock");
 /// Topic 0 for `EmergencyWithdrawalEvent`; topic 1 is the withdrawing user's `Address`.
-pub const TOPIC_EMERGENCY_WITHDRAWAL: Symbol = symbol_short("em_wd");
+pub const TOPIC_EMERGENCY_WITHDRAWAL: Symbol = symbol_short!("em_wd");
 /// Topic for `CircuitBreakerTriggeredEvent`.
 pub const TOPIC_CIRCUIT_BREAKER_TRIGGERED: Symbol = symbol_short!("cb_trig");
 /// Topic for `CircuitBreakerResetEvent`.
-pub const TOPIC_CIRCUIT_BREAKER_RESET: Symbol = symbol_short("cb_reset");
+pub const TOPIC_CIRCUIT_BREAKER_RESET: Symbol = symbol_short!("cb_reset");
+/// Topic for `InsuranceFundUpdatedEvent`.
+pub const TOPIC_INSURANCE_FUND_UPDATED: Symbol = symbol_short!("ins_fund");
 
 /// Topic for `RateLimitConfigUpdatedEvent`, published by `set_rate_limit`.
 pub const TOPIC_RATE_LIMIT_CONFIG_UPDATED: Symbol = symbol_short!("rate_cfg");

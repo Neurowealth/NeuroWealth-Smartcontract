@@ -512,6 +512,9 @@ pub enum DataKey {
     RateLimitUserState(Address, Symbol),
     /// Maximum entries accepted by `batch_deposit`; `0` means unlimited.
     MaxBatchSize,
+    /// First-deposit snapshot for realized-APY computation (key: user Address) (#462).
+    /// Appended to preserve the serialized discriminants of existing keys.
+    DepositSnapshot(Address),
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -539,6 +542,24 @@ pub struct RateLimitState {
     pub window_start: u32,
     /// Number of accepted calls in the current window.
     pub calls: u32,
+}
+
+/// First-deposit snapshot used to compute a user's realized APY (#462).
+///
+/// Written once when a user makes their first deposit (from zero shares), and
+/// read by the read-only `get_user_apy` view. Only the share balance and the
+/// deposit principal are needed: the ratio of the current value of those
+/// shares to the principal is the price growth since entry, which APY
+/// annualizes.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositSnapshot {
+    /// The user's total share balance immediately after their first deposit.
+    pub shares: i128,
+    /// USDC principal of that first deposit (share value at entry).
+    pub principal: i128,
+    /// Unix timestamp (seconds) of the first deposit, from the ledger.
+    pub deposited_at: u64,
 }
 
 // ============================================================================
@@ -2022,6 +2043,20 @@ impl NeuroWealthVault {
         // dedupes so their slot is not duplicated.
         if current_shares == 0 {
             Self::add_to_user_index(&env, &user);
+
+            // Realized-APY snapshot (#462): record the share balance and the
+            // deposit principal at entry, so `get_user_apy` can measure the
+            // growth of this position without trusting an off-chain indexer.
+            // Only written on the first deposit; later deposits grow the
+            // position but the entry anchor stays the original one.
+            env.storage().persistent().set(
+                &DataKey::DepositSnapshot(user.clone()),
+                &DepositSnapshot {
+                    shares: new_user_shares,
+                    principal: amount,
+                    deposited_at: env.ledger().timestamp(),
+                },
+            );
         }
 
         // Set default strategy for first-time depositors
@@ -6826,6 +6861,69 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_assets_internal(&env, shares)
+    }
+
+    /// Returns the user's realized APY in basis points since their first
+    /// deposit (#462).
+    ///
+    /// APY is computed from the first-deposit snapshot recorded in `deposit`:
+    ///
+    /// ```text
+    /// growth_bps = (current_value_of_snapshot_shares / principal - 1) * 10_000
+    /// apy_bps    = growth_bps * 365 / days_held
+    /// ```
+    ///
+    /// where `days_held` is the whole days elapsed since the snapshot (at
+    /// least 1). Users with no snapshot (e.g. funded via `batch_deposit`),
+    /// zero shares, or a holding period under a day return `0`. Purely a
+    /// read-only view: it never touches storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The address whose realized APY should be computed.
+    ///
+    /// # Returns
+    ///
+    /// Realized APY in basis points (10000 = 100%). Negative when the
+    /// position has lost value since the snapshot.
+    pub fn get_user_apy(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+
+        let snapshot: Option<DepositSnapshot> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DepositSnapshot(user.clone()));
+        let Some(snapshot) = snapshot else {
+            return 0;
+        };
+        if snapshot.shares <= 0 || snapshot.principal <= 0 {
+            return 0;
+        }
+
+        let now = env.ledger().timestamp();
+        let held_seconds = now.saturating_sub(snapshot.deposited_at);
+        if held_seconds < 86_400 {
+            // APY over a sub-day window is noise; report zero.
+            return 0;
+        }
+
+        // Current value of the shares held at the snapshot, floored like every
+        // other share-to-asset conversion in the vault.
+        let current_value = Self::convert_to_assets_internal(&env, snapshot.shares);
+
+        // growth_bps, in integer arithmetic to avoid float drift:
+        // (current_value / principal - 1) * 10_000.
+        let growth_bps = current_value
+            .checked_mul(10_000)
+            .and_then(|v| v.checked_div(snapshot.principal))
+            .unwrap_or(0)
+            .saturating_sub(10_000);
+
+        let days_held = held_seconds / 86_400;
+        growth_bps
+            .checked_mul(365)
+            .and_then(|v| v.checked_div(days_held as i128))
+            .unwrap_or(0)
     }
 
     /// Returns the authorized AI agent address.

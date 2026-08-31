@@ -1,7 +1,3 @@
-/**
- * Main monitoring loop - continuously collects metrics and detects anomalies
- */
-
 import pino from "pino";
 import { MetricsCollector } from "./metrics-collector";
 import { AlertEngine } from "./alert-engine";
@@ -15,6 +11,7 @@ export class VaultMonitor {
   private alertDispatcher: AlertDispatcher;
   private state: MonitoringState;
   private monitoringInterval: NodeJS.Timer | null = null;
+  private lastInsuranceAlertAt: number = 0;
 
   constructor(private config: MonitoringConfig) {
     this.metricsCollector = new MetricsCollector(config);
@@ -38,6 +35,7 @@ export class VaultMonitor {
       {
         contractId: this.config.contractId,
         pollInterval: this.config.pollIntervalSeconds,
+        insurance: this.config.insurance,
       },
       "Starting vault monitor",
     );
@@ -83,6 +81,9 @@ export class VaultMonitor {
         this.state.activeAlerts.push(alert);
       }
 
+      // Check insurance fund level and dispatch alert if below threshold
+      await this.checkInsuranceFund(metrics);
+
       // Store metrics for historical analysis
       this.storeMetrics(metrics);
     } catch (error) {
@@ -100,6 +101,31 @@ export class VaultMonitor {
           timestamp: Date.now(),
         });
       }
+    }
+  }
+
+  private async checkInsuranceFund(metrics: any): Promise<void> {
+    const insuranceConfig = (this.config as any).insurance;
+    if (!insuranceConfig || metrics.insuranceFundBalance === undefined) {
+      return; // Insurance not configured or not available in metrics
+    }
+
+    const balance = metrics.insuranceFundBalance;
+    const minLevel = insuranceConfig.minimumFundLevel;
+    const cooldownMs = insuranceConfig.alertCooldownMs || 60 * 60* 1000; // default 1 hour
+    const now = Date.now();
+
+    // Alert if fund below minimum, but with cooldown to prevent spamming
+    if (balance < minLevel && now - this.lastInsuranceAlertAt > cooldownMs) {
+      this.lastInsuranceAlertAt = now;
+      await this.alertDispatcher.dispatch({
+        id: `insurance_low_${now}`,
+        type: "insurance_fund_level",
+        severity: "${balance < minLevel * 0.5 ? "critical" : "warning"}",
+        title: "Insurance Fund Low",
+        message: `Insurance fund balance is $balance, below threshold $minLevel`.
+        timestamp: now,
+      });
     }
   }
 
@@ -136,7 +162,12 @@ export class VaultMonitor {
       activeAlerts: this.state.activeAlerts,
       resolvedAlerts: this.state.resolvedAlerts,
       uptime: process.uptime(),
+      insuranceFundBalance: this.state.lastMetrics?.insuranceFundBalance,
     };
+  }
+
+  getInsuranceFundBalance(): number | undefined {
+    return this.state.lastMetrics?.insuranceFundBalance;
   }
 
   getAlerts(): Alert[] {
