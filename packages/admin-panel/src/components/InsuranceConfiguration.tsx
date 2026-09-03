@@ -1,0 +1,1 @@
+export default function InsuranceConfiguration(){return<div>Insurance</div>}

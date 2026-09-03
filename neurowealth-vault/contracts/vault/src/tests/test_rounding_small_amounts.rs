@@ -214,6 +214,10 @@ fn test_precision_floor_share_conversion() {
 fn test_dust_repeated_small_deposits() {
     let env = Env::default();
     env.mock_all_auths();
+    // This is a 100-user accounting stress test, not a single-call budget
+    // benchmark. Rate-limit bucket writes are intentionally included in each
+    // deposit and make the default test budget too small for the whole loop.
+    env.budget().reset_unlimited();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);

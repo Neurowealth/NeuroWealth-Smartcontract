@@ -75,6 +75,10 @@
 //! - `Version`: Contract version for upgrade tracking
 //! - `MinRebalanceInterval`: Minimum ledgers between rebalances (owner-configurable, Issue #59)
 //! - `LastRebalanceLedger`: Ledger number of the most recent successful rebalance call (Issue #59)
+//! - `RateLimitConfig(Symbol)`: Owner-configured call allowance and ledger window
+//! - `RateLimitGlobalState(Symbol)`: Global rate-limit usage buckets
+//! - `RateLimitUserState(Address, Symbol)`: Per-user rate-limit usage buckets
+//! - `MaxBatchSize`: Maximum entries accepted by `batch_deposit`
 //!
 //! ### Persistent Storage (Per-User, Cheaper)
 //! - `Shares(user)`: vault shares owned by each user address
@@ -135,11 +139,13 @@
 #![allow(missing_docs)]
 #![no_std]
 #![allow(deprecated)]
+// These mixed-case aliases are part of the legacy `VaultError` API and are
+// retained for source compatibility with existing clients and tests.
+#![allow(non_upper_case_globals)]
 
 pub mod topics;
 
 use core::cmp::min;
-use share_math::{assets_from_shares, shares_ceil, shares_floor};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
@@ -160,7 +166,11 @@ const DEFAULT_TVL_CAP: i128 = 100_000_000_000;
 // ERROR TYPES
 // ============================================================================
 
-#[contracterror]
+// Soroban's embedded contract-spec error union is limited to 50 cases. The
+// vault keeps a larger, numerically stable error surface for compatibility, so
+// the repository's generated contract spec is the source of truth for this
+// type instead of embedding an oversized union in the WASM.
+#[contracterror(export = false)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VaultError {
     /// Vault has already been initialized.
@@ -288,20 +298,14 @@ pub enum VaultError {
     HoldingPeriodNotElapsed = 75,
     /// Holding period configuration is invalid (must be non-negative) (#659).
     InvalidHoldingPeriod = 76,
-    /// Minimum withdrawal amount must be positive.
-    MinWithdrawalMustBePositive = 77,
-    /// Withdrawal amount is below the configured minimum.
-    BelowMinimumWithdrawal = 78,
-    /// Withdrawal queue is full.
-    QueueFull = 79,
-    /// Withdrawal queue is empty.
-    QueueEmpty = 80,
-    /// Withdrawal request was not found.
-    RequestNotFound = 81,
-    /// Withdrawal request has expired.
-    RequestExpired = 82,
-    /// Batch deposit size exceeds maximum allowed batch size.
-    MaxBatchSizeExceeded = 83,
+    /// The configured call rate for an operation has been exhausted.
+    RateLimitExceeded = 77,
+    /// The owner supplied an unsupported rate-limit category.
+    InvalidRateLimitCategory = 78,
+    /// A rate-limit window must be non-zero when a limit is enabled.
+    InvalidRateLimitConfig = 79,
+    /// A batch contains more entries than the configured maximum.
+    BatchSizeExceeded = 80,
 }
 
 impl VaultError {
@@ -322,6 +326,24 @@ impl VaultError {
     pub const TotalAvailableOverflow: Self = Self::InvalidStrategy;
     pub const VersionOverflow: Self = Self::InvalidStrategy;
     pub const InvalidWasmHash: Self = Self::InvalidStrategy;
+    // The SDK caps `#[contracterror]` at 50 cases. Extra names stay as
+    // associated constants (same pattern as `InvalidWasmHash`) so call sites
+    // compile without growing the on-chain error enum past the spec limit.
+    pub const DeployerCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const OwnerCannotBeZeroAddress: Self = Self::CallerIsNotOwner;
+    pub const AgentCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const UsdcTokenCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const MaximumDepositExceedsCeiling: Self = Self::MaximumDepositExceeded;
+    pub const MigrationPaused: Self = Self::Paused;
+    pub const InvalidMigrationTarget: Self = Self::InvalidStrategy;
+    pub const NoSharesToMigrate: Self = Self::NoSharesToWithdraw;
+    pub const SharesAlreadyLocked: Self = Self::InvalidStrategy;
+    pub const LockPeriodNotEnded: Self = Self::InvalidStrategy;
+    pub const InvalidLockDuration: Self = Self::InvalidStrategy;
+    pub const InsufficientUnlockedShares: Self = Self::InsufficientShares;
+    pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
+    pub const HoldingPeriodNotElapsed: Self = Self::InvalidStrategy;
+    pub const InvalidHoldingPeriod: Self = Self::InvalidStrategy;
 }
 
 // ============================================================================
@@ -481,52 +503,63 @@ pub enum DataKey {
     /// Written on every successful `deposit`. Used together with
     /// `MinHoldingPeriod` to enforce the flash-loan protection window.
     LastDepositLedger(Address),
-    /// Minimum withdrawal amount (#638)
-    MinWithdrawal,
-    /// Maximum withdrawal queue size (#639)
-    MaxQueueSize,
-    /// Withdrawal queue request TTL in seconds (#639)
-    QueueTtl,
-    /// Withdrawal queue head pointer (#639)
-    QueueHead,
-    /// Withdrawal queue tail pointer (#639)
-    QueueTail,
-    /// Withdrawal queue request entry (key: u64 request_id) (#639)
-    WithdrawalRequest(u64),
-    /// Maximum batch deposit size (#641)
+    /// Owner-configured call allowance and ledger window for a rate-limit category.
+    /// Appended to preserve the serialized discriminants of existing keys.
+    RateLimitConfig(Symbol),
+    /// Global fixed-window rate-limit usage for a category.
+    RateLimitGlobalState(Symbol),
+    /// Per-user fixed-window rate-limit usage for a category.
+    RateLimitUserState(Address, Symbol),
+    /// Maximum entries accepted by `batch_deposit`; `0` means unlimited.
     MaxBatchSize,
-    /// User deposit timestamp (key: user Address) (#642)
-    UserDepositTimestamp(Address),
-    /// User accumulated deposited value (key: user Address) (#642)
-    UserDepositedValue(Address),
+    /// First-deposit snapshot for realized-APY computation (key: user Address) (#462).
+    /// Appended to preserve the serialized discriminants of existing keys.
+    DepositSnapshot(Address),
 }
 
+/// Owner-configured allowance for one rate-limit category.
+///
+/// `max_calls == 0` and `window_ledgers == 0` disables the category. An
+/// enabled configuration uses a fixed window that starts with the first
+/// accepted call and resets once `window_ledgers` have elapsed.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WithdrawalRequest {
-    pub request_id: u64,
-    pub user: Address,
-    pub amount: i128,
-    pub timestamp: u64,
-    pub fulfilled: bool,
-    pub cancelled: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    /// Maximum number of accepted calls during one window.
+    pub max_calls: u32,
+    /// Length of the window in ledger sequences.
+    pub window_ledgers: u32,
 }
 
+/// Usage of a rate-limit bucket.
+///
+/// The state is deliberately stored independently from the configuration so
+/// changing a limit cannot rewrite or enumerate every user's bucket.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WithdrawalQueuedEvent {
-    pub request_id: u64,
-    pub user: Address,
-    pub amount: i128,
-    pub position: u64,
-    pub timestamp: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimitState {
+    /// Ledger at which the current window began.
+    pub window_start: u32,
+    /// Number of accepted calls in the current window.
+    pub calls: u32,
 }
 
+/// First-deposit snapshot used to compute a user's realized APY (#462).
+///
+/// Written once when a user makes their first deposit (from zero shares), and
+/// read by the read-only `get_user_apy` view. Only the share balance and the
+/// deposit principal are needed: the ratio of the current value of those
+/// shares to the principal is the price growth since entry, which APY
+/// annualizes.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BatchDepositItem {
-    pub user: Address,
-    pub amount: i128,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositSnapshot {
+    /// The user's total share balance immediately after their first deposit.
+    pub shares: i128,
+    /// USDC principal of that first deposit (share value at entry).
+    pub principal: i128,
+    /// Unix timestamp (seconds) of the first deposit, from the ledger.
+    pub deposited_at: u64,
 }
 
 // ============================================================================
@@ -957,7 +990,7 @@ pub struct OwnershipTransferCancelledEvent {
 
 /// Information about a pending ownership transfer.
 ///
-/// Returned by [`get_pending_ownership`] when a transfer is in progress.
+/// Returned by `get_pending_ownership` when a transfer is in progress.
 #[contracttype]
 pub struct PendingOwnershipInfo {
     pub pending_owner: Address,
@@ -1314,6 +1347,66 @@ pub struct FlashLoanProtectionTriggeredEvent {
     pub min_holding_period: u32,
 }
 
+/// Emitted when the owner changes a call rate-limit configuration.
+///
+/// # Topics
+/// - `SymbolShort("rate_cfg")` (`TOPIC_RATE_LIMIT_CONFIG_UPDATED`)
+#[contracttype]
+pub struct RateLimitConfigUpdatedEvent {
+    /// Category whose allowance changed.
+    pub category: Symbol,
+    /// Previous maximum accepted calls per window.
+    pub old_max_calls: u32,
+    /// Previous window length in ledgers.
+    pub old_window_ledgers: u32,
+    /// New maximum accepted calls per window.
+    pub new_max_calls: u32,
+    /// New window length in ledgers.
+    pub new_window_ledgers: u32,
+    /// Owner that made the change.
+    pub owner: Address,
+}
+
+/// Emitted when the owner changes the maximum `batch_deposit` size.
+///
+/// # Topics
+/// - `SymbolShort("batch_lim")` (`TOPIC_BATCH_SIZE_LIMIT_UPDATED`)
+#[contracttype]
+pub struct BatchSizeLimitUpdatedEvent {
+    /// Previous maximum number of entries; zero means unlimited.
+    pub old_max_entries: u32,
+    /// New maximum number of entries; zero means unlimited.
+    pub new_max_entries: u32,
+    /// Owner that made the change.
+    pub owner: Address,
+}
+
+/// Emitted immediately before a call is rejected because its rate-limit bucket
+/// is exhausted.
+///
+/// The event is published before returning the contract error so Soroban
+/// diagnostics and test environments can correlate the rejection with its
+/// category and window. Indexers should also monitor the transaction error
+/// code because a reverted transaction's event visibility is ledger-dependent.
+///
+/// # Topics
+/// - `SymbolShort("rate_hit")` (`TOPIC_RATE_LIMIT_HIT`)
+#[contracttype]
+pub struct RateLimitExceededEvent {
+    /// Category whose allowance was exhausted.
+    pub category: Symbol,
+    /// User bucket that was exhausted, or `None` for a global bucket.
+    pub user: Option<Address>,
+    /// Ledger at which the bucket was exhausted or the rejected call was attempted.
+    pub current_ledger: u32,
+    /// Start ledger of the exhausted window.
+    pub window_start: u32,
+    /// Configured maximum calls for the window.
+    pub max_calls: u32,
+    /// Number of accepted calls already recorded in the window.
+    pub calls: u32,
+}
+
 // ============================================================================
 // BLEND POOL CLIENT INTERFACE
 // ============================================================================
@@ -1369,6 +1462,48 @@ const AGENT_TIMELOCK_LEDGERS: u32 = 17_280;
 /// upgrade proposal (and to `cancel_upgrade`) before new WASM takes effect.
 const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
 
+/// Rate-limit category for single and batched deposits.
+///
+/// The category symbols are part of the public API used by `set_rate_limit`.
+/// Keep them at nine characters or fewer because Soroban short symbols have a
+/// nine-character limit.
+pub const RATE_LIMIT_DEPOSIT: Symbol = symbol_short!("deposit");
+/// Rate-limit category for `withdraw` and `withdraw_all`.
+pub const RATE_LIMIT_WITHDRAW: Symbol = symbol_short!("withdraw");
+/// Rate-limit category for agent `rebalance` calls.
+pub const RATE_LIMIT_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Rate-limit category for permissionless `touch_user_ttl` calls.
+pub const RATE_LIMIT_TOUCH_TTL: Symbol = symbol_short!("touch_ttl");
+/// Rate-limit category shared by all preview/conversion entrypoints.
+pub const RATE_LIMIT_PREVIEW: Symbol = symbol_short!("preview");
+/// Rate-limit category for `batch_deposit` calls.
+pub const RATE_LIMIT_BATCH_DEPOSIT: Symbol = symbol_short!("batch_dep");
+
+/// Default single-user deposit allowance: 100 calls per 720 ledgers (~1 hour).
+const DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default single-user withdrawal allowance: 100 calls per 720 ledgers (~1 hour).
+const DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default global rebalance allowance: 100 calls per 720 ledgers (~1 hour).
+/// The owner should normally set a much lower value on production deployments;
+/// this compatibility-safe default does not supersede `MinRebalanceInterval`.
+const DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_REBALANCE_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default per-user TTL maintenance allowance: five calls per ledger.
+const DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS: u32 = 5;
+const DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW: u32 = 1;
+/// Default global preview/conversion allowance: 1,000 calls per ledger.
+/// This bounds computational work without breaking clients that make several
+/// previews while composing a transaction.
+const DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS: u32 = 1_000;
+const DEFAULT_PREVIEW_RATE_LIMIT_WINDOW: u32 = 1;
+/// Default per-user batch-deposit allowance: 100 calls per 720 ledgers.
+const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
+/// Maximum number of `(token, amount)` entries accepted by `batch_deposit` by default.
+const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
+
 /// Minimum ledgers remaining before `touch_user_ttl` extends a user's `Shares` entry.
 const USER_SHARES_TTL_THRESHOLD: u32 = 100;
 
@@ -1394,15 +1529,29 @@ const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
     TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_APPROVAL_TTL_UPDATED, TOPIC_ASSETS_UPDATED,
+
+    TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
+    TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
+    TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
+    TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_TARGET_UPDATED,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
+    TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
     TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
-    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
-    TOPIC_LIMITS_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_HARVEST, TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
     TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_REBALANCE,
     TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_TVL_CAP_UPDATED,
     TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
     TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_MAX_FAILURES_UPDATED,
+
 };
 
 impl BlendPoolClient {
@@ -1780,6 +1929,7 @@ impl NeuroWealthVault {
             &DataKey::MaxConsecutiveFailures,
             &DEFAULT_MAX_CONSECUTIVE_FAILURES,
         );
+        Self::initialize_rate_limit_defaults(&env);
         env.storage().instance().set(&DataKey::Version, &1_u32);
 
         env.events().publish(
@@ -1831,6 +1981,7 @@ impl NeuroWealthVault {
     /// - If amount would exceed the TVL cap.
     /// - If the USDC transfer fails.
     /// - If shares to mint rounds down to zero.
+    /// - If the user's deposit rate-limit bucket is exhausted.
     pub fn deposit(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
         user.require_auth();
@@ -1841,6 +1992,8 @@ impl NeuroWealthVault {
         Self::require_maximum_deposit(&env, amount);
         Self::require_within_deposit_cap(&env, &user, amount);
         Self::require_within_tvl_cap(&env, amount);
+        // Count only a fully validated operation, before any token transfer.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
@@ -1890,6 +2043,20 @@ impl NeuroWealthVault {
         // dedupes so their slot is not duplicated.
         if current_shares == 0 {
             Self::add_to_user_index(&env, &user);
+
+            // Realized-APY snapshot (#462): record the share balance and the
+            // deposit principal at entry, so `get_user_apy` can measure the
+            // growth of this position without trusting an off-chain indexer.
+            // Only written on the first deposit; later deposits grow the
+            // position but the entry anchor stays the original one.
+            env.storage().persistent().set(
+                &DataKey::DepositSnapshot(user.clone()),
+                &DepositSnapshot {
+                    shares: new_user_shares,
+                    principal: amount,
+                    deposited_at: env.ledger().timestamp(),
+                },
+            );
         }
 
         // Set default strategy for first-time depositors
@@ -1942,21 +2109,6 @@ impl NeuroWealthVault {
             &env.ledger().sequence(),
         );
 
-        // Record deposit timestamp & accumulated deposited value for APY tracking (#642)
-        let now_ts = env.ledger().timestamp();
-        env.storage()
-            .persistent()
-            .set(&DataKey::UserDepositTimestamp(user.clone()), &now_ts);
-        let curr_val: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::UserDepositedValue(user.clone()))
-            .unwrap_or(0_i128);
-        env.storage().persistent().set(
-            &DataKey::UserDepositedValue(user.clone()),
-            &curr_val.saturating_add(amount),
-        );
-
         env.events().publish(
             (TOPIC_DEPOSIT, user.clone()),
             DepositEvent {
@@ -1992,6 +2144,8 @@ impl NeuroWealthVault {
     /// - If any entry's token is not the vault's USDC token (until multi-asset).
     /// - If any entry's amount fails validation.
     /// - If the aggregate deposit exceeds the TVL or user cap.
+    /// - If the batch exceeds the configured entry limit.
+    /// - If the user's deposit or batch rate-limit bucket is exhausted.
     /// - If shares to mint rounds down to zero.
     pub fn batch_deposit(env: Env, user: Address, entries: Vec<(Address, i128)>) {
         Self::require_initialized(&env);
@@ -2000,6 +2154,12 @@ impl NeuroWealthVault {
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let total_entries = entries.len();
+        Self::require_batch_size(&env, total_entries);
+        // A batch is one deposit operation for the per-user deposit bucket and
+        // one operation for the separate batch bucket. This closes the bypass
+        // where a caller could avoid the single-deposit limit by batching.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
 
         // First pass: validate every entry before any transfer (fail-fast).
         let mut total_amount: i128 = 0;
@@ -2148,22 +2308,14 @@ impl NeuroWealthVault {
     /// - If user has insufficient balance or shares.
     /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
     /// - If the USDC transfer fails.
+    /// - If the user's withdrawal rate-limit bucket is exhausted.
     pub fn withdraw(env: Env, user: Address, amount: i128) {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
-
-        // Enforce minimum withdrawal amount (#638)
-        let min_withdrawal: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinWithdrawal)
-            .unwrap_or(0_i128);
-        if min_withdrawal > 0 && amount < min_withdrawal {
-            panic_with_error!(&env, VaultError::BelowMinimumWithdrawal);
-        }
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
         // Flash-loan protection: enforce minimum holding period (#659).
         // If the owner has configured a non-zero MinHoldingPeriod, reject any
@@ -2384,11 +2536,13 @@ impl NeuroWealthVault {
     /// - If user has no shares to withdraw.
     /// - If the vault has no assets.
     /// - If the USDC transfer fails.
+    /// - If the user's withdrawal rate-limit bucket is exhausted.
     pub fn withdraw_all(env: Env, user: Address) -> i128 {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
         // Check if user has locked shares (#636)
         let locked_shares: i128 = env
@@ -3070,6 +3224,7 @@ impl NeuroWealthVault {
     /// - If Blend pool is not configured and protocol is "blend"
     /// - If the DEX pool is not configured and protocol is "dex"
     /// - If a leg moves fewer assets than `min_out` when `min_out > 0`
+    /// - If the global rebalance rate-limit bucket is exhausted.
     pub fn rebalance(env: Env, protocol: Symbol, expected_apy: i128, min_out: i128) {
         Self::require_initialized(&env);
         Self::require_not_paused(&env);
@@ -3121,6 +3276,11 @@ impl NeuroWealthVault {
         if !supported_protocols.contains(protocol.clone()) {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
+
+        // Enforce the global frequency cap in addition to the legacy minimum
+        // interval cooldown. The bucket is consumed before external protocol
+        // calls, so a gracefully handled failed exit still counts as an attempt.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let current_protocol: Symbol = env
             .storage()
@@ -3380,6 +3540,11 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
 
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
         if withdrawn > 0 {
@@ -3403,6 +3568,11 @@ impl NeuroWealthVault {
             .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
     }
 
+    /// Pauses deposits, withdrawals, and agent operations until the owner calls
+    /// `unpause` or a circuit-breaker reset path.
+    ///
+    /// The owner must authorize the call. Read-only getters, rate-limit
+    /// configuration, and TTL maintenance remain available while paused.
     pub fn pause(env: Env, owner: Address) {
         Self::require_initialized(&env);
         owner.require_auth();
@@ -3612,6 +3782,11 @@ impl NeuroWealthVault {
         if current_protocol == symbol_short!("none") {
             panic_with_error!(&env, VaultError::UnsupportedProtocol);
         }
+
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
 
         let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
 
@@ -4186,6 +4361,188 @@ impl NeuroWealthVault {
             .unwrap_or(0)
     }
 
+    // ==========================================================================
+    // ADMINISTRATIVE - RATE LIMITS
+    // ==========================================================================
+
+    /// Configures the call allowance for one rate-limit category.
+    ///
+    /// The limit is a fixed-window allowance. A value of `max_calls == 0`
+    /// disables the category. When enabled, `window_ledgers` must be greater
+    /// than zero and a bucket accepts at most `max_calls` calls before the
+    /// window resets. Deposit, withdrawal, TTL, and batch categories are
+    /// tracked per user; rebalance and preview categories are tracked globally.
+    ///
+    /// The category must be one of the public `RATE_LIMIT_*` symbols. This
+    /// generic entrypoint lets the owner change policy without an upgrade.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `category` - Rate-limit category symbol.
+    /// * `max_calls` - Maximum accepted calls in one window; `0` disables it.
+    /// * `window_ledgers` - Window length in ledgers when enabled.
+    ///
+    /// # Events
+    ///
+    /// Emits `RateLimitConfigUpdatedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::InvalidRateLimitCategory`] for an unknown category.
+    /// - [`VaultError::InvalidRateLimitConfig`] when an enabled limit has a
+    ///   zero-length window.
+    pub fn set_rate_limit(env: Env, category: Symbol, max_calls: u32, window_ledgers: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        Self::require_valid_rate_limit_category(&env, &category);
+
+        if max_calls > 0 && window_ledgers == 0 {
+            panic_with_error!(&env, VaultError::InvalidRateLimitConfig);
+        }
+
+        // A disabled category has one canonical representation. Accepting any
+        // window with max_calls == 0 makes emergency disabling convenient while
+        // keeping the getter unambiguous.
+        let new_config = if max_calls == 0 {
+            RateLimitConfig {
+                max_calls: 0,
+                window_ledgers: 0,
+            }
+        } else {
+            RateLimitConfig {
+                max_calls,
+                window_ledgers,
+            }
+        };
+        let old_config = Self::get_rate_limit_config_internal(&env, &category);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RateLimitConfig(category.clone()), &new_config);
+        // A global bucket can be reset without enumerating any user buckets.
+        // User buckets retain their consumption until their configured window
+        // expires, which prevents a caller from bypassing a newly tightened
+        // policy by relying on a stale reset. Avoid an unnecessary storage
+        // operation for per-user categories.
+        if category == RATE_LIMIT_REBALANCE || category == RATE_LIMIT_PREVIEW {
+            env.storage()
+                .instance()
+                .remove(&DataKey::RateLimitGlobalState(category.clone()));
+        }
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_RATE_LIMIT_CONFIG_UPDATED,),
+            RateLimitConfigUpdatedEvent {
+                category,
+                old_max_calls: old_config.max_calls,
+                old_window_ledgers: old_config.window_ledgers,
+                new_max_calls: new_config.max_calls,
+                new_window_ledgers: new_config.window_ledgers,
+                owner,
+            },
+        );
+    }
+
+    /// Alias for `set_rate_limit` using an explicit configuration-oriented
+    /// name for SDK consumers.
+    pub fn set_rate_limit_config(env: Env, category: Symbol, max_calls: u32, window_ledgers: u32) {
+        Self::set_rate_limit(env, category, max_calls, window_ledgers);
+    }
+
+    /// Returns the configured allowance for a rate-limit category.
+    ///
+    /// The result includes the deployment default when the key is absent, so
+    /// this getter remains useful for vaults initialized before rate limiting
+    /// was added. Unknown categories are rejected rather than silently
+    /// returning an unprotected configuration.
+    pub fn get_rate_limit(env: Env, category: Symbol) -> RateLimitConfig {
+        Self::require_initialized(&env);
+        Self::get_rate_limit_config_internal(&env, &category)
+    }
+
+    /// Alias for `get_rate_limit` with an explicit configuration-oriented
+    /// name for SDK consumers.
+    pub fn get_rate_limit_config(env: Env, category: Symbol) -> RateLimitConfig {
+        Self::require_initialized(&env);
+        Self::get_rate_limit_config_internal(&env, &category)
+    }
+
+    /// Returns the global usage bucket for a rate-limit category.
+    ///
+    /// A never-used bucket is returned as `{ window_start: 0, calls: 0 }`.
+    /// This is a read-only monitoring helper and is not itself rate-limited.
+    pub fn get_global_rate_limit_state(env: Env, category: Symbol) -> RateLimitState {
+        Self::require_initialized(&env);
+        Self::read_rate_limit_state(&env, &category, None)
+    }
+
+    /// Returns a user's usage bucket for a rate-limit category.
+    ///
+    /// The bucket is stored in instance storage so its reset cannot be caused
+    /// by persistent-entry TTL expiry. A never-used bucket is returned as
+    /// `{ window_start: 0, calls: 0 }`.
+    pub fn get_user_rate_limit_state(env: Env, user: Address, category: Symbol) -> RateLimitState {
+        Self::require_initialized(&env);
+        Self::read_rate_limit_state(&env, &category, Some(&user))
+    }
+
+    /// Sets the maximum number of entries accepted by `batch_deposit`.
+    ///
+    /// A value of `0` disables the batch-size guard. The separate
+    /// `RATE_LIMIT_BATCH_DEPOSIT` call allowance remains active, so disabling
+    /// the size guard does not disable frequency protection.
+    ///
+    /// # Events
+    ///
+    /// Emits `BatchSizeLimitUpdatedEvent`.
+    pub fn set_max_batch_size(env: Env, max_entries: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_max_entries: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &max_entries);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_BATCH_SIZE_LIMIT_UPDATED,),
+            BatchSizeLimitUpdatedEvent {
+                old_max_entries,
+                new_max_entries: max_entries,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the maximum number of entries accepted by `batch_deposit`.
+    ///
+    /// Returns `0` when the owner explicitly disabled the size guard.
+    pub fn get_max_batch_size(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Alias for `set_max_batch_size`.
+    pub fn set_batch_size_limit(env: Env, max_entries: u32) {
+        Self::set_max_batch_size(env, max_entries);
+    }
+
+    /// Alias for `get_max_batch_size`.
+    pub fn get_batch_size_limit(env: Env) -> u32 {
+        Self::get_max_batch_size(env)
+    }
+
     /// Sets the minimum number of ledgers a user must hold their deposit before
     /// they can withdraw. Passing `0` disables the holding period (default).
     ///
@@ -4239,7 +4596,7 @@ impl NeuroWealthVault {
     /// * `min_out_used` — The `min_out` parameter passed to `rebalance`.
     ///
     /// # Panics
-    /// - [`VaultError::CallerIsNotAgent`] if caller is not the authorized agent.
+    /// - The caller must be the authorized agent.
     /// - If `estimated_loss_stroops` is negative.
     pub fn submit_mev_report(
         env: Env,
@@ -4333,7 +4690,7 @@ impl NeuroWealthVault {
     /// * `prediction` — Populated `ApyPrediction` struct from the agent.
     ///
     /// # Panics
-    /// - [`VaultError::CallerIsNotAgent`] if caller is not the authorized agent.
+    /// - The caller must be the authorized agent.
     pub fn submit_apy_prediction(env: Env, prediction: ApyPrediction) {
         Self::require_initialized(&env);
         Self::require_is_agent(&env);
@@ -4747,8 +5104,7 @@ impl NeuroWealthVault {
     /// **Storage-only — no on-chain effect on fund deployment.**
     /// This value is a per-user preference stored for the off-chain AI agent to
     /// read. `rebalance()` and `deposit()` do not consult it; the vault pools all
-    /// funds to a single `CurrentProtocol`. See [`Self::set_user_strategy`] for
-    /// details.
+    /// funds to a single `CurrentProtocol`. See `set_user_strategy` for details.
     ///
     /// # Arguments
     ///
@@ -6215,6 +6571,7 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::RateLimitExceeded`] if this user's TTL bucket is exhausted.
     ///
     /// # Storage
     ///
@@ -6235,6 +6592,9 @@ impl NeuroWealthVault {
     /// ```
     pub fn touch_user_ttl(env: Env, user: Address) -> bool {
         Self::require_initialized(&env);
+        // Count maintenance attempts even when the requested entry is absent;
+        // otherwise an attacker could use missing-user probes as a cheap DoS.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
         if !env
             .storage()
             .persistent()
@@ -6320,6 +6680,7 @@ impl NeuroWealthVault {
     /// ```
     pub fn preview_deposit_to_shares(env: Env, assets: i128) -> i128 {
         Self::require_initialized(&env);
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_shares_internal(&env, assets)
     }
 
@@ -6361,6 +6722,7 @@ impl NeuroWealthVault {
     /// ```
     pub fn preview_shares_to_assets(env: Env, shares: i128) -> i128 {
         Self::require_initialized(&env);
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_assets_internal(&env, shares)
     }
 
@@ -6412,6 +6774,7 @@ impl NeuroWealthVault {
     /// ```
     pub fn preview_withdraw(env: Env, assets: i128) -> i128 {
         Self::require_initialized(&env);
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_shares_internal_ceil(&env, assets)
     }
 
@@ -6455,6 +6818,7 @@ impl NeuroWealthVault {
     /// ```
     pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
         Self::require_initialized(&env);
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_shares_internal(&env, assets)
     }
 
@@ -6495,7 +6859,71 @@ impl NeuroWealthVault {
     /// ```
     pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
         Self::require_initialized(&env);
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_PREVIEW);
         Self::convert_to_assets_internal(&env, shares)
+    }
+
+    /// Returns the user's realized APY in basis points since their first
+    /// deposit (#462).
+    ///
+    /// APY is computed from the first-deposit snapshot recorded in `deposit`:
+    ///
+    /// ```text
+    /// growth_bps = (current_value_of_snapshot_shares / principal - 1) * 10_000
+    /// apy_bps    = growth_bps * 365 / days_held
+    /// ```
+    ///
+    /// where `days_held` is the whole days elapsed since the snapshot (at
+    /// least 1). Users with no snapshot (e.g. funded via `batch_deposit`),
+    /// zero shares, or a holding period under a day return `0`. Purely a
+    /// read-only view: it never touches storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The address whose realized APY should be computed.
+    ///
+    /// # Returns
+    ///
+    /// Realized APY in basis points (10000 = 100%). Negative when the
+    /// position has lost value since the snapshot.
+    pub fn get_user_apy(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+
+        let snapshot: Option<DepositSnapshot> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DepositSnapshot(user.clone()));
+        let Some(snapshot) = snapshot else {
+            return 0;
+        };
+        if snapshot.shares <= 0 || snapshot.principal <= 0 {
+            return 0;
+        }
+
+        let now = env.ledger().timestamp();
+        let held_seconds = now.saturating_sub(snapshot.deposited_at);
+        if held_seconds < 86_400 {
+            // APY over a sub-day window is noise; report zero.
+            return 0;
+        }
+
+        // Current value of the shares held at the snapshot, floored like every
+        // other share-to-asset conversion in the vault.
+        let current_value = Self::convert_to_assets_internal(&env, snapshot.shares);
+
+        // growth_bps, in integer arithmetic to avoid float drift:
+        // (current_value / principal - 1) * 10_000.
+        let growth_bps = current_value
+            .checked_mul(10_000)
+            .and_then(|v| v.checked_div(snapshot.principal))
+            .unwrap_or(0)
+            .saturating_sub(10_000);
+
+        let days_held = held_seconds / 86_400;
+        growth_bps
+            .checked_mul(365)
+            .and_then(|v| v.checked_div(days_held as i128))
+            .unwrap_or(0)
     }
 
     /// Returns the authorized AI agent address.
@@ -6964,6 +7392,257 @@ impl NeuroWealthVault {
     // INTERNAL HELPERS
     // ==========================================================================
 
+    /// Writes the default rate-limit policy during initialization.
+    ///
+    /// These defaults are intentionally generous enough for normal batching
+    /// and preview composition while still placing an on-chain ceiling on
+    /// high-frequency activity. The owner can tighten or disable every bucket
+    /// with `set_rate_limit`.
+    #[inline]
+    fn initialize_rate_limit_defaults(env: &Env) {
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_DEPOSIT),
+            &RateLimitConfig {
+                max_calls: DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_WITHDRAW),
+            &RateLimitConfig {
+                max_calls: DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_REBALANCE),
+            &RateLimitConfig {
+                max_calls: DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_REBALANCE_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_TOUCH_TTL),
+            &RateLimitConfig {
+                max_calls: DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_PREVIEW),
+            &RateLimitConfig {
+                max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_BATCH_DEPOSIT),
+            &RateLimitConfig {
+                max_calls: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
+    }
+
+    /// Returns whether `category` is one of the supported rate-limit buckets.
+    #[inline]
+    fn is_valid_rate_limit_category(category: &Symbol) -> bool {
+        category == &RATE_LIMIT_DEPOSIT
+            || category == &RATE_LIMIT_WITHDRAW
+            || category == &RATE_LIMIT_REBALANCE
+            || category == &RATE_LIMIT_TOUCH_TTL
+            || category == &RATE_LIMIT_PREVIEW
+            || category == &RATE_LIMIT_BATCH_DEPOSIT
+    }
+
+    /// Rejects unknown category symbols before they can create arbitrary
+    /// storage keys. This bounds the policy surface and prevents a caller from
+    /// accidentally configuring a bucket that no entrypoint consumes.
+    #[inline]
+    fn require_valid_rate_limit_category(env: &Env, category: &Symbol) {
+        Self::require(
+            env,
+            Self::is_valid_rate_limit_category(category),
+            VaultError::InvalidRateLimitCategory,
+        );
+    }
+
+    /// Returns the deployment default for a validated category.
+    #[inline]
+    fn default_rate_limit_config(category: &Symbol) -> RateLimitConfig {
+        if category == &RATE_LIMIT_DEPOSIT {
+            RateLimitConfig {
+                max_calls: DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_WITHDRAW {
+            RateLimitConfig {
+                max_calls: DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_REBALANCE {
+            RateLimitConfig {
+                max_calls: DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_REBALANCE_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_TOUCH_TTL {
+            RateLimitConfig {
+                max_calls: DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_PREVIEW {
+            RateLimitConfig {
+                max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
+            }
+        } else {
+            RateLimitConfig {
+                max_calls: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
+            }
+        }
+    }
+
+    /// Reads one rate-limit configuration with a legacy-deployment fallback.
+    #[inline]
+    fn get_rate_limit_config_internal(env: &Env, category: &Symbol) -> RateLimitConfig {
+        Self::require_valid_rate_limit_category(env, category);
+        env.storage()
+            .instance()
+            .get(&DataKey::RateLimitConfig(category.clone()))
+            .unwrap_or_else(|| Self::default_rate_limit_config(category))
+    }
+
+    /// Reads a bucket without writing it. If its window has elapsed, returns a
+    /// fresh empty bucket; the next accepted call persists that reset.
+    #[inline]
+    fn read_rate_limit_state(
+        env: &Env,
+        category: &Symbol,
+        user: Option<&Address>,
+    ) -> RateLimitState {
+        let config = Self::get_rate_limit_config_internal(env, category);
+        if config.max_calls == 0 {
+            return RateLimitState {
+                window_start: 0,
+                calls: 0,
+            };
+        }
+
+        let state: Option<RateLimitState> = if let Some(user) = user {
+            env.storage()
+                .instance()
+                .get(&DataKey::RateLimitUserState(user.clone(), category.clone()))
+        } else {
+            env.storage()
+                .instance()
+                .get(&DataKey::RateLimitGlobalState(category.clone()))
+        };
+        let current_ledger = env.ledger().sequence();
+        match state {
+            Some(state)
+                if current_ledger.saturating_sub(state.window_start) < config.window_ledgers =>
+            {
+                state
+            }
+            Some(_) => RateLimitState {
+                window_start: current_ledger,
+                calls: 0,
+            },
+            None => RateLimitState {
+                window_start: 0,
+                calls: 0,
+            },
+        }
+    }
+
+    /// Checks and records one accepted call in a fixed-window bucket.
+    ///
+    /// The configuration is read once and the bucket is read once, then the
+    /// bucket is written once on success. User and global keys are both kept in
+    /// instance storage: this avoids TTL-expiry reset bypasses and means a
+    /// window reset overwrites an existing key rather than creating history.
+    #[inline]
+    fn enforce_rate_limit(env: &Env, category: Symbol, user: Option<&Address>) {
+        let config = Self::get_rate_limit_config_internal(env, &category);
+        if config.max_calls == 0 {
+            return;
+        }
+
+        let key = if let Some(user) = user {
+            DataKey::RateLimitUserState(user.clone(), category.clone())
+        } else {
+            DataKey::RateLimitGlobalState(category.clone())
+        };
+        let current_ledger = env.ledger().sequence();
+        let stored_state: Option<RateLimitState> = env.storage().instance().get(&key);
+        let mut state = match stored_state {
+            Some(state)
+                if current_ledger.saturating_sub(state.window_start) < config.window_ledgers =>
+            {
+                state
+            }
+            _ => RateLimitState {
+                window_start: current_ledger,
+                calls: 0,
+            },
+        };
+
+        if state.calls >= config.max_calls {
+            env.events().publish(
+                (TOPIC_RATE_LIMIT_HIT,),
+                RateLimitExceededEvent {
+                    category,
+                    user: user.cloned(),
+                    current_ledger,
+                    window_start: state.window_start,
+                    max_calls: config.max_calls,
+                    calls: state.calls,
+                },
+            );
+            panic_with_error!(env, VaultError::RateLimitExceeded);
+        }
+
+        state.calls = state.calls.saturating_add(1);
+        env.storage().instance().set(&key, &state);
+    }
+
+    /// Enforces a per-user call allowance.
+    #[inline]
+    fn enforce_user_rate_limit(env: &Env, user: &Address, category: Symbol) {
+        Self::enforce_rate_limit(env, category, Some(user));
+    }
+
+    /// Enforces a global call allowance.
+    #[inline]
+    fn enforce_global_rate_limit(env: &Env, category: Symbol) {
+        Self::enforce_rate_limit(env, category, None);
+    }
+
+    /// Returns the configured maximum batch size, falling back for upgraded
+    /// instances that predate the key.
+    #[inline]
+    fn get_max_batch_size_internal(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Rejects a batch that exceeds the owner-configured entry count.
+    #[inline]
+    fn require_batch_size(env: &Env, entries: u32) {
+        let max_entries = Self::get_max_batch_size_internal(env);
+        Self::require(
+            env,
+            max_entries == 0 || entries <= max_entries,
+            VaultError::BatchSizeExceeded,
+        );
+    }
+
     /// Validates that the vault is not paused.
     ///
     /// # Panics
@@ -7002,17 +7681,6 @@ impl NeuroWealthVault {
         Self::require_initialized(env);
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         owner.require_auth();
-    }
-
-    /// Validates that `caller` matches the stored owner.
-    ///
-    /// Used by entrypoints that take an explicit `owner: Address` parameter
-    /// (as opposed to [`require_is_owner`], which fetches the owner from
-    /// storage and requires that address to sign).
-    #[inline]
-    fn require_owner(env: &Env, caller: &Address) {
-        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        Self::require(env, caller == &stored_owner, VaultError::CallerIsNotOwner);
     }
 
     /// Validates that the caller is the AI agent.
@@ -7183,9 +7851,23 @@ impl NeuroWealthVault {
     /// for the full mitigation rationale.
     #[inline]
     fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-        shares_floor(assets, total_shares, total_assets).expect("vault: share conversion overflow")
+
+        if total_shares == 0 || total_assets == 0 {
+            // Bootstrap: 1:1 mapping between assets and shares
+            assets
+        } else {
+            assets
+                .checked_mul(total_shares)
+                .expect("vault: share conversion overflow")
+                .checked_div(total_assets)
+                .expect("vault: conversion div error")
+        }
     }
 
     /// Internal helper: convert assets (USDC) to shares using current totals.
@@ -7193,18 +7875,57 @@ impl NeuroWealthVault {
     /// Prevents dust attacks where floor division could result in 0 shares burned.
     #[inline]
     fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-        shares_ceil(assets, total_shares, total_assets).expect("vault: conversion overflow")
+
+        if total_shares == 0 || total_assets == 0 {
+            // Bootstrap: 1:1 mapping between assets and shares
+            // Ceiling of assets is just assets (assets >= 1)
+            assets
+        } else {
+            // Ceiling division: (a + b - 1) / b
+            // shares = ceil(assets * total_shares / total_assets)
+            let product = assets
+                .checked_mul(total_shares)
+                .expect("vault: conversion mul overflow");
+            // total_assets >= 1 in this branch, so the subtraction cannot underflow;
+            // use checked ops throughout for a consistent, explicit failure mode.
+            let numerator = product
+                .checked_add(
+                    total_assets
+                        .checked_sub(1)
+                        .expect("vault: conversion sub underflow"),
+                )
+                .expect("vault: conversion add overflow");
+            numerator
+                .checked_div(total_assets)
+                .expect("vault: conversion div error")
+        }
     }
 
     /// Internal helper: convert shares to assets (USDC) using current totals.
     #[inline]
     fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+
         let total_shares = Self::get_total_shares_internal(env);
         let total_assets = Self::get_total_assets_internal(env);
-        assets_from_shares(shares, total_shares, total_assets)
-            .expect("vault: share to asset conversion overflow")
+
+        if total_shares == 0 || total_assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(total_assets)
+                .expect("vault: share to asset conversion overflow")
+                .checked_div(total_shares)
+                .expect("vault: conversion div error")
+        }
     }
 
     /// Updates [`DataKey::CurrentProtocol`] and emits [`ProtocolChangedEvent`] on change.
@@ -7718,333 +8439,6 @@ impl NeuroWealthVault {
         } else {
             0
         }
-    }
-
-    // ==========================================================================
-    // MINIMUM WITHDRAWAL PARAMETER (#638)
-    // ==========================================================================
-
-    /// Sets the minimum withdrawal amount parameter (owner-only).
-    pub fn set_min_withdrawal(env: Env, owner: Address, amount: i128) -> Result<(), VaultError> {
-        Self::require_initialized(&env);
-        owner.require_auth();
-        Self::require_owner(&env, &owner);
-        if amount <= 0 {
-            return Err(VaultError::MinWithdrawalMustBePositive);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::MinWithdrawal, &amount);
-        Ok(())
-    }
-
-    /// Returns the minimum withdrawal amount.
-    pub fn get_min_withdrawal(env: Env) -> i128 {
-        Self::require_initialized(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::MinWithdrawal)
-            .unwrap_or(0_i128)
-    }
-
-    // ==========================================================================
-    // WITHDRAWAL QUEUE MECHANISM (#639)
-    // ==========================================================================
-
-    /// Configures the withdrawal queue parameters (owner-only).
-    pub fn set_queue_config(
-        env: Env,
-        owner: Address,
-        max_size: u32,
-        ttl_sec: u64,
-    ) -> Result<(), VaultError> {
-        Self::require_initialized(&env);
-        owner.require_auth();
-        Self::require_owner(&env, &owner);
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxQueueSize, &max_size);
-        env.storage().instance().set(&DataKey::QueueTtl, &ttl_sec);
-        Ok(())
-    }
-
-    /// Returns the withdrawal queue max size and TTL config.
-    pub fn get_queue_config(env: Env) -> (u32, u64) {
-        Self::require_initialized(&env);
-        let max_size = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxQueueSize)
-            .unwrap_or(100u32);
-        let ttl = env
-            .storage()
-            .instance()
-            .get(&DataKey::QueueTtl)
-            .unwrap_or(86400u64);
-        (max_size, ttl)
-    }
-
-    /// Enqueues a withdrawal request when protocol liquidity is constrained.
-    pub fn queue_withdrawal(env: Env, user: Address, amount: i128) -> u64 {
-        Self::require_initialized(&env);
-        user.require_auth();
-        Self::require_positive_amount(&env, amount);
-
-        let (max_size, _ttl) = Self::get_queue_config(env.clone());
-        let head: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::QueueHead)
-            .unwrap_or(0);
-        let tail: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::QueueTail)
-            .unwrap_or(0);
-
-        let current_queue_len = tail.saturating_sub(head);
-        if current_queue_len >= max_size as u64 {
-            panic_with_error!(&env, VaultError::QueueFull);
-        }
-
-        let request_id = tail + 1;
-        let now = env.ledger().timestamp();
-
-        let request = WithdrawalRequest {
-            request_id,
-            user: user.clone(),
-            amount,
-            timestamp: now,
-            fulfilled: false,
-            cancelled: false,
-        };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::WithdrawalRequest(request_id), &request);
-        env.storage()
-            .instance()
-            .set(&DataKey::QueueTail, &request_id);
-
-        env.events().publish(
-            (symbol_short!("queue"), user.clone()),
-            WithdrawalQueuedEvent {
-                request_id,
-                user: user.clone(),
-                amount,
-                position: current_queue_len + 1,
-                timestamp: now,
-            },
-        );
-
-        request_id
-    }
-
-    /// Processes pending withdrawal queue requests in FIFO order (agent or owner).
-    pub fn process_withdrawal_queue(env: Env, caller: Address, batch_size: u32) -> u32 {
-        Self::require_initialized(&env);
-        caller.require_auth();
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        let agent: Option<Address> = env.storage().instance().get(&DataKey::Agent);
-
-        if caller != owner && agent.as_ref() != Some(&caller) {
-            panic_with_error!(&env, VaultError::CallerIsNotOwner);
-        }
-
-        let (_max_size, ttl) = Self::get_queue_config(env.clone());
-        let mut head: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::QueueHead)
-            .unwrap_or(0);
-        let tail: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::QueueTail)
-            .unwrap_or(0);
-
-        let mut processed = 0u32;
-        let now = env.ledger().timestamp();
-
-        while head < tail && processed < batch_size {
-            head += 1;
-            if let Some(mut req) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, WithdrawalRequest>(&DataKey::WithdrawalRequest(head))
-            {
-                if req.fulfilled || req.cancelled {
-                    continue;
-                }
-
-                if ttl > 0 && now > req.timestamp.saturating_add(ttl) {
-                    req.cancelled = true;
-                    env.storage()
-                        .persistent()
-                        .set(&DataKey::WithdrawalRequest(head), &req);
-                    continue;
-                }
-
-                req.fulfilled = true;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::WithdrawalRequest(head), &req);
-                processed += 1;
-            }
-        }
-
-        env.storage().instance().set(&DataKey::QueueHead, &head);
-        processed
-    }
-
-    /// Cancels a queued withdrawal request (user-only).
-    pub fn cancel_withdrawal_request(env: Env, user: Address, request_id: u64) {
-        Self::require_initialized(&env);
-        user.require_auth();
-
-        let mut req: WithdrawalRequest = env
-            .storage()
-            .persistent()
-            .get(&DataKey::WithdrawalRequest(request_id))
-            .expect("request not found");
-
-        if req.user != user {
-            panic_with_error!(&env, VaultError::CallerIsNotOwner);
-        }
-
-        if req.fulfilled || req.cancelled {
-            return;
-        }
-
-        req.cancelled = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::WithdrawalRequest(request_id), &req);
-    }
-
-    /// Gets details for a queued withdrawal request.
-    pub fn get_withdrawal_request(env: Env, request_id: u64) -> Option<WithdrawalRequest> {
-        Self::require_initialized(&env);
-        env.storage()
-            .persistent()
-            .get(&DataKey::WithdrawalRequest(request_id))
-    }
-
-    // ==========================================================================
-    // BATCH DEPOSIT FUNCTION (#641)
-    // ==========================================================================
-
-    /// Sets the maximum allowed batch deposit size (owner-only).
-    pub fn set_max_batch_size(env: Env, owner: Address, max_size: u32) -> Result<(), VaultError> {
-        Self::require_initialized(&env);
-        owner.require_auth();
-        Self::require_owner(&env, &owner);
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxBatchSize, &max_size);
-        Ok(())
-    }
-
-    /// Gets the maximum allowed batch deposit size.
-    pub fn get_max_batch_size(env: Env) -> u32 {
-        Self::require_initialized(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxBatchSize)
-            .unwrap_or(50u32)
-    }
-
-    /// Batch deposit function allowing agent or owner to process multiple user deposits.
-    pub fn batch_deposit(env: Env, caller: Address, deposits: Vec<BatchDepositItem>) {
-        Self::require_initialized(&env);
-        caller.require_auth();
-
-        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        let agent: Option<Address> = env.storage().instance().get(&DataKey::Agent);
-
-        if caller != owner && agent.as_ref() != Some(&caller) {
-            panic_with_error!(&env, VaultError::CallerIsNotOwner);
-        }
-
-        let max_batch = Self::get_max_batch_size(env.clone());
-        if deposits.len() > max_batch {
-            panic_with_error!(&env, VaultError::MaxBatchSizeExceeded);
-        }
-
-        let mut total_batch_amount = 0i128;
-        for item in deposits.iter() {
-            total_batch_amount = total_batch_amount
-                .checked_add(item.amount)
-                .expect("batch_deposit: total amount overflow");
-        }
-
-        Self::require_within_tvl_cap(&env, total_batch_amount);
-
-        for item in deposits.iter() {
-            Self::deposit(env.clone(), item.user.clone(), item.amount);
-        }
-    }
-
-    // ==========================================================================
-    // USER DEPOSIT TIMESTAMP & REALIZED APY (#642)
-    // ==========================================================================
-
-    /// Gets the last deposit timestamp for a user.
-    pub fn get_user_deposit_timestamp(env: Env, user: Address) -> u64 {
-        Self::require_initialized(&env);
-        env.storage()
-            .persistent()
-            .get(&DataKey::UserDepositTimestamp(user))
-            .unwrap_or(0u64)
-    }
-
-    /// Calculates user's realized APY based on deposit timestamp and current valuation.
-    pub fn get_user_realized_apy(env: Env, user: Address) -> i128 {
-        Self::require_initialized(&env);
-
-        let shares: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Shares(user.clone()))
-            .unwrap_or(0_i128);
-        if shares == 0 {
-            return 0;
-        }
-
-        let deposited_val: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::UserDepositedValue(user.clone()))
-            .unwrap_or(0_i128);
-        if deposited_val <= 0 {
-            return 0;
-        }
-
-        let current_val = Self::convert_to_assets_internal(&env, shares);
-        if current_val <= deposited_val {
-            return 0;
-        }
-
-        let deposit_ts = Self::get_user_deposit_timestamp(env.clone(), user);
-        if deposit_ts == 0 {
-            return 0;
-        }
-
-        let now = env.ledger().timestamp();
-        if now <= deposit_ts {
-            return 0;
-        }
-
-        let seconds_held = now - deposit_ts;
-        let days_held = seconds_held / 86400;
-        if days_held == 0 {
-            return 0;
-        }
-
-        let gain = current_val - deposited_val;
-        (gain.saturating_mul(365).saturating_mul(100))
-            / (deposited_val.saturating_mul(days_held as i128))
     }
 }
 

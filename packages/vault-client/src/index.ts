@@ -18,6 +18,8 @@ export {
 
   // Struct types
   type UserInfo,
+  type RateLimitConfig,
+  type RateLimitState,
 
   // Event payload interfaces
   type VaultInitializedEvent,
@@ -54,6 +56,9 @@ export {
   type DexWithdrawEvent,
   type DexPoolConfiguredEvent,
   type UserStrategyUpdatedEvent,
+  type RateLimitConfigUpdatedEvent,
+  type BatchSizeLimitUpdatedEvent,
+  type RateLimitExceededEvent,
 
   // Error codes
   VaultErrorCode,

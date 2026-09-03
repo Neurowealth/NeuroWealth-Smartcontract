@@ -15,8 +15,8 @@
     "@neurowealth/vault-client": "file:../vault-client",
     "@stellar/stellar-sdk": "^12.0.0",
     "date-fns": "^3.0.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
+    "react": ">=17.0.0",
+    "react-dom": ">=17.0.0",
     "recharts": "^2.10.0"
   },
   "devDependencies": {
@@ -26,14 +26,15 @@
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
     "autoprefixer": "^10.4.0",
+    "axe-core": "^4.9.0",
     "eslint": "^8.0.0",
     "eslint-plugin-react": "^7.12.4",
     "jsdom": "^24.0.0",
-    "axe-core": "^4.9.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.3.0",
     "vite": "^5.0.0",
+    "vite-plugin-pwa": "^1.3.0",
     "vitest": "^1.0.0",
     "vitest-axe": "^0.1.0"
   },

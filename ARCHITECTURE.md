@@ -168,15 +168,6 @@ pub enum DataKey {
     PendingUpgradeHash,   // WASM hash awaiting timelock execution (#316)
     UpgradeTimelockExpiry,// ledger the pending upgrade unlocks at (#316)
     Deployer,             // deployer address (init only)
-    MinWithdrawal,        // minimum withdrawal amount (#638)
-    MaxQueueSize,         // maximum withdrawal queue size (#639)
-    QueueTtl,             // withdrawal request TTL in seconds (#639)
-    QueueHead,            // withdrawal queue head pointer (#639)
-    QueueTail,            // withdrawal queue tail pointer (#639)
-    WithdrawalRequest(u64),// withdrawal request entry (#639)
-    MaxBatchSize,         // maximum batch deposit size (#641)
-    UserDepositTimestamp(Address),// user deposit timestamp (#642)
-    UserDepositedValue(Address),  // user accumulated deposited value (#642)
 }
 ```
 
@@ -1488,3 +1479,84 @@ The protocol charges a configurable performance fee on earned yield to fund main
 - **Maximum Cap**: 1,000 basis points (10.00%) strictly enforced at the smart contract level (`FeeExceedsMaximum` error on violations)
 - **Settlement**: Deducted from harvested yield during auto-compounding cycles and directed to the configured Treasury address
 - **Events**: Emits `PerformanceFeeEvent { treasury, yield_gross, fee_amount, bps }`
+
+## On-chain rate limiting
+
+The vault applies fixed-window rate limits in the contract rather than relying on
+an RPC gateway or the AI agent. The current ledger sequence is the only clock:
+a bucket starts at the ledger of its first accepted call and resets when
+`current_ledger - window_start >= window_ledgers`. A reset overwrites the same
+bucket; no call history is retained.
+
+### Configuration and categories
+
+The owner configures a category with:
+
+```text
+set_rate_limit(category, max_calls, window_ledgers)
+```
+
+`max_calls == 0` disables a category. Enabled categories require a non-zero
+window. Supported category symbols are:
+
+| Category | Scope | Protected entrypoints | Default |
+|---|---|---|---|
+| `deposit` | Per user | `deposit`, and the deposit leg of `batch_deposit` | 100 / 720 ledgers |
+| `withdraw` | Per user | `withdraw`, `withdraw_all` | 100 / 720 ledgers |
+| `rebalance` | Global | `rebalance`, `harvest`, `emergency_harvest` | 100 / 720 ledgers |
+| `touch_ttl` | Per user | `touch_user_ttl` | 5 / 1 ledger |
+| `preview` | Global | all three `preview_*` and both `convert_to_*` calls | 1,000 / 1 ledger |
+| `batch_dep` | Per user | `batch_deposit` | 100 / 720 ledgers |
+
+The defaults are deliberately compatible with normal client composition while
+putting a finite ceiling on high-frequency transactions. Production operators
+should tighten them for the vault's expected workload. The rebalance bucket is
+additional to, and does not replace, `MinRebalanceInterval` and
+`LastRebalanceLedger`.
+
+`get_rate_limit`/`get_rate_limit_config` expose the configured policy;
+`get_global_rate_limit_state` and `get_user_rate_limit_state` expose the current
+bucket for monitoring. Configuration changes emit
+`RateLimitConfigUpdatedEvent` (`rate_cfg`). The owner can also set the maximum
+number of entries in `batch_deposit` with `set_max_batch_size` (default `50`,
+`0` means unlimited), which emits `BatchSizeLimitUpdatedEvent` (`batch_lim`).
+
+### Storage layout
+
+Rate-limit policies and usage are kept in **instance storage**:
+
+| Key | Type | Purpose |
+|---|---|---|
+| `RateLimitConfig(Symbol)` | `RateLimitConfig` | Owner policy (`max_calls`, `window_ledgers`) |
+| `RateLimitGlobalState(Symbol)` | `RateLimitState` | Global category window and accepted-call count |
+| `RateLimitUserState(Address, Symbol)` | `RateLimitState` | Per-user category window and accepted-call count |
+| `MaxBatchSize` | `u32` | Batch entry ceiling |
+
+The new `DataKey` variants are appended to preserve all existing serialized key
+discriminants across upgrades. User buckets use instance storage intentionally:
+unlike `Shares(user)`, they must not expire and silently reset through persistent
+storage TTL. A caller's first accepted operation creates one bounded bucket per
+category; later calls update that key in place. This trades a small amount of
+instance storage growth for a reliable anti-bypass guarantee. Sybil addresses
+can still create distinct per-user buckets, so transaction fees, TVL caps, and
+authentication remain required complementary controls.
+
+### Enforcement order and gas behavior
+
+Each guard runs after initialization, authentication, pause, and ordinary input
+validation, but before token or protocol calls. It performs one policy read and
+one bucket read, then one bucket write only when the operation is accepted. A
+disabled category returns before reading the bucket. `batch_deposit` counts once
+in both the regular deposit bucket and its batch bucket, preventing batching
+from bypassing the single-deposit frequency policy; its entry count is checked
+before the transfer loop. All preview/conversion entrypoints share one global
+bucket so callers cannot bypass the computational bound by alternating method
+names.
+
+When a bucket is exhausted, the contract raises `VaultError::RateLimitExceeded`
+and publishes `RateLimitExceededEvent` (`rate_hit`) with the category, scope,
+ledger, window, configured maximum, and observed count. The event is published
+on the rejection path so monitoring can correlate attempted over-limit calls with
+their category and window. The rejection still returns a contract error; indexers
+should also monitor failed transaction result codes because event visibility for
+reverted transactions depends on the ledger and RPC surface.

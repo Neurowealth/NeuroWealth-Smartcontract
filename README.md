@@ -124,10 +124,7 @@ NeuroWealth-Smartcontract/
 │   ├── WASM_SIZE.md
 │   ├── E2E_ARTIFACT_LIFECYCLE.md
 │   ├── monitoring.md
-│   ├── state-machine.md
-│   ├── FORMAL_VERIFICATION.md
-│   ├── ACCESSIBILITY.md
-│   └── NOTIFICATIONS.md
+│   └── state-machine.md
 ├── test/                           # Off-chain security tests
 │   ├── NotOwnerCompromiseBlastRadius.test.ts
 │   └── OwnerCompromiseBlastRadius.test.ts
@@ -219,19 +216,21 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Storage layout, share accounting math, asset flow diagrams |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup, CI requirements, PR process |
 | [`scripts/README-E2E.md`](scripts/README-E2E.md) | End-to-end devnet test guide |
-| [`SECURITY.md`](SECURITY.md) | Trust model, threat analysis, pause-semantics matrix, agent-compromise adversarial tests, and owner-compromise runbook |
+| [`SECURITY.md`](SECURITY.md) | Trust model, threat analysis, pause-semantics matrix, and owner-compromise runbook |
 | [`docs/BUG_BOUNTY.md`](docs/BUG_BOUNTY.md) | Bug bounty scope, severity rubric, safe-harbor terms, and payout process |
 | [`docs/MAINNET_CHECKLIST.md`](docs/MAINNET_CHECKLIST.md) | Pre-mainnet deployment checklist |
 | [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) | DEX strategy behaviour, integration assumptions, and liquidity routing |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](docs/BLEND_INTEGRATION_RESEARCH.md) | Blend protocol supply/withdraw design and cross-contract call patterns |
 | [`docs/LEAST_PRIVILEGE_AGENT.md`](docs/LEAST_PRIVILEGE_AGENT.md) | Least-privilege evaluation: separate rebalancer vs reporter agent roles (Issue #606) |
 | [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) | Guardian-key design: second signature for `execute_upgrade` (Issue #607) |
+
 | [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md) | Kani proofs and share-accounting properties (Issue #672) |
 | [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md) | WCAG 2.1 AA statement, axe-core CI, and screen-reader checklist (Issue #668) |
 | [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) | Web Push, email fallback, and notification preferences (Issue #669) |
 | [`docs/ERC4626_CONFORMANCE_CHECKLIST.md`](docs/ERC4626_CONFORMANCE_CHECKLIST.md) | ERC-4626 conformance checklist: function-by-function diff against the spec (Issue #602) |
 | [`docs/ISSUER_FREEZE_CONTINGENCY.md`](docs/ISSUER_FREEZE_CONTINGENCY.md) | Operational plan if the vault's USDC or agent wallet is frozen by the issuer (Issue #604) |
 | [`docs/SECRETS_HYGIENE.md`](docs/SECRETS_HYGIENE.md) | Full-history secret scan results and pre-commit/CI enforcement (Issue #605) |
+
 
 ## Smart Contract
 The core Soroban vault contract handles all on-chain fund management.
@@ -588,3 +587,15 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 2. **Open a Pull Request** against the `main` branch.
 3. Please make sure to run `cargo test` and `npm test` before submitting.
 
+
+### On-chain rate limits
+
+The vault enforces fixed-window rate limits using the ledger sequence. The owner
+can configure each category with `set_rate_limit(category, max_calls,
+window_ledgers)`; `max_calls == 0` disables a category. User deposits,
+withdrawals, TTL maintenance, and batch deposits use per-user buckets. Rebalance
+and harvest operations, plus all preview/conversion functions, use global
+buckets. `batch_deposit` is also bounded by `set_max_batch_size` (default 50
+entries). See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
+[`SECURITY.md`](SECURITY.md) for defaults, storage, events, and operational
+guidance.

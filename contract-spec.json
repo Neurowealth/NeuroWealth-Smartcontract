@@ -86,6 +86,37 @@
       "security": "Protects against inflation attacks with minimum deposit and non-zero mint guard"
     },
     {
+      "name": "batch_deposit",
+      "category": "liquidity",
+      "access": "public",
+      "description": "Deposit multiple USDC entries atomically and receive vault shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "entries",
+          "type": "Vec<(Address, i128)>"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "constraints": [
+        "entry count must be <= max batch size (0 = unlimited)",
+        "all entries must use the configured USDC token",
+        "batch consumes both deposit and batch-deposit rate-limit buckets"
+      ],
+      "events": [
+        "DepositEvent"
+      ]
+    },
+    {
       "name": "withdraw",
       "category": "liquidity",
       "access": "public",
@@ -140,6 +171,113 @@
       ]
     },
     {
+      "name": "migrate_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function migrate_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "lock_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function lock_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "shares",
+          "type": "i128"
+        },
+        {
+          "name": "lock_duration_days",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "unlock_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function unlock_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "get_locked_shares",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_locked_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": "(i128, u32)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "emergency_withdraw",
+      "category": "management",
+      "access": "public",
+      "description": "Function emergency_withdraw",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
       "name": "rebalance",
       "category": "management",
       "access": "agent-only",
@@ -177,6 +315,25 @@
       "notes": [
         "Performs slippage check against min_out parameter"
       ]
+    },
+    {
+      "name": "harvest",
+      "category": "management",
+      "access": "public",
+      "description": "Function harvest",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
     },
     {
       "name": "pause",
@@ -243,6 +400,82 @@
       "events": [
         "EmergencyPausedEvent"
       ]
+    },
+    {
+      "name": "reset_circuit_breaker",
+      "category": "management",
+      "access": "public",
+      "description": "Function reset_circuit_breaker",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "emergency_harvest",
+      "category": "management",
+      "access": "public",
+      "description": "Function emergency_harvest",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "set_migration_target",
+      "category": "management",
+      "access": "public",
+      "description": "Function set_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "target",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "set_migration_paused",
+      "category": "management",
+      "access": "public",
+      "description": "Function set_migration_paused",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
     },
     {
       "name": "set_tvl_cap",
@@ -407,6 +640,364 @@
       "query_only": true
     },
     {
+      "name": "set_rate_limit",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Configure a fixed-window call rate limit for a supported function category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        },
+        {
+          "name": "max_calls",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "constraints": [
+        "max_calls == 0 disables the category",
+        "enabled categories require a non-zero window",
+        "unknown categories are rejected"
+      ],
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
+    },
+    {
+      "name": "set_rate_limit_config",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Alias for set_rate_limit",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        },
+        {
+          "name": "max_calls",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_rate_limit",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the configured rate-limit allowance for a category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitConfig",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_rate_limit_config",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the configured rate-limit allowance for a category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitConfig",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_global_rate_limit_state",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the current global rate-limit usage bucket",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitState",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_user_rate_limit_state",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the current per-user rate-limit usage bucket",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitState",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_max_batch_size",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set the maximum number of entries accepted by batch_deposit",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_entries",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_max_batch_size",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the maximum batch_deposit entry count",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_batch_size_limit",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Alias for set_max_batch_size",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_entries",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_batch_size_limit",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the maximum batch_deposit entry count",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_min_holding_period",
+      "category": "management",
+      "access": "public",
+      "description": "Function set_min_holding_period",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "get_min_holding_period",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_min_holding_period",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "submit_mev_report",
+      "category": "management",
+      "access": "public",
+      "description": "Function submit_mev_report",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "estimated_loss_stroops",
+          "type": "i128"
+        },
+        {
+          "name": "min_out_used",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "get_mev_stats",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_mev_stats",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "(i128, u32)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_max_acceptable_mev_loss",
+      "category": "management",
+      "access": "public",
+      "description": "Function set_max_acceptable_mev_loss",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_loss_stroops",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "submit_apy_prediction",
+      "category": "management",
+      "access": "public",
+      "description": "Function submit_apy_prediction",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "prediction",
+          "type": "ApyPrediction"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "get_apy_prediction",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_apy_prediction",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "Option<ApyPrediction>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "get_last_rebalance_ledger",
       "category": "queries",
       "access": "public",
@@ -422,6 +1013,55 @@
       "state_changing": false,
       "storage_type": "instance",
       "query_only": true
+    },
+    {
+      "name": "set_max_consecutive_failures",
+      "category": "management",
+      "access": "public",
+      "description": "Function set_max_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_consecutive_failures",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_max_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_consecutive_failures",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
     },
     {
       "name": "set_approval_ttl",
@@ -807,6 +1447,21 @@
       "query_only": true
     },
     {
+      "name": "get_pending_ownership",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_pending_ownership",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Option<PendingOwnershipInfo>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "update_total_assets",
       "category": "management",
       "access": "agent-only",
@@ -1026,10 +1681,33 @@
       "query_only": true
     },
     {
-      "name": "touch_user_ttl",
+      "name": "get_users_with_shares",
       "category": "queries",
       "access": "public",
-      "description": "Extend persistent TTL for user shares entry",
+      "description": "Function get_users_with_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "start",
+          "type": "u32"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": "Vec<(Address, i128)>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "touch_user_ttl",
+      "category": "maintenance",
+      "access": "public",
+      "description": "Extend persistent TTL for user shares entry with a per-user rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1042,9 +1720,9 @@
       ],
       "returns": "bool",
       "requires_auth": false,
-      "state_changing": false,
-      "storage_type": "persistent",
-      "query_only": true
+      "state_changing": true,
+      "storage_type": "mixed",
+      "query_only": false
     },
     {
       "name": "get_user_info",
@@ -1071,7 +1749,7 @@
       "name": "preview_deposit_to_shares",
       "category": "queries",
       "access": "public",
-      "description": "Preview shares minted for asset amount (floor)",
+      "description": "Preview shares minted for asset amount (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1084,14 +1762,14 @@
       ],
       "returns": "i128",
       "requires_auth": false,
-      "state_changing": false,
-      "query_only": true
+      "state_changing": true,
+      "query_only": false
     },
     {
       "name": "preview_shares_to_assets",
       "category": "queries",
       "access": "public",
-      "description": "Preview assets returned for share amount (floor)",
+      "description": "Preview assets returned for share amount (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1104,14 +1782,14 @@
       ],
       "returns": "i128",
       "requires_auth": false,
-      "state_changing": false,
-      "query_only": true
+      "state_changing": true,
+      "query_only": false
     },
     {
       "name": "preview_withdraw",
       "category": "queries",
       "access": "public",
-      "description": "Preview shares burned for withdrawal amount (ceil)",
+      "description": "Preview shares burned for withdrawal amount (ceil), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1124,14 +1802,14 @@
       ],
       "returns": "i128",
       "requires_auth": false,
-      "state_changing": false,
-      "query_only": true
+      "state_changing": true,
+      "query_only": false
     },
     {
       "name": "convert_to_shares",
       "category": "queries",
       "access": "public",
-      "description": "Convert asset amount to shares (floor)",
+      "description": "Convert asset amount to shares (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1144,14 +1822,14 @@
       ],
       "returns": "i128",
       "requires_auth": false,
-      "state_changing": false,
-      "query_only": true
+      "state_changing": true,
+      "query_only": false
     },
     {
       "name": "convert_to_assets",
       "category": "queries",
       "access": "public",
-      "description": "Convert share amount to assets (floor)",
+      "description": "Convert share amount to assets (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1164,8 +1842,8 @@
       ],
       "returns": "i128",
       "requires_auth": false,
-      "state_changing": false,
-      "query_only": true
+      "state_changing": true,
+      "query_only": false
     },
     {
       "name": "get_agent",
@@ -1477,6 +2155,40 @@
       ]
     },
     {
+      "name": "HarvestEvent",
+      "topic": "harvest",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol harvested from (e.g., \"blend\", \"dex\")"
+        },
+        {
+          "name": "amount_harvested",
+          "type": "i128",
+          "description": "Amount withdrawn and re-deposited"
+        }
+      ]
+    },
+    {
+      "name": "EmergencyHarvestEvent",
+      "topic": "em_harv",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol harvested from (e.g., \"blend\", \"dex\")"
+        },
+        {
+          "name": "amount_harvested",
+          "type": "i128",
+          "description": "Amount withdrawn and re-deposited"
+        }
+      ]
+    },
+    {
       "name": "ProtocolChangedEvent",
       "topic": "proto_chg",
       "description": "Emitted by the contract.",
@@ -1591,6 +2303,35 @@
       ]
     },
     {
+      "name": "CircuitBreakerTriggeredEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "reason",
+          "type": "String",
+          "description": "Field reason"
+        },
+        {
+          "name": "threshold_value",
+          "type": "i128",
+          "description": "Field threshold_value"
+        }
+      ]
+    },
+    {
+      "name": "CircuitBreakerResetEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Field owner"
+        }
+      ]
+    },
+    {
       "name": "TvlCapUpdatedEvent",
       "topic": "tvl_cap",
       "description": "Emitted by the contract.",
@@ -1604,6 +2345,11 @@
           "name": "new_cap",
           "type": "i128",
           "description": "TVL cap after the change, in USDC raw units (7 decimals)"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp when the cap was changed"
         }
       ]
     },
@@ -1621,6 +2367,11 @@
           "name": "new_cap",
           "type": "i128",
           "description": "Per-user deposit cap after the change, in USDC raw units (7 decimals)"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp when the cap was changed"
         }
       ]
     },
@@ -2096,21 +2847,311 @@
           "description": "New strategy symbol"
         }
       ]
+    },
+    {
+      "name": "SharesMigratedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who migrated their shares"
+        },
+        {
+          "name": "old_vault",
+          "type": "Address",
+          "description": "Old vault contract address"
+        },
+        {
+          "name": "new_vault",
+          "type": "Address",
+          "description": "New vault contract address"
+        },
+        {
+          "name": "shares_burned",
+          "type": "i128",
+          "description": "Number of shares burned from old vault"
+        },
+        {
+          "name": "assets_transferred",
+          "type": "i128",
+          "description": "Amount of assets (USDC) transferred to new vault"
+        }
+      ]
+    },
+    {
+      "name": "MigrationTargetUpdatedEvent",
+      "topic": "mig_tgt",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_target",
+          "type": "Option<Address>",
+          "description": "Previous migration target address, or None if not set"
+        },
+        {
+          "name": "new_target",
+          "type": "Address",
+          "description": "New migration target address"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the change"
+        }
+      ]
+    },
+    {
+      "name": "MigrationPausedEvent",
+      "topic": "mig_pse",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "paused",
+          "type": "bool",
+          "description": "`true` if migration is now paused, `false` if unpaused"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the pause/unpause"
+        }
+      ]
+    },
+    {
+      "name": "SharesLockedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who locked their shares"
+        },
+        {
+          "name": "shares_locked",
+          "type": "i128",
+          "description": "Number of shares locked"
+        },
+        {
+          "name": "lock_duration_days",
+          "type": "u32",
+          "description": "Lock duration in days"
+        },
+        {
+          "name": "boost_multiplier",
+          "type": "u32",
+          "description": "Boost multiplier applied (e.g., 1.1x, 1.25x, 1.5x)"
+        },
+        {
+          "name": "expiry_ledger",
+          "type": "u32",
+          "description": "Ledger when lock expires"
+        }
+      ]
+    },
+    {
+      "name": "SharesUnlockedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who unlocked their shares"
+        },
+        {
+          "name": "shares_unlocked",
+          "type": "i128",
+          "description": "Number of shares unlocked"
+        }
+      ]
+    },
+    {
+      "name": "EmergencyWithdrawalEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who performed the emergency withdrawal"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of USDC withdrawn (7 decimal places)"
+        },
+        {
+          "name": "shares",
+          "type": "i128",
+          "description": "Number of shares burned"
+        },
+        {
+          "name": "from_idle",
+          "type": "bool",
+          "description": "Whether funds were taken from idle balance (true) or protocol (false)"
+        }
+      ]
+    },
+    {
+      "name": "MevExtractionSuspectedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The rebalance protocol where MEV was suspected (e.g., \"blend\", \"dex\")."
+        },
+        {
+          "name": "estimated_loss_stroops",
+          "type": "i128",
+          "description": "Agent-estimated amount lost to MEV in this transaction (stroops)."
+        },
+        {
+          "name": "min_out_used",
+          "type": "i128",
+          "description": "The `min_out` value that was set for the rebalance that triggered the report."
+        },
+        {
+          "name": "cumulative_loss_stroops",
+          "type": "i128",
+          "description": "Running total of suspected MEV losses since vault inception."
+        },
+        {
+          "name": "incident_count",
+          "type": "u32",
+          "description": "Number of MEV incidents recorded so far."
+        }
+      ]
+    },
+    {
+      "name": "FlashLoanProtectionTriggeredEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose withdrawal was rejected."
+        },
+        {
+          "name": "last_deposit_ledger",
+          "type": "u32",
+          "description": "Ledger at which the user last deposited."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Current ledger at the time of the rejected withdrawal."
+        },
+        {
+          "name": "min_holding_period",
+          "type": "u32",
+          "description": "Configured minimum holding period (in ledgers)."
+        }
+      ]
+    },
+    {
+      "name": "RateLimitConfigUpdatedEvent",
+      "topic": "rate_cfg",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "category",
+          "type": "Symbol",
+          "description": "Category whose allowance changed."
+        },
+        {
+          "name": "old_max_calls",
+          "type": "u32",
+          "description": "Previous maximum accepted calls per window."
+        },
+        {
+          "name": "old_window_ledgers",
+          "type": "u32",
+          "description": "Previous window length in ledgers."
+        },
+        {
+          "name": "new_max_calls",
+          "type": "u32",
+          "description": "New maximum accepted calls per window."
+        },
+        {
+          "name": "new_window_ledgers",
+          "type": "u32",
+          "description": "New window length in ledgers."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner that made the change."
+        }
+      ]
+    },
+    {
+      "name": "BatchSizeLimitUpdatedEvent",
+      "topic": "batch_lim",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_max_entries",
+          "type": "u32",
+          "description": "Previous maximum number of entries; zero means unlimited."
+        },
+        {
+          "name": "new_max_entries",
+          "type": "u32",
+          "description": "New maximum number of entries; zero means unlimited."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner that made the change."
+        }
+      ]
+    },
+    {
+      "name": "RateLimitExceededEvent",
+      "topic": "rate_hit",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "category",
+          "type": "Symbol",
+          "description": "Category whose allowance was exhausted."
+        },
+        {
+          "name": "user",
+          "type": "Option<Address>",
+          "description": "User bucket that was exhausted, or `None` for a global bucket."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Ledger at which the bucket was exhausted or the rejected call was attempted."
+        },
+        {
+          "name": "window_start",
+          "type": "u32",
+          "description": "Start ledger of the exhausted window."
+        },
+        {
+          "name": "max_calls",
+          "type": "u32",
+          "description": "Configured maximum calls for the window."
+        },
+        {
+          "name": "calls",
+          "type": "u32",
+          "description": "Number of accepted calls already recorded in the window."
+        }
+      ]
     }
   ],
   "errors": {
-    "VaultError::NegativeMin": {
-      "code": 1,
-      "description": "Supplied min limit is negative."
-    },
-    "VaultError::NegativeMax": {
-      "code": 2,
-      "description": "Supplied max limit is negative."
-    },
-    "VaultError::MaxLessThanMin": {
-      "code": 3,
-      "description": "max must be greater than or equal to min."
-    },
     "VaultError::AlreadyInitialized": {
       "code": 4,
       "description": "Vault has already been initialized."
@@ -2198,14 +3239,6 @@
     "VaultError::TvlCapBelowUserDepositCap": {
       "code": 25,
       "description": "TVL cap must be greater than or equal to user deposit cap."
-    },
-    "VaultError::MinimumDepositTooLow": {
-      "code": 26,
-      "description": "Minimum deposit is below the allowed floor."
-    },
-    "VaultError::MaximumDepositBelowMinimum": {
-      "code": 27,
-      "description": "Maximum deposit is below the minimum."
     },
     "VaultError::OnlyOwnerCanConfigurePool": {
       "code": 28,
@@ -2299,50 +3332,6 @@
       "code": 50,
       "description": "The timelock delay has not yet elapsed."
     },
-    "VaultError::ShareConversionOverflow": {
-      "code": 51,
-      "description": "Share conversion intermediate product overflow (assets * total_shares)."
-    },
-    "VaultError::TotalDepositsOverflow": {
-      "code": 52,
-      "description": "Total deposits arithmetic overflow."
-    },
-    "VaultError::SharesOverflow": {
-      "code": 53,
-      "description": "User shares arithmetic overflow."
-    },
-    "VaultError::TotalSharesOverflow": {
-      "code": 54,
-      "description": "Total shares arithmetic overflow."
-    },
-    "VaultError::TotalAssetsOverflow": {
-      "code": 55,
-      "description": "Total assets arithmetic overflow."
-    },
-    "VaultError::ShareToAssetConversionOverflow": {
-      "code": 56,
-      "description": "Share conversion intermediate product overflow (shares * total_assets)."
-    },
-    "VaultError::ExchangeRateOverflow": {
-      "code": 57,
-      "description": "Exchange rate intermediate product overflow (total_assets * scalar)."
-    },
-    "VaultError::WithdrawalUnderflow": {
-      "code": 58,
-      "description": "Arithmetic underflow in withdrawal."
-    },
-    "VaultError::MaxDecreaseOverflow": {
-      "code": 59,
-      "description": "Maximum decrease calculation overflow."
-    },
-    "VaultError::TotalAvailableOverflow": {
-      "code": 60,
-      "description": "Total available balance overflow."
-    },
-    "VaultError::VersionOverflow": {
-      "code": 61,
-      "description": "Version counter overflow."
-    },
     "VaultError::DeployerCannotBeZeroAddress": {
       "code": 62,
       "description": "Deployer address supplied to `initialize` is the zero address."
@@ -2362,6 +3351,62 @@
     "VaultError::MaximumDepositExceedsCeiling": {
       "code": 66,
       "description": "Maximum per-transaction deposit exceeds the absolute configured ceiling."
+    },
+    "VaultError::MigrationPaused": {
+      "code": 67,
+      "description": "Migration is paused by the owner."
+    },
+    "VaultError::InvalidMigrationTarget": {
+      "code": 68,
+      "description": "Migration target vault address is not set by owner."
+    },
+    "VaultError::NoSharesToMigrate": {
+      "code": 69,
+      "description": "User has no shares to migrate."
+    },
+    "VaultError::SharesAlreadyLocked": {
+      "code": 70,
+      "description": "Shares are already locked."
+    },
+    "VaultError::LockPeriodNotEnded": {
+      "code": 71,
+      "description": "Lock period has not ended."
+    },
+    "VaultError::InvalidLockDuration": {
+      "code": 72,
+      "description": "Lock duration is not supported."
+    },
+    "VaultError::InsufficientUnlockedShares": {
+      "code": 73,
+      "description": "Insufficient unlocked shares to lock."
+    },
+    "VaultError::EmergencyWithdrawalNotAllowed": {
+      "code": 74,
+      "description": "Emergency withdrawal not allowed (vault not paused)."
+    },
+    "VaultError::HoldingPeriodNotElapsed": {
+      "code": 75,
+      "description": "Withdrawal rejected: minimum holding period since last deposit has not elapsed (#659)."
+    },
+    "VaultError::InvalidHoldingPeriod": {
+      "code": 76,
+      "description": "Holding period configuration is invalid (must be non-negative) (#659)."
+    },
+    "VaultError::RateLimitExceeded": {
+      "code": 77,
+      "description": "The configured call rate for an operation has been exhausted."
+    },
+    "VaultError::InvalidRateLimitCategory": {
+      "code": 78,
+      "description": "The owner supplied an unsupported rate-limit category."
+    },
+    "VaultError::InvalidRateLimitConfig": {
+      "code": 79,
+      "description": "A rate-limit window must be non-zero when a limit is enabled."
+    },
+    "VaultError::BatchSizeExceeded": {
+      "code": 80,
+      "description": "A batch contains more entries than the configured maximum."
     },
     "ValidationError": {
       "code": 100,
@@ -2401,6 +3446,36 @@
     }
   },
   "types": {
+    "RateLimitConfig": {
+      "description": "Owner-configured fixed-window call allowance",
+      "fields": [
+        {
+          "name": "max_calls",
+          "type": "u32",
+          "description": "Maximum accepted calls per window"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32",
+          "description": "Window length in ledgers"
+        }
+      ]
+    },
+    "RateLimitState": {
+      "description": "Current usage of a fixed-window rate-limit bucket",
+      "fields": [
+        {
+          "name": "window_start",
+          "type": "u32",
+          "description": "Window start ledger"
+        },
+        {
+          "name": "calls",
+          "type": "u32",
+          "description": "Accepted calls in the current window"
+        }
+      ]
+    },
     "UserInfo": {
       "description": "Complete user information snapshot",
       "fields": [

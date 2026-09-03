@@ -760,3 +760,54 @@ When adding an event or a field:
   the `(TOPIC_*)` annotation next to the literal symbol.
 - If the event publishes indexed topics beyond position 0, add a topic-tuple
   table like the ones under `DepositEvent` and `WithdrawEvent`.
+
+## Rate-limit events
+
+### `RateLimitConfigUpdatedEvent` (`rate_cfg`)
+
+Emitted when the owner changes a fixed-window rate-limit policy with
+`set_rate_limit` (or its `set_rate_limit_config` alias).
+
+```rust
+pub struct RateLimitConfigUpdatedEvent {
+    pub category: Symbol,
+    pub old_max_calls: u32,
+    pub old_window_ledgers: u32,
+    pub new_max_calls: u32,
+    pub new_window_ledgers: u32,
+    pub owner: Address,
+}
+```
+
+### `BatchSizeLimitUpdatedEvent` (`batch_lim`)
+
+Emitted when the owner changes the maximum number of entries accepted by
+`batch_deposit`.
+
+```rust
+pub struct BatchSizeLimitUpdatedEvent {
+    pub old_max_entries: u32,
+    pub new_max_entries: u32,
+    pub owner: Address,
+}
+```
+
+### `RateLimitExceededEvent` (`rate_hit`)
+
+Emitted immediately before a call is rejected with
+`VaultError::RateLimitExceeded`.
+
+```rust
+pub struct RateLimitExceededEvent {
+    pub category: Symbol,
+    pub user: Option<Address>, // None for a global bucket
+    pub current_ledger: u32,
+    pub window_start: u32,
+    pub max_calls: u32,
+    pub calls: u32,
+}
+```
+
+Correlate the event with the failed transaction's contract error because the
+over-limit operation is reverted and event visibility for a failed transaction
+depends on the ledger/RPC surface.

@@ -70,6 +70,8 @@ function toTsType(sorobanType) {
     'Address':       'string',
     'BytesN<32>':    'Uint8Array',
     'UserInfo':      'UserInfo',
+    'RateLimitConfig': 'RateLimitConfig',
+    'RateLimitState':  'RateLimitState',
   };
   if (exact[t]) return exact[t];
 
@@ -222,6 +224,25 @@ function generateConstants() {
     lines.push('');
   }
 
+  return lines.join('\n');
+}
+
+function generateRateLimitTypes() {
+  const configs = [
+    ['RateLimitConfig', spec.types?.RateLimitConfig],
+    ['RateLimitState', spec.types?.RateLimitState],
+  ];
+  const lines = [];
+  for (const [name, def] of configs) {
+    if (!def) continue;
+    lines.push(`/** ${def.description} */`);
+    lines.push(`export interface ${name} {`);
+    for (const field of def.fields ?? []) {
+      lines.push(`  /** ${field.description ?? ''} */`);
+      lines.push(`  ${field.name}: ${toTsType(field.type)};`);
+    }
+    lines.push('}', '');
+  }
   return lines.join('\n');
 }
 
@@ -564,6 +585,7 @@ function generate() {
     generateFileHeader(),
     generateConstants(),
     generateUserInfoType(),
+    generateRateLimitTypes(),
     generateEventInterfaces(),
     generateErrorEnum(),
     generateClientClass(),
