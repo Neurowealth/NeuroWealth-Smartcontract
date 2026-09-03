@@ -761,6 +761,50 @@ When adding an event or a field:
 - If the event publishes indexed topics beyond position 0, add a topic-tuple
   table like the ones under `DepositEvent` and `WithdrawEvent`.
 
+## Multi-Protocol Allocation Events (Phase 2)
+
+### `ProtocolAllocationChangedEvent`
+
+Topic: `alloc_chg` (`TOPIC_PROTOCOL_ALLOCATION_CHANGED`)
+
+Published by `rebalance_multi` whenever the allocation split changes. This is
+the authoritative signal for indexers tracking diversification — prefer it over
+inferring the split from supply/withdraw events.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `old_blend_bps` | `u32` | Blend allocation before the change, in basis points |
+| `old_dex_bps` | `u32` | DEX allocation before the change, in basis points |
+| `new_blend_bps` | `u32` | Blend allocation after the change, in basis points |
+| `new_dex_bps` | `u32` | DEX allocation after the change, in basis points |
+| `deployed_to_blend` | `i128` | USDC in Blend after the change, raw units (7 decimals) |
+| `deployed_to_dex` | `i128` | USDC in the DEX after the change, raw units (7 decimals) |
+
+### `MultiProtocolModeChangedEvent`
+
+Topic: `multi_md` (`TOPIC_MULTI_PROTOCOL_MODE`)
+
+Published by `enable_multi_protocol` when the vault migrates between
+single-protocol and multi-protocol allocation mode.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `enabled` | `bool` | `true` when multi-protocol allocation is now active |
+| `blend_bps` | `u32` | Blend allocation seeded by the migration |
+| `dex_bps` | `u32` | DEX allocation seeded by the migration |
+
+### `ProtocolApyUpdatedEvent`
+
+Topic: `apy_upd` (`TOPIC_PROTOCOL_APY_UPDATED`)
+
+Published by `set_protocol_apy` when the agent reports a per-protocol APY used
+in the composite yield calculation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `protocol` | `Symbol` | `"blend"` or `"dex"` |
+| `apy_bps` | `u32` | Reported APY in basis points |
+
 ## Rate-limit events
 
 ### `RateLimitConfigUpdatedEvent` (`rate_cfg`)
@@ -811,3 +855,4 @@ pub struct RateLimitExceededEvent {
 Correlate the event with the failed transaction's contract error because the
 over-limit operation is reverted and event visibility for a failed transaction
 depends on the ledger/RPC surface.
+

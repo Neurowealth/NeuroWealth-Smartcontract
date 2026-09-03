@@ -19,7 +19,14 @@ Instance storage is used for contract-wide configuration that is read frequently
 | | `TotalDeposits` | i128 | Total USDC principal deposited (excluding yield) |
 | | `TotalShares` | i128 | Total vault shares in circulation |
 | | `TotalAssets` | i128 | Total managed assets (principal + yield) |
-| | `CurrentProtocol`| Symbol | Active protocol symbol ("blend", "dex", "none") |
+| | `CurrentProtocol`| Symbol | Active protocol summary ("blend", "dex", "multi", "none") |
+| | `MultiProtocolEnabled` | bool | Phase 2 multi-protocol allocation mode flag |
+| | `BlendAllocationBps` | u32 | Target Blend weight in basis points |
+| | `DexAllocationBps` | u32 | Target DEX weight in basis points |
+| | `DeployedToBlend` | i128 | Tracked USDC principal deployed to Blend |
+| | `DeployedToDex` | i128 | Tracked USDC principal deployed to the DEX |
+| | `BlendApyBps` | u32 | Last agent-reported Blend APY (basis points) |
+| | `DexApyBps` | u32 | Last agent-reported DEX APY (basis points) |
 | | `BlendPool` | Address | Blend pool contract address |
 | | `DexPool` | Address | DEX liquidity pool contract address (Issue #228) |
 | | `Paused` | bool | Emergency pause state |
@@ -159,7 +166,14 @@ pub enum DataKey {
     Version,              // contract version
     BlendPool,            // Blend pool contract address
     DexPool,              // DEX liquidity pool contract address (#228)
-    CurrentProtocol,      // symbol of active protocol ("blend" | "dex" | "none")
+    CurrentProtocol,      // summary symbol ("blend" | "dex" | "multi" | "none")
+    MultiProtocolEnabled, // multi-protocol allocation mode flag (Phase 2)
+    BlendAllocationBps,   // target Blend weight in bps (Phase 2)
+    DexAllocationBps,     // target DEX weight in bps (Phase 2)
+    DeployedToBlend,      // tracked USDC deployed to Blend (Phase 2)
+    DeployedToDex,        // tracked USDC deployed to the DEX (Phase 2)
+    BlendApyBps,          // last reported Blend APY in bps (Phase 2)
+    DexApyBps,            // last reported DEX APY in bps (Phase 2)
     UserStrategy(Address),// user -> strategy preference symbol
     MinRebalanceInterval, // rebalance cooldown in ledgers (#59)
     LastRebalanceLedger,  // ledger of last successful rebalance (#59)
@@ -410,9 +424,14 @@ Vault Contract → DEX Liquidity Pool Contract
 
 Alongside Blend lending, the vault can deploy idle USDC as single-asset
 liquidity into a Stellar DEX pool. This backs the Balanced and Growth
-strategies described in the README. The two integrations are mutually exclusive
-at any point in time: `CurrentProtocol` names at most one of `"blend"`,
-`"dex"`, or `"none"`.
+strategies described in the README. In the legacy **single-protocol mode** the
+two integrations are mutually exclusive at any point in time: `CurrentProtocol`
+names at most one of `"blend"`, `"dex"`, or `"none"`.
+
+Since Phase 2 this mutual exclusion is opt-out: see
+[Multi-Protocol Allocation Model](#multi-protocol-allocation-model-phase-2)
+below, where the vault deploys to Blend **and** the DEX simultaneously against a
+basis-point split.
 
 See [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) for the full interface
 research and rationale.
@@ -547,6 +566,167 @@ descriptions.
 6. `ProtocolChangedEvent` emitted if `CurrentProtocol` changed.
 7. `RebalanceEvent` emitted with the outcome status.
 
+## Multi-Protocol Allocation Model (Phase 2)
+
+### Motivation
+
+The original design tracked exactly one active venue in `CurrentProtocol`, so
+100% of deployed capital always sat in a single protocol. That concentrates
+protocol risk and does not match the Balanced and Growth strategy descriptions
+in the README, which imply a diversified book. Phase 2 lets the vault hold
+positions in Blend **and** the DEX at the same time against an explicit
+basis-point split (e.g. 60% Blend / 40% DEX).
+
+### Allocation representation
+
+Allocation is expressed in basis points of the vault's **deployable assets**
+(idle USDC + both live positions):
+
+```
+BlendAllocationBps + DexAllocationBps <= 10_000
+```
+
+A sum below `10_000` is legal and means the remainder is deliberately held
+idle. Each leg is independently bounded to `0..=10_000`. Violations panic with
+`VaultError::InvalidAllocation` (#77).
+
+### Storage
+
+| Key | Storage | Type | Purpose |
+| --- | --- | --- | --- |
+| `MultiProtocolEnabled` | Instance | `bool` | Mode flag. Absent/`false` = legacy single-protocol behaviour. |
+| `BlendAllocationBps` | Instance | `u32` | Target Blend weight in basis points. |
+| `DexAllocationBps` | Instance | `u32` | Target DEX weight in basis points. |
+| `DeployedToBlend` | Instance | `i128` | Locally tracked USDC principal in Blend, refreshed after every leg. |
+| `DeployedToDex` | Instance | `i128` | Locally tracked USDC principal in the DEX. |
+| `BlendApyBps` | Instance | `u32` | Last agent-reported Blend APY. |
+| `DexApyBps` | Instance | `u32` | Last agent-reported DEX APY. |
+
+### `CurrentProtocol` compatibility
+
+`CurrentProtocol` is **retained** and maintained as a derived summary so every
+existing consumer (`get_current_protocol`, `harvest`, `emergency_harvest`,
+`withdraw`, `get_deployed_assets`, indexers) keeps working unchanged:
+
+| Blend position | DEX position | `CurrentProtocol` |
+| --- | --- | --- |
+| 0 | 0 | `"none"` |
+| > 0 | 0 | `"blend"` |
+| 0 | > 0 | `"dex"` |
+| > 0 | > 0 | `"multi"` |
+
+`"multi"` is a new summary value. Internally, `get_protocol_balance("multi")`
+returns the sum of both venues, and `withdraw_amount_from_protocol("multi")`
+dispatches to the proportional withdrawal path. Authoritative per-venue state
+is always `BlendAllocationBps` / `DexAllocationBps` and the deployment getters.
+
+### Rebalance flow (`rebalance_multi`)
+
+`rebalance_multi(blend_bps, dex_bps, min_out)` is agent-only, pause-gated, and
+subject to the same rebalance cooldown as `rebalance`. It converges to the
+target split **withdraw-first** so the vault never attempts to supply USDC it
+has not yet recovered:
+
+1. Validate mode, allocation bounds, `min_out`, cooldown, and that each venue
+   with a non-zero weight has a pool configured.
+2. Compute `deployable = idle + blend_balance + dex_balance`, then each venue's
+   target as `deployable * bps / 10_000`. Integer-division remainders stay idle.
+3. **Exit legs.** Any venue holding more than its target is withdrawn down by
+   the excess.
+4. **Entry legs.** Any venue holding less than its target is topped up, capped
+   by the idle balance actually on hand after step 3.
+5. Persist the new split, re-sync `DeployedToBlend`/`DeployedToDex` from live
+   pool balances, and refresh the derived `CurrentProtocol` summary.
+6. Emit `ProtocolAllocationChangedEvent`, then `RebalanceEvent` with
+   `protocol = "multi"` and the composite APY, and fold the outcome into the
+   circuit breaker.
+
+A shortfall on an exit leg is not fatal: the un-recovered amount simply remains
+in place and is corrected on the next rebalance, keeping the vault solvent.
+
+### Proportional withdrawal
+
+When a redemption cannot be satisfied from idle USDC and `CurrentProtocol` is
+`"multi"`, `withdraw_proportionally` pulls from each venue **in proportion to
+what it currently holds**, rather than draining one venue first:
+
+```
+from_blend = needed * blend_balance / (blend_balance + dex_balance)
+from_dex   = needed - from_blend
+```
+
+Each leg is clamped to the venue's actual balance, with any excess spilled to
+the other venue so the vault never under-pulls. This preserves the target
+ratio across redemptions: a 60/40 book that serves a 50% withdrawal is still
+60/40 afterwards. `withdraw`, `withdraw_all`, and `emergency_withdraw` all route
+through this path.
+
+### Composite yield
+
+The agent reports each venue's observed APY with
+`set_protocol_apy(protocol, apy_bps)`. `get_composite_apy()` returns the
+allocation-weighted blend:
+
+```
+composite_bps = (blend_bps * blend_apy_bps + dex_bps * dex_apy_bps) / 10_000
+```
+
+Idle capital correctly dilutes the headline number: 60/40 at 800/1200 bps
+reports 960 bps, while a 50%-deployed book at 800 bps reports 400 bps. In
+single-protocol mode the active venue is treated as a 100% weight, so the getter
+is meaningful in both modes.
+
+### Migration path
+
+`enable_multi_protocol(enabled)` is owner-only and **moves no funds**. Enabling
+seeds the allocation from the vault's current position so the migration is a
+pure bookkeeping change:
+
+| Pre-migration `CurrentProtocol` | Seeded `(blend_bps, dex_bps)` |
+| --- | --- |
+| `"blend"` | `(10_000, 0)` |
+| `"dex"` | `(0, 10_000)` |
+| `"none"` | `(0, 0)` |
+
+The agent then calls `rebalance_multi` to move to the desired split. Disabling
+collapses back to single-protocol mode and is only permitted when at most one
+venue holds a position — otherwise the legacy `CurrentProtocol` symbol could not
+describe the vault's full state, so the call panics with `InvalidAllocation`.
+Instances that never call `enable_multi_protocol` are byte-for-byte unaffected:
+the flag defaults to `false` and `rebalance` retains its mutual-exclusion
+semantics.
+
+### New API surface
+
+| Function | Auth | Purpose |
+| --- | --- | --- |
+| `enable_multi_protocol(enabled)` | Owner | Migrate into/out of multi-protocol mode. |
+| `is_multi_protocol_enabled()` | Public | Mode flag. |
+| `rebalance_multi(blend_bps, dex_bps, min_out)` | Agent | Converge to a target split. |
+| `get_allocation()` | Public | `(blend_bps, dex_bps)`. |
+| `get_deployed_to_blend()` | Public | Live Blend position. |
+| `get_deployed_to_dex()` | Public | Live DEX position. |
+| `get_protocol_breakdown()` | Public | Both, read atomically. |
+| `set_protocol_apy(protocol, apy_bps)` | Agent | Report a venue's APY. |
+| `get_protocol_apy(protocol)` | Public | Last reported APY. |
+| `get_composite_apy()` | Public | Allocation-weighted APY. |
+
+### New events
+
+| Event | Topic | Emitted by |
+| --- | --- | --- |
+| `ProtocolAllocationChangedEvent` | `alloc_chg` | `rebalance_multi` |
+| `MultiProtocolModeChangedEvent` | `multi_md` | `enable_multi_protocol` |
+| `ProtocolApyUpdatedEvent` | `apy_upd` | `set_protocol_apy` |
+
+### New error codes
+
+| Code | Variant | Meaning |
+| --- | --- | --- |
+| 77 | `InvalidAllocation` | Leg out of range, legs sum above 10_000, or an unrepresentable downgrade. |
+| 78 | `MultiProtocolNotEnabled` | `rebalance_multi` called in single-protocol mode. |
+| 79 | `MultiProtocolEnabledError` | Reserved for calls that require single-protocol mode. |
+
 ## Upgrade Model
 
 ### Storage Preservation
@@ -558,6 +738,8 @@ When upgrading the contract, the following storage keys must be preserved:
 - `Agent`, `UsdcToken`, `Owner`, `Paused`
 - `TvLCap`, `UserDepositCap`, `ApprovalTtl`, `MinDeposit`, `MaxDeposit`
 - `BlendPool`, `DexPool`, `CurrentProtocol`
+- `MultiProtocolEnabled`, `BlendAllocationBps`, `DexAllocationBps`
+- `DeployedToBlend`, `DeployedToDex`, `BlendApyBps`, `DexApyBps`
 - `UserStrategy(Address)`
 - `MinRebalanceInterval`, `LastRebalanceLedger`
 - `PendingAgent`, `AgentTimelockExpiry` (if an agent update is mid-flight)
