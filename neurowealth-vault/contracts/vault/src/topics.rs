@@ -11,7 +11,7 @@
 // filter per user without scanning payloads: `TOPIC_DEPOSIT`,
 // `TOPIC_WITHDRAW`, and `TOPIC_USER_STRATEGY_UPDATED`.
 
-#!w[warn(missing_docs]]
+#![warn(missing_docs)]
 
 use soroban_sdk::{symbol_short, Symbol};
 
@@ -86,7 +86,7 @@ pub const TOPIC_AGENT_UPDATE_CANCELLED: Symbol = symbol_short!("agt_cncl");
 /// Topic for `UpgradeScheduledEvent`, published by `schedule_upgrade` (timelock step 1).
 pub const TOPIC_UPGRADE_SCHEDULED: Symbol = symbol_short!("upg_sched");
 /// Topic for `UpgradeCancelledEvent`, published by `cancel_upgrade`.
-pub const TOPIC_UPMGRADE_CANCELLED: Symbol = symbol_short!("upg_cncl");
+pub const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("upg_cncl");
 /// Topic for `RebalanceCooldownUpdatedEvent`, published by `set_rebalance_cooldown`.
 pub const TOPIC_REBALANCE_COOLDOWN_UPDATED: Symbol = symbol_short!("reb_cd");
 /// Topic for `ApprovalTtlUpdatedEvent`, published by `set_approval_ttl`.
@@ -125,3 +125,19 @@ pub const TOPIC_RATE_LIMIT_HIT: Symbol = symbol_short!("rate_hit");
 /// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
 /// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
 pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
+
+// ============================================================================
+// Multi-protocol adapter events (#656)
+// ============================================================================
+
+/// Topic for `ProtocolAdapterUpdatedEvent`, published by `set_protocol_adapter`
+/// when the owner registers or replaces a venue adapter contract.
+pub const TOPIC_PROTOCOL_ADAPTER_UPDATED: Symbol = symbol_short!("adap_cfg");
+/// Topic for `ProtocolWhitelistUpdatedEvent`, published by `set_protocol_whitelisted`.
+pub const TOPIC_PROTOCOL_WHITELIST_UPDATED: Symbol = symbol_short!("proto_wl");
+/// Topic for `ProtocolSupplyEvent`, published when a rebalance supplies USDC to
+/// a whitelisted adapter-backed protocol.
+pub const TOPIC_PROTOCOL_SUPPLY: Symbol = symbol_short!("proto_sup");
+/// Topic for `ProtocolWithdrawEvent`, published when USDC is withdrawn from a
+/// whitelisted adapter-backed protocol.
+pub const TOPIC_PROTOCOL_WITHDRAW: Symbol = symbol_short!("proto_wd");
