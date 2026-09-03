@@ -112,6 +112,22 @@ pub const TOPIC_EMERGENCY_WITHDRAWAL: Symbol = symbol_short!("em_wd");
 pub const TOPIC_CIRCUIT_BREAKER_TRIGGERED: Symbol = symbol_short!("cb_trig");
 /// Topic for `CircuitBreakerResetEvent`.
 pub const TOPIC_CIRCUIT_BREAKER_RESET: Symbol = symbol_short!("cb_reset");
+
+/// Topic for `ProtocolAllocationChangedEvent`, the authoritative signal that
+/// the multi-protocol allocation split changed (Phase 2 multi-protocol mode).
+pub const TOPIC_PROTOCOL_ALLOCATION_CHANGED: Symbol = symbol_short!("alloc_chg");
+/// Topic for `MultiProtocolModeChangedEvent`, published when the owner migrates
+/// the vault between single-protocol and multi-protocol allocation mode.
+pub const TOPIC_MULTI_PROTOCOL_MODE: Symbol = symbol_short!("multi_md");
+/// Topic for `ProtocolApyUpdatedEvent`, published when the agent reports a
+/// per-protocol APY used in the composite yield calculation.
+pub const TOPIC_PROTOCOL_APY_UPDATED: Symbol = symbol_short!("apy_upd");
+
+/// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
+/// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
+pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
+
+
 /// Topic for `InsuranceFundUpdatedEvent`.
 pub const TOPIC_INSURANCE_FUND_UPDATED: Symbol = symbol_short!("ins_fund");
 
@@ -125,3 +141,4 @@ pub const TOPIC_RATE_LIMIT_HIT: Symbol = symbol_short!("rate_hit");
 /// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
 /// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
 pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
+

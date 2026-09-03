@@ -166,10 +166,20 @@ const DEFAULT_TVL_CAP: i128 = 100_000_000_000;
 // ERROR TYPES
 // ============================================================================
 
+
+// NOTE: `export = false` suppresses generation of the `SCSpecUDTErrorEnumV0`
+// spec entry. The XDR spec type caps error enums at 50 cases and this enum has
+// outgrown that limit as features landed (#316/#317/#439/#637/#659). Disabling
+// spec export keeps every error code stable and observable on-chain
+// (`Error(Contract, #N)` is still returned to callers) while allowing the
+// contract to compile. Off-chain consumers should read the codes from
+// `ERROR_STYLE_GUIDE.md` / `contract-spec.json` instead of the WASM spec blob.
+
 // Soroban's embedded contract-spec error union is limited to 50 cases. The
 // vault keeps a larger, numerically stable error surface for compatibility, so
 // the repository's generated contract spec is the source of truth for this
 // type instead of embedding an oversized union in the WASM.
+
 #[contracterror(export = false)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VaultError {
@@ -298,6 +308,15 @@ pub enum VaultError {
     HoldingPeriodNotElapsed = 75,
     /// Holding period configuration is invalid (must be non-negative) (#659).
     InvalidHoldingPeriod = 76,
+
+    /// Multi-protocol allocation is invalid: a leg is out of the 0..=10_000
+    /// basis-point range, or the legs sum to more than 10_000.
+    InvalidAllocation = 77,
+    /// The call requires multi-protocol allocation mode, which is not enabled.
+    MultiProtocolNotEnabled = 78,
+    /// The call requires single-protocol mode, but multi-protocol mode is active.
+    MultiProtocolEnabledError = 79,
+
     /// The configured call rate for an operation has been exhausted.
     RateLimitExceeded = 77,
     /// The owner supplied an unsupported rate-limit category.
@@ -306,6 +325,7 @@ pub enum VaultError {
     InvalidRateLimitConfig = 79,
     /// A batch contains more entries than the configured maximum.
     BatchSizeExceeded = 80,
+
 }
 
 impl VaultError {
@@ -409,7 +429,45 @@ pub enum DataKey {
     BlendPool,
     /// Current protocol where funds are deployed
     /// Symbol indicating the active protocol (e.g., "blend", "none")
+    ///
+    /// # Multi-protocol mode
+    /// When [`DataKey::MultiProtocolEnabled`] is `true` this key is maintained
+    /// as a *derived summary* of the allocation for backward compatibility:
+    /// `"blend"`/`"dex"` when a single venue holds 100% of the allocation,
+    /// `"multi"` when both hold a non-zero share, `"none"` when nothing is
+    /// allocated. Authoritative per-venue state lives in
+    /// [`DataKey::BlendAllocationBps`] / [`DataKey::DexAllocationBps`].
     CurrentProtocol,
+    /// Multi-protocol allocation mode flag (Phase 2).
+    ///
+    /// `false` (or absent) keeps the legacy mutual-exclusion behaviour where
+    /// `rebalance()` moves the whole position to a single venue. `true` enables
+    /// `rebalance_multi()` / proportional withdrawals across Blend and DEX.
+    /// Flipped by the owner via `enable_multi_protocol`.
+    MultiProtocolEnabled,
+    /// Target allocation to Blend, in basis points (0..=10_000).
+    ///
+    /// Only meaningful when [`DataKey::MultiProtocolEnabled`] is `true`.
+    /// `BlendAllocationBps + DexAllocationBps <= 10_000`; any remainder is held
+    /// idle in the vault.
+    BlendAllocationBps,
+    /// Target allocation to the DEX, in basis points (0..=10_000).
+    DexAllocationBps,
+    /// USDC principal the vault believes is deployed to Blend, in raw units.
+    ///
+    /// Written by every supply/withdraw leg so the vault has a local, cheap
+    /// record of per-venue deployment that does not require a cross-contract
+    /// call. Read by `get_deployed_to_blend`.
+    DeployedToBlend,
+    /// USDC principal the vault believes is deployed to the DEX, in raw units.
+    DeployedToDex,
+    /// Last agent-reported APY for Blend, in basis points.
+    ///
+    /// Used together with [`DataKey::DexApyBps`] and the current allocation to
+    /// compute the vault's composite (allocation-weighted) APY.
+    BlendApyBps,
+    /// Last agent-reported APY for the DEX, in basis points.
+    DexApyBps,
     /// Legacy Blend-specific approval TTL key.
     ///
     /// Retained for backward compatibility with already-initialized instances.
@@ -503,6 +561,7 @@ pub enum DataKey {
     /// Written on every successful `deposit`. Used together with
     /// `MinHoldingPeriod` to enforce the flash-loan protection window.
     LastDepositLedger(Address),
+
     /// Owner-configured call allowance and ledger window for a rate-limit category.
     /// Appended to preserve the serialized discriminants of existing keys.
     RateLimitConfig(Symbol),
@@ -560,6 +619,7 @@ pub struct DepositSnapshot {
     pub principal: i128,
     /// Unix timestamp (seconds) of the first deposit, from the ledger.
     pub deposited_at: u64,
+
 }
 
 // ============================================================================
@@ -674,6 +734,57 @@ pub struct ProtocolChangedEvent {
     /// Protocol the vault is deployed to after the change
     /// (`"blend"`, `"dex"`, or `"none"`)
     pub new_protocol: Symbol,
+}
+
+/// Emitted whenever the multi-protocol allocation split changes.
+///
+/// This is the authoritative signal for indexers tracking diversification:
+/// it reports both the previous and the new basis-point split alongside the
+/// USDC actually sitting in each venue after the rebalance settled.
+///
+/// # Topics
+/// - `SymbolShort("alloc_chg")` (`TOPIC_PROTOCOL_ALLOCATION_CHANGED`)
+#[contracttype]
+pub struct ProtocolAllocationChangedEvent {
+    /// Blend allocation before the change, in basis points.
+    pub old_blend_bps: u32,
+    /// DEX allocation before the change, in basis points.
+    pub old_dex_bps: u32,
+    /// Blend allocation after the change, in basis points.
+    pub new_blend_bps: u32,
+    /// DEX allocation after the change, in basis points.
+    pub new_dex_bps: u32,
+    /// USDC principal deployed to Blend after the change, in raw units.
+    pub deployed_to_blend: i128,
+    /// USDC principal deployed to the DEX after the change, in raw units.
+    pub deployed_to_dex: i128,
+}
+
+/// Emitted when the vault migrates between single-protocol and multi-protocol
+/// allocation mode.
+///
+/// # Topics
+/// - `SymbolShort("multi_md")` (`TOPIC_MULTI_PROTOCOL_MODE`)
+#[contracttype]
+pub struct MultiProtocolModeChangedEvent {
+    /// `true` when multi-protocol allocation is now active.
+    pub enabled: bool,
+    /// Blend allocation seeded by the migration, in basis points.
+    pub blend_bps: u32,
+    /// DEX allocation seeded by the migration, in basis points.
+    pub dex_bps: u32,
+}
+
+/// Emitted when the agent reports a per-protocol APY.
+///
+/// # Topics
+/// - `SymbolShort("apy_upd")` (`TOPIC_PROTOCOL_APY_UPDATED`)
+#[contracttype]
+pub struct ProtocolApyUpdatedEvent {
+    /// Protocol the APY applies to (`"blend"` or `"dex"`).
+    pub protocol: Symbol,
+    /// Reported APY in basis points.
+    pub apy_bps: u32,
 }
 
 /// Combined pause/unpause payload.
@@ -1543,9 +1654,17 @@ use topics::{
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED,
     TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY,
+
+    TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_TARGET_UPDATED,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_EMERGENCY_WITHDRAWAL,
+    TOPIC_MULTI_PROTOCOL_MODE, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
+
     TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL,
     TOPIC_HARVEST, TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
     TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+
     TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_REBALANCE,
     TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_TVL_CAP_UPDATED,
     TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
@@ -2104,10 +2223,16 @@ impl NeuroWealthVault {
             .set(&DataKey::TotalAssets, &new_total_assets);
 
         // Record deposit ledger for flash-loan protection (#659).
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastDepositLedger(user.clone()), &env.ledger().sequence());
+
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
         );
+
 
         env.events().publish(
             (TOPIC_DEPOSIT, user.clone()),
@@ -2315,7 +2440,9 @@ impl NeuroWealthVault {
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
+
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+
 
         // Flash-loan protection: enforce minimum holding period (#659).
         // If the owner has configured a non-zero MinHoldingPeriod, reject any
@@ -2371,11 +2498,7 @@ impl NeuroWealthVault {
                 0
             };
 
-            Self::require(
-                &env,
-                amount <= max_withdrawable,
-                VaultError::InsufficientShares,
-            );
+            Self::require(&env, amount <= max_withdrawable, VaultError::InsufficientShares);
         }
 
         // Check if funds are deployed in Blend and need to be retrieved
@@ -2392,7 +2515,10 @@ impl NeuroWealthVault {
         // Initially, we assume we can fulfill the whole request.
         let mut actual_to_return = amount;
 
-        if current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex") {
+        if current_protocol == symbol_short!("blend")
+            || current_protocol == symbol_short!("dex")
+            || current_protocol == symbol_short!("multi")
+        {
             // Check vault's USDC balance
             let vault_balance = token_client.balance(&env.current_contract_address());
 
@@ -2593,7 +2719,10 @@ impl NeuroWealthVault {
         let mut usdc_to_return = entitled_amount;
         let mut shares_to_burn = shares_to_withdraw;
 
-        if current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex") {
+        if current_protocol == symbol_short!("blend")
+            || current_protocol == symbol_short!("dex")
+            || current_protocol == symbol_short!("multi")
+        {
             // Check vault's USDC balance
             let vault_balance = token_client.balance(&env.current_contract_address());
 
@@ -2757,24 +2886,12 @@ impl NeuroWealthVault {
         // Transfer USDC to new vault and call deposit on behalf of user
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &migration_target,
-            &assets_to_transfer,
-        );
+        token_client.transfer(&env.current_contract_address(), &migration_target, &assets_to_transfer);
 
         // Call deposit on new vault on behalf of user using cross-contract call
         // The new vault must implement a deposit function with signature (Env, Address, i128)
-        let deposit_args: Vec<Val> = vec![
-            &env,
-            user.clone().into_val(&env),
-            assets_to_transfer.into_val(&env),
-        ];
-        env.invoke_contract::<()>(
-            &migration_target,
-            &Symbol::new(&env, "deposit"),
-            deposit_args,
-        );
+        let deposit_args: Vec<Val> = vec![&env, user.clone().into_val(&env), assets_to_transfer.into_val(&env)];
+        env.invoke_contract::<()>(&migration_target, &Symbol::new(&env, "deposit"), deposit_args);
 
         // Emit migration event
         env.events().publish(
@@ -2855,11 +2972,7 @@ impl NeuroWealthVault {
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
         let unlocked_shares = total_user_shares - existing_locked;
-        Self::require(
-            &env,
-            shares <= unlocked_shares,
-            VaultError::InsufficientUnlockedShares,
-        );
+        Self::require(&env, shares <= unlocked_shares, VaultError::InsufficientUnlockedShares);
 
         // Calculate lock expiry ledger
         let current_ledger = env.ledger().sequence();
@@ -2934,11 +3047,7 @@ impl NeuroWealthVault {
 
         // Check if lock period has ended
         let current_ledger = env.ledger().sequence();
-        Self::require(
-            &env,
-            current_ledger >= expiry_ledger,
-            VaultError::LockPeriodNotEnded,
-        );
+        Self::require(&env, current_ledger >= expiry_ledger, VaultError::LockPeriodNotEnded);
 
         // Clear locked shares and expiry
         env.storage()
@@ -3073,8 +3182,9 @@ impl NeuroWealthVault {
                 .unwrap_or(symbol_short!("none"));
 
             if current_protocol == symbol_short!("blend")
-                || current_protocol == symbol_short!("dex")
-            {
+            || current_protocol == symbol_short!("dex")
+            || current_protocol == symbol_short!("multi")
+        {
                 // Calculate how much we need to withdraw
                 let needed = amount
                     .checked_sub(vault_balance)
@@ -3464,6 +3574,452 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+
+        // Keep the per-venue trackers in step with reality even in
+        // single-protocol mode, so the multi-protocol getters are always
+        // truthful regardless of which path last moved funds.
+        Self::sync_deployed_split(&env);
+    }
+
+    // ==========================================================================
+    // MULTI-PROTOCOL ALLOCATION (Phase 2)
+    // ==========================================================================
+
+    /// Enables (or disables) multi-protocol allocation mode. **Owner only.**
+    ///
+    /// This is the migration path off the legacy single-protocol
+    /// (mutual-exclusion) model. Enabling seeds the allocation from the vault's
+    /// current position so no funds move as part of the migration itself:
+    ///
+    /// - `CurrentProtocol == "blend"` → seeds `(10_000, 0)`
+    /// - `CurrentProtocol == "dex"`   → seeds `(0, 10_000)`
+    /// - `CurrentProtocol == "none"`  → seeds `(0, 0)`
+    ///
+    /// The agent then calls [`rebalance_multi`](crate::NeuroWealthVault::rebalance_multi)
+    /// to move to the desired split. Disabling collapses back to
+    /// single-protocol mode; it is only permitted when at most one venue holds
+    /// a position, so the legacy `CurrentProtocol` symbol can once again
+    /// describe the vault's full state without loss.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `enabled` - `true` to enable multi-protocol mode, `false` to disable.
+    ///
+    /// # Events
+    ///
+    /// Emits `MultiProtocolModeChangedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault is not initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::InvalidAllocation`] if disabling while both venues hold
+    ///   funds (the split cannot be represented in single-protocol mode).
+    pub fn enable_multi_protocol(env: Env, enabled: bool) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let (blend_bal, dex_bal) = Self::sync_deployed_split(&env);
+
+        let (blend_bps, dex_bps) = if enabled {
+            let current: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            if current == symbol_short!("blend") {
+                (Self::BPS_DENOMINATOR, 0)
+            } else if current == symbol_short!("dex") {
+                (0, Self::BPS_DENOMINATOR)
+            } else if blend_bal > 0 || dex_bal > 0 {
+                // Already holding a split position — reflect it exactly.
+                let total = blend_bal.saturating_add(dex_bal);
+                let b = ((blend_bal * (Self::BPS_DENOMINATOR as i128)) / total) as u32;
+                (b, Self::BPS_DENOMINATOR - b)
+            } else {
+                (0, 0)
+            }
+        } else {
+            // Collapsing to single-protocol mode is only lossless when at most
+            // one venue is funded.
+            Self::require(
+                &env,
+                !(blend_bal > 0 && dex_bal > 0),
+                VaultError::InvalidAllocation,
+            );
+            (0, 0)
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiProtocolEnabled, &enabled);
+        env.storage()
+            .instance()
+            .set(&DataKey::BlendAllocationBps, &blend_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::DexAllocationBps, &dex_bps);
+
+        // Refresh the legacy summary symbol so both worlds agree.
+        Self::set_current_protocol(&env, Self::derive_protocol_summary(blend_bal, dex_bal));
+
+        env.events().publish(
+            (TOPIC_MULTI_PROTOCOL_MODE,),
+            MultiProtocolModeChangedEvent {
+                enabled,
+                blend_bps,
+                dex_bps,
+            },
+        );
+    }
+
+    /// Returns `true` when multi-protocol allocation mode is active.
+    pub fn is_multi_protocol_enabled(env: Env) -> bool {
+        Self::require_initialized(&env);
+        Self::multi_protocol_enabled(&env)
+    }
+
+    /// Returns the target allocation as `(blend_bps, dex_bps)`.
+    ///
+    /// Both values are basis points of the vault's deployable assets. A sum
+    /// below `10_000` means the remainder is deliberately held idle.
+    pub fn get_allocation(env: Env) -> (u32, u32) {
+        Self::require_initialized(&env);
+        Self::read_allocation(&env)
+    }
+
+    /// Returns the USDC principal currently deployed to Blend, in raw units.
+    ///
+    /// Queried live from the pool, so it includes any accrued yield the pool
+    /// reports on the position.
+    pub fn get_deployed_to_blend(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_protocol_balance(&env, &symbol_short!("blend"))
+    }
+
+    /// Returns the USDC principal currently deployed to the DEX, in raw units.
+    pub fn get_deployed_to_dex(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_protocol_balance(&env, &symbol_short!("dex"))
+    }
+
+    /// Returns the per-venue deployment as `(deployed_to_blend, deployed_to_dex)`.
+    ///
+    /// Read in a single invocation, so the two values are consistent with each
+    /// other — unlike calling the individual getters separately, which can
+    /// straddle a rebalance.
+    pub fn get_protocol_breakdown(env: Env) -> (i128, i128) {
+        Self::require_initialized(&env);
+        (
+            Self::get_protocol_balance(&env, &symbol_short!("blend")),
+            Self::get_protocol_balance(&env, &symbol_short!("dex")),
+        )
+    }
+
+    /// Records the agent's observed APY for a protocol, in basis points.
+    ///
+    /// Feeds [`get_composite_apy`](crate::NeuroWealthVault::get_composite_apy).
+    ///
+    /// # Arguments
+    ///
+    /// * `protocol` - `"blend"` or `"dex"`.
+    /// * `apy_bps` - APY in basis points (`0..=10_000`).
+    ///
+    /// # Events
+    ///
+    /// Emits `ProtocolApyUpdatedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::UnsupportedProtocol`] for any other protocol symbol.
+    /// - [`VaultError::InvalidStrategy`] if `apy_bps > 10_000`.
+    pub fn set_protocol_apy(env: Env, protocol: Symbol, apy_bps: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_agent(&env);
+        Self::require(
+            &env,
+            apy_bps <= Self::BPS_DENOMINATOR,
+            VaultError::InvalidStrategy,
+        );
+
+        if protocol == symbol_short!("blend") {
+            env.storage().instance().set(&DataKey::BlendApyBps, &apy_bps);
+        } else if protocol == symbol_short!("dex") {
+            env.storage().instance().set(&DataKey::DexApyBps, &apy_bps);
+        } else {
+            panic_with_error!(&env, VaultError::UnsupportedProtocol);
+        }
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_APY_UPDATED,),
+            ProtocolApyUpdatedEvent { protocol, apy_bps },
+        );
+    }
+
+    /// Returns the last reported APY for `protocol`, in basis points (`0` if unset).
+    pub fn get_protocol_apy(env: Env, protocol: Symbol) -> u32 {
+        Self::require_initialized(&env);
+        if protocol == symbol_short!("blend") {
+            env.storage()
+                .instance()
+                .get(&DataKey::BlendApyBps)
+                .unwrap_or(0)
+        } else if protocol == symbol_short!("dex") {
+            env.storage().instance().get(&DataKey::DexApyBps).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    /// Returns the vault's composite (allocation-weighted) APY in basis points.
+    ///
+    /// Computed as `(blend_bps * blend_apy + dex_bps * dex_apy) / 10_000`, so
+    /// idle capital correctly dilutes the headline yield: a 60/40 split earning
+    /// 800 bps and 1_200 bps reports 960 bps, while a 50/0 split earning
+    /// 800 bps reports 400 bps.
+    ///
+    /// In single-protocol mode the active venue is treated as a 100%
+    /// allocation, so this getter is meaningful in both modes.
+    pub fn get_composite_apy(env: Env) -> u32 {
+        Self::require_initialized(&env);
+
+        let blend_apy: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BlendApyBps)
+            .unwrap_or(0);
+        let dex_apy: u32 = env.storage().instance().get(&DataKey::DexApyBps).unwrap_or(0);
+
+        let (blend_bps, dex_bps) = if Self::multi_protocol_enabled(&env) {
+            Self::read_allocation(&env)
+        } else {
+            let current: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            if current == symbol_short!("blend") {
+                (Self::BPS_DENOMINATOR, 0)
+            } else if current == symbol_short!("dex") {
+                (0, Self::BPS_DENOMINATOR)
+            } else {
+                (0, 0)
+            }
+        };
+
+        let weighted = (blend_bps as u64)
+            .saturating_mul(blend_apy as u64)
+            .saturating_add((dex_bps as u64).saturating_mul(dex_apy as u64));
+        (weighted / (Self::BPS_DENOMINATOR as u64)) as u32
+    }
+
+    /// Rebalances the vault across **both** protocols simultaneously.
+    ///
+    /// This is the multi-protocol counterpart to [`rebalance`](crate::NeuroWealthVault::rebalance).
+    /// Rather than moving the whole position to one venue, the agent supplies a
+    /// target split in basis points (e.g. `6_000 / 4_000` for 60% Blend,
+    /// 40% DEX) and the vault converges to it:
+    ///
+    /// 1. Read the vault's total deployable assets (idle + both positions).
+    /// 2. Compute each venue's target amount from its basis points.
+    /// 3. Withdraw from any venue that is **over** its target.
+    /// 4. Supply to any venue that is **under** its target, capped by the idle
+    ///    balance actually on hand after step 3.
+    /// 5. Persist the new allocation, refresh the per-venue trackers, and emit
+    ///    `ProtocolAllocationChangedEvent`.
+    ///
+    /// Legs are converged withdraw-first so the vault never tries to supply
+    /// USDC it has not yet recovered. Any residual after the split (from
+    /// integer division, or from a shortfall on an exit leg) simply stays idle
+    /// and is corrected on the next rebalance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `blend_bps` - Target Blend allocation in basis points.
+    /// * `dex_bps` - Target DEX allocation in basis points.
+    /// * `min_out` - Slippage floor forwarded to each protocol leg (0 = none).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `ProtocolAllocationChangedEvent`
+    /// - `ProtocolChangedEvent` (when the derived summary symbol changes)
+    /// - `RebalanceEvent`
+    /// - `BlendSupplyEvent` / `BlendWithdrawEvent` / `DexSupplyEvent` / `DexWithdrawEvent`
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault is not initialized.
+    /// - [`VaultError::Paused`] if the vault is paused.
+    /// - If the caller is not the authorized agent.
+    /// - [`VaultError::MultiProtocolNotEnabled`] if multi-protocol mode is off.
+    /// - [`VaultError::InvalidAllocation`] if the split is out of range or sums above 10_000.
+    /// - [`VaultError::MinOutMustBeNonNegative`] if `min_out < 0`.
+    /// - [`VaultError::RebalanceCooldownActive`] if the cooldown has not elapsed.
+    /// - [`VaultError::BlendPoolNotConfigured`] / [`VaultError::DexPoolNotConfigured`]
+    ///   if a venue with a non-zero allocation has no pool configured.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // 60% Blend, 40% DEX.
+    /// vault_client.rebalance_multi(&6_000, &4_000, &0);
+    /// let (blend, dex) = vault_client.get_protocol_breakdown();
+    /// ```
+    pub fn rebalance_multi(env: Env, blend_bps: u32, dex_bps: u32, min_out: i128) {
+        Self::require_initialized(&env);
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env);
+        Self::require(
+            &env,
+            Self::multi_protocol_enabled(&env),
+            VaultError::MultiProtocolNotEnabled,
+        );
+        Self::require_valid_allocation(&env, blend_bps, dex_bps);
+
+        if min_out < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        // ── Rebalance cooldown guard (Issue #59) ──────────────────────────────
+        if let Some(min_interval) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MinRebalanceInterval)
+        {
+            if min_interval > 0 {
+                if let Some(last_rebalance) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, u32>(&DataKey::LastRebalanceLedger)
+                {
+                    let elapsed = env.ledger().sequence().saturating_sub(last_rebalance);
+                    if elapsed < min_interval {
+                        panic_with_error!(&env, VaultError::RebalanceCooldownActive);
+                    }
+                }
+            }
+        }
+
+        // A venue with a non-zero allocation must have a pool configured.
+        if blend_bps > 0 && !env.storage().instance().has(&DataKey::BlendPool) {
+            panic_with_error!(&env, VaultError::BlendPoolNotConfigured);
+        }
+        if dex_bps > 0 && !env.storage().instance().has(&DataKey::DexPool) {
+            panic_with_error!(&env, VaultError::DexPoolNotConfigured);
+        }
+
+        let (old_blend_bps, old_dex_bps) = Self::read_allocation(&env);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+
+        let idle = token_client.balance(&env.current_contract_address());
+        let blend_bal = Self::get_protocol_balance(&env, &symbol_short!("blend"));
+        let dex_bal = Self::get_protocol_balance(&env, &symbol_short!("dex"));
+        let deployable = idle.saturating_add(blend_bal).saturating_add(dex_bal);
+
+        let (blend_target, dex_target) = Self::split_by_bps(deployable, blend_bps, dex_bps);
+
+        let mut amount_attempted = 0_i128;
+        let mut amount_supplied = 0_i128;
+        let mut amount_withdrawn = 0_i128;
+
+        // ── Step 1: exit over-allocated venues first, to free up liquidity ──
+        if blend_bal > blend_target {
+            let excess = blend_bal - blend_target;
+            amount_attempted = amount_attempted.saturating_add(excess);
+            amount_withdrawn = amount_withdrawn
+                .saturating_add(Self::withdraw_from_blend(&env, excess, min_out));
+        }
+        if dex_bal > dex_target {
+            let excess = dex_bal - dex_target;
+            amount_attempted = amount_attempted.saturating_add(excess);
+            amount_withdrawn =
+                amount_withdrawn.saturating_add(Self::withdraw_from_dex(&env, excess, min_out));
+        }
+
+        // ── Step 2: top up under-allocated venues from whatever is on hand ──
+        let mut available = token_client.balance(&env.current_contract_address());
+
+        let blend_now = Self::get_protocol_balance(&env, &symbol_short!("blend"));
+        if blend_target > blend_now && available > 0 {
+            let want = min(blend_target - blend_now, available);
+            if want > 0 {
+                amount_attempted = amount_attempted.saturating_add(want);
+                let supplied = Self::supply_to_blend(&env, want, min_out);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+                available = available.saturating_sub(supplied);
+            }
+        }
+
+        let dex_now = Self::get_protocol_balance(&env, &symbol_short!("dex"));
+        if dex_target > dex_now && available > 0 {
+            let want = min(dex_target - dex_now, available);
+            if want > 0 {
+                amount_attempted = amount_attempted.saturating_add(want);
+                let supplied = Self::supply_to_dex(&env, want, min_out);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+            }
+        }
+
+        // ── Step 3: persist the new allocation and refresh derived state ────
+        env.storage()
+            .instance()
+            .set(&DataKey::BlendAllocationBps, &blend_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::DexAllocationBps, &dex_bps);
+
+        let (deployed_to_blend, deployed_to_dex) = Self::sync_deployed_split(&env);
+        Self::set_current_protocol(
+            &env,
+            Self::derive_protocol_summary(deployed_to_blend, deployed_to_dex),
+        );
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_ALLOCATION_CHANGED,),
+            ProtocolAllocationChangedEvent {
+                old_blend_bps,
+                old_dex_bps,
+                new_blend_bps: blend_bps,
+                new_dex_bps: dex_bps,
+                deployed_to_blend,
+                deployed_to_dex,
+            },
+        );
+
+        let amount_moved = amount_supplied.saturating_add(amount_withdrawn);
+        let status = if amount_attempted == 0 {
+            symbol_short!("noop")
+        } else if amount_moved == 0 {
+            symbol_short!("failed")
+        } else if amount_moved < amount_attempted {
+            symbol_short!("partial")
+        } else {
+            symbol_short!("success")
+        };
+
+        env.events().publish(
+            (TOPIC_REBALANCE,),
+            RebalanceEvent {
+                protocol: symbol_short!("multi"),
+                expected_apy: Self::get_composite_apy(env.clone()) as i128,
+                status: status.clone(),
+                amount_attempted,
+                amount_moved,
+                amount_supplied,
+                amount_withdrawn,
+            },
+        );
+
+        Self::record_rebalance_outcome(&env, &status);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
     }
 
     // ==========================================================================
@@ -3678,10 +4234,8 @@ impl NeuroWealthVault {
         env.storage().instance().set(&DataKey::Paused, &true);
 
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        env.events().publish(
-            (topics::TOPIC_EMERGENCY_PAUSED,),
-            EmergencyPausedEvent { owner },
-        );
+        env.events()
+            .publish((topics::TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
     }
 
     /// Resets the circuit breaker and unpauses the vault.
@@ -3689,15 +4243,15 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         owner.require_auth();
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        Self::require(&env, owner == stored_owner, VaultError::OnlyOwnerCanUnpause);
-        env.storage()
-            .instance()
-            .set(&DataKey::ConsecutiveFailures, &0_u32);
-        env.storage().instance().set(&DataKey::Paused, &false);
-        env.events().publish(
-            (topics::TOPIC_CIRCUIT_BREAKER_RESET,),
-            CircuitBreakerResetEvent { owner },
+        Self::require(
+            &env,
+            owner == stored_owner,
+            VaultError::OnlyOwnerCanUnpause,
         );
+        env.storage().instance().set(&DataKey::ConsecutiveFailures, &0_u32);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events()
+            .publish((topics::TOPIC_CIRCUIT_BREAKER_RESET,), CircuitBreakerResetEvent { owner });
     }
 
     /// Owner-callable emergency harvest fallback for agent-key outages.
@@ -3845,7 +4399,10 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
 
-        let old_target: Option<Address> = env.storage().instance().get(&DataKey::MigrationTarget);
+        let old_target: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationTarget);
 
         env.storage()
             .instance()
@@ -4670,10 +5227,7 @@ impl NeuroWealthVault {
     pub fn set_max_acceptable_mev_loss(env: Env, max_loss_stroops: i128) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
-        assert!(
-            max_loss_stroops >= 0,
-            "max_loss_stroops must be non-negative"
-        );
+        assert!(max_loss_stroops >= 0, "max_loss_stroops must be non-negative");
         env.storage()
             .instance()
             .set(&DataKey::MaxAcceptableMevLoss, &max_loss_stroops);
@@ -7988,7 +8542,9 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::BlendPool)
-            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
+            .unwrap_or_else(|| {
+                panic_with_error!(env, VaultError::BlendPoolNotConfigured)
+            });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -8110,7 +8666,9 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::BlendPool)
-            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
+            .unwrap_or_else(|| {
+                panic_with_error!(env, VaultError::BlendPoolNotConfigured)
+            });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -8190,7 +8748,9 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::DexPool)
-            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
+            .unwrap_or_else(|| {
+                panic_with_error!(env, VaultError::DexPoolNotConfigured)
+            });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -8309,7 +8869,9 @@ impl NeuroWealthVault {
             .storage()
             .instance()
             .get(&DataKey::DexPool)
-            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
+            .unwrap_or_else(|| {
+                panic_with_error!(env, VaultError::DexPoolNotConfigured)
+            });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let vault_address = env.current_contract_address();
@@ -8377,6 +8939,13 @@ impl NeuroWealthVault {
             Self::withdraw_from_blend(env, 0, min_out)
         } else if current_protocol == *protocol && *protocol == symbol_short!("dex") {
             Self::withdraw_from_dex(env, 0, min_out)
+        } else if current_protocol == *protocol && *protocol == symbol_short!("multi") {
+            // Multi-protocol mode: fully exit both venues.
+            let blend = Self::withdraw_from_blend(env, 0, min_out);
+            let dex = Self::withdraw_from_dex(env, 0, min_out);
+            let (b, d) = Self::sync_deployed_split(env);
+            Self::set_current_protocol(env, Self::derive_protocol_summary(b, d));
+            blend.saturating_add(dex)
         } else {
             0
         }
@@ -8396,7 +8965,11 @@ impl NeuroWealthVault {
         amount: i128,
         min_out: i128,
     ) -> i128 {
-        if *protocol == symbol_short!("blend") {
+        if *protocol == symbol_short!("multi") {
+            // Multi-protocol mode: pull from both venues proportionally so a
+            // redemption does not skew the target allocation.
+            Self::withdraw_proportionally(env, amount, min_out)
+        } else if *protocol == symbol_short!("blend") {
             Self::withdraw_from_blend(env, amount, min_out)
         } else if *protocol == symbol_short!("dex") {
             Self::withdraw_from_dex(env, amount, min_out)
@@ -8436,10 +9009,186 @@ impl NeuroWealthVault {
             } else {
                 0
             }
+        } else if *protocol == symbol_short!("multi") {
+            // Composite venue: the sum of both live positions.
+            Self::get_protocol_balance(env, &symbol_short!("blend"))
+                .saturating_add(Self::get_protocol_balance(env, &symbol_short!("dex")))
         } else {
             0
         }
     }
+
+
+    // ==========================================================================
+    // INTERNAL HELPERS — MULTI-PROTOCOL ALLOCATION (Phase 2)
+    // ==========================================================================
+
+    /// Total basis points in a full allocation.
+    const BPS_DENOMINATOR: u32 = 10_000;
+
+    /// Returns `true` when multi-protocol allocation mode is active.
+    fn multi_protocol_enabled(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiProtocolEnabled)
+            .unwrap_or(false)
+    }
+
+    /// Reads the stored `(blend_bps, dex_bps)` allocation split.
+    fn read_allocation(env: &Env) -> (u32, u32) {
+        let blend: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::BlendAllocationBps)
+            .unwrap_or(0);
+        let dex: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DexAllocationBps)
+            .unwrap_or(0);
+        (blend, dex)
+    }
+
+    /// Validates that a `(blend_bps, dex_bps)` pair is a legal allocation.
+    ///
+    /// Each leg must be within `0..=10_000` and the two must not sum above
+    /// `10_000`. A sum below `10_000` is legal and means the remainder is
+    /// deliberately held idle.
+    fn require_valid_allocation(env: &Env, blend_bps: u32, dex_bps: u32) {
+        Self::require(
+            env,
+            blend_bps <= Self::BPS_DENOMINATOR
+                && dex_bps <= Self::BPS_DENOMINATOR
+                && blend_bps.saturating_add(dex_bps) <= Self::BPS_DENOMINATOR,
+            VaultError::InvalidAllocation,
+        );
+    }
+
+    /// Reads the vault's locally tracked per-venue deployment `(blend, dex)`.
+    fn read_deployed_split(env: &Env) -> (i128, i128) {
+        let blend: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DeployedToBlend)
+            .unwrap_or(0);
+        let dex: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DeployedToDex)
+            .unwrap_or(0);
+        (blend, dex)
+    }
+
+    /// Re-reads both venues live and writes the result to the local
+    /// `DeployedToBlend` / `DeployedToDex` trackers.
+    ///
+    /// Called after every supply/withdraw leg so the cheap local getters never
+    /// drift from the pools' own accounting.
+    fn sync_deployed_split(env: &Env) -> (i128, i128) {
+        let blend = Self::get_protocol_balance(env, &symbol_short!("blend"));
+        let dex = Self::get_protocol_balance(env, &symbol_short!("dex"));
+        env.storage()
+            .instance()
+            .set(&DataKey::DeployedToBlend, &blend);
+        env.storage().instance().set(&DataKey::DeployedToDex, &dex);
+        (blend, dex)
+    }
+
+    /// Derives the legacy `CurrentProtocol` summary symbol from an allocation.
+    ///
+    /// Keeps single-protocol consumers (`get_current_protocol`, `harvest`,
+    /// `withdraw`) working unchanged while multi-protocol mode is active:
+    /// - only Blend deployed  → `"blend"`
+    /// - only DEX deployed    → `"dex"`
+    /// - both deployed        → `"multi"`
+    /// - nothing deployed     → `"none"`
+    fn derive_protocol_summary(blend: i128, dex: i128) -> Symbol {
+        if blend > 0 && dex > 0 {
+            symbol_short!("multi")
+        } else if blend > 0 {
+            symbol_short!("blend")
+        } else if dex > 0 {
+            symbol_short!("dex")
+        } else {
+            symbol_short!("none")
+        }
+    }
+
+    /// Splits `total` across the two venues by basis points, giving any
+    /// rounding remainder to Blend so the parts never exceed `total`.
+    fn split_by_bps(total: i128, blend_bps: u32, dex_bps: u32) -> (i128, i128) {
+        if total <= 0 {
+            return (0, 0);
+        }
+        let denom = Self::BPS_DENOMINATOR as i128;
+        let blend = total
+            .checked_mul(blend_bps as i128)
+            .expect("vault: allocation overflow")
+            / denom;
+        let dex = total
+            .checked_mul(dex_bps as i128)
+            .expect("vault: allocation overflow")
+            / denom;
+        (blend, dex)
+    }
+
+    /// Pulls `needed` USDC back from the deployed venues, taking from each in
+    /// proportion to what it currently holds.
+    ///
+    /// Used by `withdraw` / `withdraw_all` so a redemption in multi-protocol
+    /// mode does not silently drain one venue and skew the allocation. Returns
+    /// the total actually recovered.
+    fn withdraw_proportionally(env: &Env, needed: i128, min_out: i128) -> i128 {
+        if needed <= 0 {
+            return 0;
+        }
+        let blend_bal = Self::get_protocol_balance(env, &symbol_short!("blend"));
+        let dex_bal = Self::get_protocol_balance(env, &symbol_short!("dex"));
+        let total = blend_bal.saturating_add(dex_bal);
+        if total <= 0 {
+            return 0;
+        }
+
+        // Cap the ask at what is actually deployed.
+        let target = min(needed, total);
+
+        // Proportional shares; the remainder after integer division is taken
+        // from whichever venue still has room, so we never under-pull.
+        let mut from_blend = target
+            .checked_mul(blend_bal)
+            .expect("vault: proportional withdrawal overflow")
+            / total;
+        let mut from_dex = target
+            .checked_sub(from_blend)
+            .expect("vault: proportional withdrawal underflow");
+
+        // Never ask a venue for more than it holds; spill the excess over.
+        if from_dex > dex_bal {
+            let spill = from_dex - dex_bal;
+            from_dex = dex_bal;
+            from_blend = min(blend_bal, from_blend.saturating_add(spill));
+        }
+        if from_blend > blend_bal {
+            let spill = from_blend - blend_bal;
+            from_blend = blend_bal;
+            from_dex = min(dex_bal, from_dex.saturating_add(spill));
+        }
+
+        let mut recovered = 0_i128;
+        if from_blend > 0 {
+            recovered =
+                recovered.saturating_add(Self::withdraw_from_blend(env, from_blend, min_out));
+        }
+        if from_dex > 0 {
+            recovered = recovered.saturating_add(Self::withdraw_from_dex(env, from_dex, min_out));
+        }
+
+        let (blend_after, dex_after) = Self::sync_deployed_split(env);
+        Self::set_current_protocol(env, Self::derive_protocol_summary(blend_after, dex_after));
+
+        recovered
+    }
+
 }
 
 #[cfg(test)]
