@@ -325,6 +325,10 @@ pub enum VaultError {
     InvalidRateLimitConfig = 79,
     /// A batch contains more entries than the configured maximum.
     BatchSizeExceeded = 80,
+    /// No adapter contract is configured for the requested protocol (#656).
+    ProtocolAdapterNotConfigured = 81,
+    /// The requested protocol is not on the owner-managed whitelist (#656).
+    ProtocolNotWhitelisted = 82,
 
 }
 
@@ -574,6 +578,23 @@ pub enum DataKey {
     /// First-deposit snapshot for realized-APY computation (key: user Address) (#462).
     /// Appended to preserve the serialized discriminants of existing keys.
     DepositSnapshot(Address),
+    /// Adapter contract address for a protocol (key: protocol symbol) (#656).
+    ///
+    /// Set by the owner via `set_protocol_adapter`. When present, the protocol
+    /// becomes eligible for `supply`/`withdraw` through the uniform adapter
+    /// interface. Appended to preserve existing serialized discriminants.
+    ProtocolAdapter(Symbol),
+    /// Whitelist flag for a protocol (key: protocol symbol) (#656).
+    ///
+    /// Set by the owner via `set_protocol_whitelisted`. Both conditions —
+    /// whitelisted AND adapter configured — must hold before `rebalance` will
+    /// deploy funds to a protocol. Appended to preserve serialized layout.
+    ProtocolWhitelist(Symbol),
+    /// Append-only index of whitelisted protocol symbols for enumeration (#656).
+    ///
+    /// Stored as `Vec<Symbol>` in instance storage, updated whenever the
+    /// whitelist changes. Read by `get_protocol_whitelist`.
+    ProtocolWhitelistIndex,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -1242,6 +1263,68 @@ pub struct DexPoolConfiguredEvent {
     pub owner: Address,
 }
 
+/// Emitted when the owner registers or replaces a protocol adapter contract (#656).
+///
+/// # Topics
+/// - `SymbolShort("adap_cfg")` (`TOPIC_PROTOCOL_ADAPTER_UPDATED`) - Event identifier
+#[contracttype]
+pub struct ProtocolAdapterUpdatedEvent {
+    /// The protocol symbol the adapter serves (e.g. `"phoenix"`).
+    pub protocol: Symbol,
+    /// Previous adapter address, or None if it was not configured.
+    pub old_address: Option<Address>,
+    /// Newly configured adapter contract address.
+    pub new_address: Address,
+    /// Owner who triggered the configuration change.
+    pub owner: Address,
+}
+
+/// Emitted when the owner adds or removes a protocol on the whitelist (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_wl")` (`TOPIC_PROTOCOL_WHITELIST_UPDATED`) - Event identifier
+#[contracttype]
+pub struct ProtocolWhitelistUpdatedEvent {
+    /// The protocol symbol whose whitelist state changed.
+    pub protocol: Symbol,
+    /// Whether the protocol is now whitelisted.
+    pub enabled: bool,
+    /// Owner who triggered the whitelist change.
+    pub owner: Address,
+}
+
+/// Emitted when funds are supplied to a whitelisted adapter-backed protocol (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_sup")` (`TOPIC_PROTOCOL_SUPPLY`) - Event identifier
+#[contracttype]
+pub struct ProtocolSupplyEvent {
+    /// The asset address (USDC).
+    pub asset: Address,
+    /// The protocol symbol the funds were supplied to.
+    pub protocol: Symbol,
+    /// Actual amount transferred (may be less than requested due to venue limits).
+    pub amount_actual: i128,
+    /// Whether the supply was successful.
+    pub success: bool,
+}
+
+/// Emitted when funds are withdrawn from a whitelisted adapter-backed protocol (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_wd")` (`TOPIC_PROTOCOL_WITHDRAW`) - Event identifier
+#[contracttype]
+pub struct ProtocolWithdrawEvent {
+    /// The asset address (USDC).
+    pub asset: Address,
+    /// The protocol symbol the funds were withdrawn from.
+    pub protocol: Symbol,
+    /// Actual amount received (may be less than requested due to venue liquidity).
+    pub amount_actual: i128,
+    /// Whether the withdrawal was successful.
+    pub success: bool,
+}
+
 /// Emitted when a rebalance aborts due to a protocol exit failure.
 ///
 /// Emitted instead of panicking so the failure is observable on-chain without
@@ -1640,15 +1723,15 @@ const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
     TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_APPROVAL_TTL_UPDATED, TOPIC_ASSETS_UPDATED,
-
     TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
     TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
     TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
     TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
-    TOPIC_LIMITS_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_TARGET_UPDATED,
-    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
-    TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
-    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
+    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
+    TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
+    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
     TOPIC_SHARES_UNLOCKED, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
