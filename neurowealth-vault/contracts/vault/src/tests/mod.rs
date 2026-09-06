@@ -33,6 +33,7 @@ mod test_initialize;
 mod test_legacy_inline;
 mod test_limits;
 mod test_math_limits;
+mod test_multi_protocol;
 mod test_multi_user_concurrent;
 mod test_multi_asset;
 mod test_no_privilege_escalation_proptest;
@@ -68,6 +69,13 @@ mod test_users_with_shares;
 mod test_withdraw;
 mod test_yield;
 mod utils;
+
+
+mod test_liquidity_mining_rewards;
+mod test_performance_fee;
+
+
+mod test_batch_deposit;
 mod test_liquidity_mining_rewards;
 mod test_performance_fee;
 // Pre-existing compile failures — WIP modules committed with broken imports
@@ -81,3 +89,7 @@ mod test_performance_fee;
 // mod test_min_withdrawal;
 // mod test_user_apy;
 // mod test_withdrawal_queue;
+mod test_user_apy;
+mod test_insurance_fund;
+mod test_withdrawal_queue;
+
