@@ -141,3 +141,36 @@ pub const TOPIC_PROTOCOL_SUPPLY: Symbol = symbol_short!("proto_sup");
 /// Topic for `ProtocolWithdrawEvent`, published when USDC is withdrawn from a
 /// whitelisted adapter-backed protocol.
 pub const TOPIC_PROTOCOL_WITHDRAW: Symbol = symbol_short!("proto_wd");
+
+// ============================================================================
+// Agent key rotation — hot-standby pattern (#653 / #655)
+// ============================================================================
+
+/// Topic for `AgentKeyRotatedEvent`, published by `switch_to_standby_agent`
+/// when the owner performs an instant hot-standby key switchover.
+pub const TOPIC_AGENT_KEY_ROTATED: Symbol = symbol_short!("key_rot");
+/// Topic for `StandbyAgentUpdatedEvent`, published by `update_standby_agent`
+/// when the owner sets or replaces the standby agent key independently.
+pub const TOPIC_STANDBY_AGENT_UPDATED: Symbol = symbol_short!("stby_ag");
+
+// ============================================================================
+// Multi-asset support (#646)
+// ============================================================================
+
+/// Topic for `AssetDepositEvent`, published by `deposit_asset` when a user
+/// deposits a non-USDC asset (or USDC via the asset-aware path).
+pub const TOPIC_ASSET_DEPOSIT: Symbol = symbol_short!("asset_dep");
+/// Topic for `AssetWithdrawEvent`, published by `withdraw_asset` when a user
+/// withdraws a non-USDC asset (or USDC via the asset-aware path).
+pub const TOPIC_ASSET_WITHDRAW: Symbol = symbol_short!("asset_wd");
+/// Topic for `SupportedAssetsUpdatedEvent`, published when the owner adds or
+/// removes a supported deposit asset.
+pub const TOPIC_SUPPORTED_ASSETS_UPDATED: Symbol = symbol_short!("assets_up");
+
+// ============================================================================
+// Per-user yield attribution (#654)
+// ============================================================================
+
+/// Topic for `YieldAttributedEvent`, published by `update_total_assets` and
+/// `rebalance` to record per-user, per-protocol yield attribution.
+pub const TOPIC_YIELD_ATTRIBUTED: Symbol = symbol_short!("yld_attr");

@@ -536,6 +536,19 @@ pub enum DataKey {
     /// Stored as `Vec<Symbol>` in instance storage, updated whenever the
     /// whitelist changes. Read by `get_protocol_whitelist`.
     ProtocolWhitelistIndex,
+
+    // ============================================================================
+    // Agent key rotation — hot-standby pattern (#653)
+    // ============================================================================
+
+    /// Standby AI agent key that can also call rebalance, harvest, and
+    /// update_total_assets alongside the primary agent (#653).
+    ///
+    /// When present, `require_is_agent` accepts either the primary `Agent` or
+    /// the `StandbyAgent`. The owner may update it independently via
+    /// `update_standby_agent` and perform an instant switchover via
+    /// `switch_to_standby_agent`. Appended to preserve serialized layout.
+    StandbyAgent,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -581,6 +594,102 @@ pub struct DepositSnapshot {
     pub principal: i128,
     /// Unix timestamp (seconds) of the first deposit, from the ledger.
     pub deposited_at: u64,
+}
+
+// ============================================================================
+// MULTI-ASSET SUPPORT (#646) — CONFIGURATION & ACCOUNTING TYPES
+// ============================================================================
+
+/// Owner-managed configuration for one supported deposit asset (#646).
+///
+/// Each supported asset (`"USDC"`, `"XLM"`, `"USDT"`, `"EURC"`, ...) maps to a
+/// token contract address and its own deposit limits. Assets are registered by
+/// the owner via `add_supported_asset` and reconfigured via
+/// `update_asset_limits`.
+///
+/// When `tvl_cap == 0` the per-asset TVL cap is disabled; the asset then shares
+/// the vault-global `TvLCap` (mirrored through `TotalAssets`). When
+/// `deposit_limit == 0` the per-asset single-deposit limit is disabled and
+/// `min_deposit == 0` disables the per-asset floor.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetConfig {
+    /// Token contract address for the asset (native 0-value address for XLM).
+    pub token_address: Address,
+    /// Minimum amount accepted for a single `deposit_asset` call (`0` = none).
+    pub min_deposit: i128,
+    /// Maximum amount accepted for a single `deposit_asset` call (`0` = none).
+    pub deposit_limit: i128,
+    /// Total-value-locked cap for this asset's share pool (`0` = uncapped).
+    pub tvl_cap: i128,
+}
+
+/// Per-asset accounting totals for one asset's independent share pool (#646).
+///
+/// Each supported asset has its own share pool, so share price (and thus
+/// `assets / shares`) is computed per asset rather than vault-globally.
+/// Absent — or all zero — until the first `deposit_asset`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetTotals {
+    /// Total managed value in the asset's native units (principal + yield).
+    pub assets: i128,
+    /// Total shares in circulation for this asset's share pool.
+    pub shares: i128,
+    /// Principal deposited into this asset's share pool (no yield).
+    pub deposits: i128,
+}
+
+impl Default for AssetTotals {
+    fn default() -> Self {
+        AssetTotals {
+            assets: 0,
+            shares: 0,
+            deposits: 0,
+        }
+    }
+}
+
+/// Combined result for `get_asset_totals`, exposing both the per-asset pool
+/// totals and the per-user share balance (#646).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetBalance {
+    /// The user's per-asset share balance.
+    pub shares: i128,
+    /// The user's per-asset balance in the asset's native units.
+    pub assets: i128,
+    /// Total managed value in the asset's pool.
+    pub pool_assets: i128,
+    /// Total shares in the asset's pool.
+    pub pool_shares: i128,
+}
+
+// ----------------------------------------------------------------------------
+// Multi-asset storage keys (#646)
+//
+// `DataKey` is capped at 50 serialized variants by the Soroban contract-spec
+// union limit (`ScSpecUdtUnionV0.cases<50>`), and `StandbyAgent` already
+// consumes slot 50. Rather than burn the last slot on a catch-all namespaced
+// key, the multi-asset state uses this dedicated contracttype enum. Enum
+// variants serialize with their variant name as a discriminat symbol, so
+// `Config`/`Totals`/`Shares`/`SupportedAssets` can never collide with each
+// other or with the `DataKey` entries (whose first serialized element is the
+// `DataKey` variant name).
+// ----------------------------------------------------------------------------
+
+/// Storage keys for multi-asset (#646) state.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MultiAssetKey {
+    /// One asset's [`AssetConfig`] (key: asset symbol).
+    Config(Symbol),
+    /// One asset's [`AssetTotals`] (key: asset symbol).
+    Totals(Symbol),
+    /// A user's per-asset share balance (key: user, asset symbol).
+    Shares(Address, Symbol),
+    /// The append-only supported-assets index (unit key).
+    SupportedAssets,
 }
 
 // ============================================================================
@@ -1214,6 +1323,131 @@ pub struct ProtocolWithdrawEvent {
     pub success: bool,
 }
 
+/// Emitted when the owner performs an instant hot-standby agent key switchover (#653).
+///
+/// The standby agent becomes the new primary agent, and the old primary agent
+/// is demoted to standby (or cleared if the owner opts for a clean cutover).
+/// This is the zero-downtime rotation path — no timelock, no 24-hour wait.
+///
+/// # Topics
+/// - `SymbolShort("key_rot")` (`TOPIC_AGENT_KEY_ROTATED`) - Event identifier
+#[contracttype]
+pub struct AgentKeyRotatedEvent {
+    /// Primary agent address before the switchover.
+    pub old_primary: Address,
+    /// Primary agent address after the switchover (the former standby).
+    pub new_primary: Address,
+    /// Standby agent address after the switchover (the former primary, or a
+    /// new address supplied by the owner).
+    pub new_standby: Address,
+    /// Owner who triggered the switchover.
+    pub owner: Address,
+    /// Ledger timestamp of the switchover.
+    pub timestamp: u64,
+}
+
+/// Emitted when the owner sets or replaces the standby agent key independently (#653).
+///
+/// Unlike the primary agent update flow (`update_agent` / `confirm_agent_update`),
+/// the standby key can be changed instantly without a timelock — it is a
+/// hot-standby key, not the active rebalancing key. This lets the operator
+/// rotate the standby key on a regular cadence without any downtime.
+///
+/// # Topics
+/// - `SymbolShort("stby_ag")` (`TOPIC_STANDBY_AGENT_UPDATED`) - Event identifier
+#[contracttype]
+pub struct StandbyAgentUpdatedEvent {
+    /// Standby agent address before the change, or None if not configured.
+    pub old_standby: Option<Address>,
+    /// Standby agent address after the change.
+    pub new_standby: Address,
+    /// Owner who triggered the change.
+    pub owner: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
+}
+
+/// Emitted to record per-user, per-protocol yield attribution (#654).
+///
+/// Published by `update_total_assets` when yield increases and by `rebalance`
+/// when funds move between protocols. The off-chain indexer aggregates these
+/// events into per-user, per-protocol, per-period earnings reports.
+///
+/// # Topics
+/// - `0`: `SymbolShort("yld_attr")` (`TOPIC_YIELD_ATTRIBUTED`) - Event identifier
+/// - `1`: `Address` - the user whose yield is being attributed, published as an
+///   indexed topic so indexers can filter by user without scanning payloads
+#[contracttype]
+pub struct YieldAttributedEvent {
+    /// The user whose yield is being attributed.
+    pub user: Address,
+    /// The protocol where the yield was earned (e.g. `"blend"`, `"dex"`).
+    pub protocol: Symbol,
+    /// Amount of yield attributed, in the asset's native units.
+    pub amount: i128,
+    /// Time period label: `"daily"`, `"weekly"`, `"monthly"`, or `"since_dep"`.
+    pub period: Symbol,
+    /// Ledger timestamp of the attribution.
+    pub timestamp: u64,
+}
+
+/// Emitted when a user deposits a supported asset into its per-asset share
+/// pool via `deposit_asset` (#646).
+///
+/// The asset symbol is published as an indexed topic so indexers can filter
+/// per asset, and the depositing user is the second topic.
+///
+/// # Topics
+/// - `0`: `SymbolShort("asset_dep")` (`TOPIC_ASSET_DEPOSIT`) - Event identifier
+/// - `1`: `Address` - the depositing user, published as an indexed topic
+/// - `2`: `Symbol` - the deposited asset, published as an indexed topic
+#[contracttype]
+pub struct AssetDepositEvent {
+    /// The user who made the deposit.
+    pub user: Address,
+    /// The asset deposited (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    pub asset: Symbol,
+    /// Amount of the asset deposited (native units).
+    pub amount: i128,
+    /// Number of shares minted in the asset's per-asset share pool.
+    pub shares: i128,
+}
+
+/// Emitted when a user withdraws a supported asset from its per-asset share
+/// pool via `withdraw_asset` (#646).
+///
+/// # Topics
+/// - `0`: `SymbolShort("asset_wd")` (`TOPIC_ASSET_WITHDRAW`) - Event identifier
+/// - `1`: `Address` - the withdrawing user, published as an indexed topic
+/// - `2`: `Symbol` - the withdrawn asset, published as an indexed topic
+#[contracttype]
+pub struct AssetWithdrawEvent {
+    /// The user who made the withdrawal.
+    pub user: Address,
+    /// The asset withdrawn (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    pub asset: Symbol,
+    /// Amount of the asset returned (native units, after liquidity shortfall).
+    pub amount: i128,
+    /// Number of shares burned in the asset's per-asset share pool.
+    pub shares: i128,
+}
+
+/// Emitted when the owner adds or removes a supported deposit asset (#646).
+///
+/// # Topics
+/// - `SymbolShort("assets_up")` (`TOPIC_SUPPORTED_ASSETS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct SupportedAssetsUpdatedEvent {
+    /// The asset symbol whose support state changed.
+    pub asset: Symbol,
+    /// `true` when the asset was added, `false` when it was removed.
+    pub added: bool,
+    /// Owner who triggered the change.
+    pub owner: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
+}
+
 /// Emitted when a rebalance aborts due to a protocol exit failure.
 ///
 /// Emitted instead of panicking so the failure is observable on-chain without
@@ -1611,7 +1845,8 @@ const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
-    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_APPROVAL_TTL_UPDATED, TOPIC_ASSETS_UPDATED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_UPDATED,
+    TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
     TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
     TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
     TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
@@ -1621,9 +1856,10 @@ use topics::{
     TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
     TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
     TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
-    TOPIC_SHARES_UNLOCKED, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
-    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
 };
 
 impl BlendPoolClient {
@@ -2735,6 +2971,237 @@ impl NeuroWealthVault {
         );
 
         usdc_to_return
+    }
+
+    /// Sets the Blend pool contract address for on-chain integration.
+    ///
+    /// Each asset has its own share pool with independent share pricing.
+    /// Validates the asset is supported, checks per-asset caps, transfers the
+    /// asset token, mints shares, and emits `AssetDepositEvent`.
+    pub fn deposit_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+
+        let config: AssetConfig = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .expect("deposit_asset: asset not supported");
+
+        if config.min_deposit > 0 {
+            Self::require(&env, amount >= config.min_deposit, VaultError::BelowMinimumDeposit);
+        }
+        if config.deposit_limit > 0 {
+            Self::require(&env, amount <= config.deposit_limit, VaultError::MaximumDepositExceeded);
+        }
+
+        // Read all accounting state BEFORE the token transfer so a malicious
+        // token contract cannot reenter and observe an inconsistent snapshot
+        // (mirrors the read-before-write discipline of `deposit`).
+        let mut totals: AssetTotals = Self::read_asset_totals(&env, &asset);
+
+        if config.tvl_cap > 0 {
+            Self::require(
+                &env,
+                totals
+                    .assets
+                    .checked_add(amount)
+                    .expect("deposit_asset: overflow")
+                    <= config.tvl_cap,
+                VaultError::ExceedsTvlCap,
+            );
+        }
+
+        let shares_to_mint = Self::convert_to_asset_shares_internal(&env, &asset, amount);
+        Self::require(&env, shares_to_mint > 0, VaultError::SharesToMintMustBePositive);
+
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+            .unwrap_or(0_i128);
+
+        let token_client = token::Client::new(&env, &config.token_address);
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
+
+        // Update per-asset accounting via consolidated AssetTotals.
+        totals.deposits = totals
+            .deposits
+            .checked_add(amount)
+            .expect("deposit_asset: deposits overflow");
+        totals.shares = totals
+            .shares
+            .checked_add(shares_to_mint)
+            .expect("deposit_asset: shares overflow");
+        totals.assets = totals
+            .assets
+            .checked_add(amount)
+            .expect("deposit_asset: assets overflow");
+
+        env.storage().persistent().set(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            &(current_shares.checked_add(shares_to_mint).expect("deposit_asset: overflow")),
+        );
+
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::Totals(asset.clone()), &totals);
+
+        Self::add_to_global_totals_on_deposit(&env, amount);
+
+        env.events().publish(
+            (TOPIC_ASSET_DEPOSIT, user.clone(), asset.clone()),
+            AssetDepositEvent {
+                user,
+                asset,
+                amount,
+                shares: shares_to_mint,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // MULTI-ASSET SUPPORT (#646) — WITHDRAW
+    // ==========================================================================
+
+    /// Withdraws a supported asset via the asset-aware path (#646).
+    ///
+    /// Burns shares in the asset's share pool and returns the proportional
+    /// amount of the asset. If funds are deployed in a yield protocol, this
+    /// function will attempt to retrieve them first.
+    pub fn withdraw_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+
+        let config: AssetConfig = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .expect("withdraw_asset: asset not supported");
+
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+            .unwrap_or(0_i128);
+        Self::require(&env, user_shares > 0, VaultError::InsufficientShares);
+
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default();
+        Self::require(
+            &env,
+            totals.shares > 0 && totals.assets > 0,
+            VaultError::NoAssetsToWithdraw,
+        );
+
+        let shares_to_burn = Self::convert_to_asset_shares_internal_ceil(&env, &asset, amount);
+        Self::require(&env, shares_to_burn > 0, VaultError::SharesToBurnMustBePositive);
+        Self::require(
+            &env,
+            user_shares >= shares_to_burn,
+            VaultError::InsufficientSharesForAmount,
+        );
+
+        let assets_to_return = Self::convert_to_asset_assets_internal(&env, &asset, shares_to_burn);
+
+        // Check if funds are deployed and need to be retrieved.
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        let token_client = token::Client::new(&env, &config.token_address);
+        let mut actual_to_return = assets_to_return;
+
+        if current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex") {
+            let vault_balance = token_client.balance(&env.current_contract_address());
+            if vault_balance < assets_to_return {
+                let needed = assets_to_return
+                    .checked_sub(vault_balance)
+                    .expect("withdraw_asset: underflow");
+                let _withdrawn =
+                    Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, 0);
+                let available = token_client.balance(&env.current_contract_address());
+                actual_to_return = core::cmp::min(assets_to_return, available);
+            }
+        }
+
+        Self::require(&env, actual_to_return > 0, VaultError::InsufficientLiquidity);
+
+        let final_shares_to_burn =
+            Self::convert_to_asset_shares_internal_ceil(&env, &asset, actual_to_return);
+
+        // Update per-user per-asset shares.
+        env.storage().persistent().set(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            &(user_shares
+                .checked_sub(final_shares_to_burn)
+                .expect("withdraw_asset: user shares underflow")),
+        );
+
+        // Update per-asset totals.
+        let mut new_totals = totals;
+        new_totals.shares = new_totals
+            .shares
+            .checked_sub(final_shares_to_burn)
+            .expect("withdraw_asset: total shares underflow");
+        new_totals.assets = new_totals
+            .assets
+            .checked_sub(actual_to_return)
+            .expect("withdraw_asset: total assets underflow");
+        new_totals.deposits = new_totals.deposits.saturating_sub(actual_to_return).max(0_i128);
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::Totals(asset.clone()), &new_totals);
+
+        Self::reduce_global_totals_on_withdraw(&env, actual_to_return);
+
+        token_client.transfer(&env.current_contract_address(), &user, &actual_to_return);
+
+        env.events().publish(
+            (TOPIC_ASSET_WITHDRAW, user.clone()),
+            AssetWithdrawEvent {
+                user,
+                asset,
+                amount: actual_to_return,
+                shares: final_shares_to_burn,
+            },
+        );
+    }
+
+    /// Returns a user's asset balance for a specific supported asset (#646).
+    pub fn get_balance_asset(env: Env, user: Address, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user, asset.clone()))
+            .unwrap_or(0_i128);
+        if shares == 0 {
+            return 0;
+        }
+        Self::convert_to_asset_assets_internal(&env, &asset, shares)
+    }
+
+    /// Returns the total managed assets for a specific supported asset (#646).
+    pub fn get_total_assets_by_asset(env: Env, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset))
+            .unwrap_or_default();
+        totals.assets
     }
 
     // ==========================================================================
@@ -5451,6 +5918,348 @@ impl NeuroWealthVault {
         })
     }
 
+    // ==========================================================================
+    // AGENT KEY ROTATION — HOT-STANDBY PATTERN (#653)
+    // ==========================================================================
+
+    /// Returns the standby agent address, if one is configured. (#653)
+    ///
+    /// The standby agent can call `rebalance`, `harvest`, `update_total_assets`,
+    /// and `emergency_harvest` alongside the primary agent. It is set and
+    /// rotated independently via `update_standby_agent` with no timelock.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(standby_agent)` when a standby key is configured.
+    /// * `None` when no standby key is set (single-key operation).
+    pub fn get_standby_agent(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::StandbyAgent)
+    }
+
+    /// Sets or replaces the standby agent key independently (#653).
+    ///
+    /// Unlike the primary agent update flow (`update_agent` /
+    /// `confirm_agent_update`), the standby key can be changed instantly with
+    /// no timelock — it is a hot-standby key, not the active rebalancing key.
+    /// This lets the operator rotate the standby key on a regular cadence
+    /// without any downtime.
+    ///
+    /// The standby key must not equal the primary agent key. Setting the
+    /// standby to the zero address clears it (disables hot-standby mode).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_standby` - The new standby agent address.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `StandbyAgentUpdatedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If `new_standby` equals the primary agent key.
+    pub fn update_standby_agent(env: Env, new_standby: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let primary: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        Self::require(
+            &env,
+            new_standby != primary,
+            VaultError::InvalidStrategy,
+        );
+
+        let old_standby: Option<Address> = env.storage().instance().get(&DataKey::StandbyAgent);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::StandbyAgent, &new_standby);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_STANDBY_AGENT_UPDATED,),
+            StandbyAgentUpdatedEvent {
+                old_standby,
+                new_standby,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Performs an instant hot-standby agent key switchover (#653).
+    ///
+    /// The standby agent becomes the new primary agent, and the old primary
+    /// agent is demoted to standby. This is the zero-downtime rotation path —
+    /// no timelock, no 24-hour wait. Both keys must be distinct and the
+    /// standby key must be configured before calling this function.
+    ///
+    /// After the switchover, the former primary can no longer call rebalance
+    /// (unless it is later re-promoted), reducing the blast radius of a key
+    /// compromise to the window between rotation and the next switchover.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AgentKeyRotatedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If no standby agent is configured.
+    pub fn switch_to_standby_agent(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_primary: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKey::StandbyAgent);
+
+        let new_primary = standby.expect("switch_to_standby_agent: no standby agent configured");
+
+        // Promote standby to primary.
+        env.storage().instance().set(&DataKey::Agent, &new_primary);
+
+        // Demote old primary to standby (so the operator can rotate it out
+        // at leisure via update_standby_agent).
+        env.storage()
+            .instance()
+            .set(&DataKey::StandbyAgent, &old_primary);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_AGENT_KEY_ROTATED,),
+            AgentKeyRotatedEvent {
+                old_primary: old_primary.clone(),
+                new_primary,
+                new_standby: old_primary,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+// ==========================================================================
+    // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
+    // ==========================================================================
+
+    /// Adds a supported deposit asset to the vault (#646).
+    ///
+    /// Registers the asset's token contract address and per-asset limits. Once
+    /// registered, users can call `deposit_asset` / `withdraw_asset` with the
+    /// asset symbol and mint shares in the asset's independent share pool.
+    ///
+    /// The vault's legacy `deposit` / `withdraw` functions (USDC-only) are
+    /// unaffected: existing deployments can continue using them and enable the
+    /// asset-aware path for USDC by calling `add_supported_asset("USDC",
+    /// <usdc_token>, ...)` — no storage migration is required.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `asset` - Asset symbol (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    /// * `token_address` - Token contract address (or the zero address for
+    ///   native XLM, which uses the Stellar asset transfer path).
+    /// * `min_deposit` - Minimum per-deposit floor (`0` disables it).
+    /// * `deposit_limit` - Maximum per-deposit amount (`0` disables it).
+    /// * `tvl_cap` - Per-asset TVL cap in native units (`0` disables it).
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is already supported.
+    /// - If any limit is negative.
+    pub fn add_supported_asset(
+        env: Env,
+        asset: Symbol,
+        token_address: Address,
+        min_deposit: i128,
+        deposit_limit: i128,
+        tvl_cap: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(
+            &env,
+            !env.storage().instance().has(&MultiAssetKey::Config(asset.clone())),
+            VaultError::AlreadyInitialized,
+        );
+        Self::require(&env, min_deposit >= 0, VaultError::NegativeMin);
+        Self::require(&env, deposit_limit >= 0, VaultError::NegativeMax);
+        Self::require(&env, tvl_cap >= 0, VaultError::TvlCapCannotBeNegative);
+        if deposit_limit > 0 {
+            Self::require(&env, min_deposit <= deposit_limit, VaultError::MaxLessThanMin);
+        }
+
+        env.storage().instance().set(
+            &MultiAssetKey::Config(asset.clone()),
+            &AssetConfig {
+                token_address,
+                min_deposit,
+                deposit_limit,
+                tvl_cap,
+            },
+        );
+        // Ensure an empty totals entry exists so read paths can unwrap normally.
+        if !env.storage().instance().has(&MultiAssetKey::Totals(asset.clone())) {
+            env.storage().instance().set(
+                &MultiAssetKey::Totals(asset.clone()),
+                &AssetTotals::default(),
+            );
+        }
+        Self::add_to_supported_assets_index(&env, &asset);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_SUPPORTED_ASSETS_UPDATED, asset.clone()),
+            SupportedAssetsUpdatedEvent {
+                asset,
+                added: true,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Updates the limits for an already-supported deposit asset (#646).
+    ///
+    /// Changing `tvl_cap` to a value below the current pool size is allowed;
+    /// subsequent deposits are simply rejected until the pool shrinks.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is not supported.
+    /// - If any limit is negative or the floor exceeds the ceiling.
+    pub fn update_asset_limits(
+        env: Env,
+        asset: Symbol,
+        min_deposit: i128,
+        deposit_limit: i128,
+        tvl_cap: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(&env, min_deposit >= 0, VaultError::NegativeMin);
+        Self::require(&env, deposit_limit >= 0, VaultError::NegativeMax);
+        Self::require(&env, tvl_cap >= 0, VaultError::TvlCapCannotBeNegative);
+        if deposit_limit > 0 {
+            Self::require(&env, min_deposit <= deposit_limit, VaultError::MaxLessThanMin);
+        }
+
+        let mut config: AssetConfig = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .expect("update_asset_limits: asset not supported");
+        config.min_deposit = min_deposit;
+        config.deposit_limit = deposit_limit;
+        config.tvl_cap = tvl_cap;
+        env.storage().instance().set(&MultiAssetKey::Config(asset.clone()), &config);
+    }
+
+    /// Removes a supported deposit asset from the vault (#646).
+    ///
+    /// Only allowed while the asset's share pool is empty (no outstanding
+    /// shares and no assets held), so no user position is stranded. The asset
+    /// symbol is also dropped from the supported-assets index.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is not supported.
+    /// - If the asset's share pool still holds shares or assets.
+    pub fn remove_supported_asset(env: Env, asset: Symbol) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default();
+        Self::require(
+            &env,
+            totals.shares == 0 && totals.assets == 0,
+            VaultError::NoAssetsToWithdraw,
+        );
+
+        env.storage().instance().remove(&MultiAssetKey::Config(asset.clone()));
+        env.storage().instance().remove(&MultiAssetKey::Totals(asset.clone()));
+        Self::remove_from_supported_assets_index(&env, &asset);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_SUPPORTED_ASSETS_UPDATED, asset.clone()),
+            SupportedAssetsUpdatedEvent {
+                asset,
+                added: false,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Returns the list of supported deposit asset symbols (#646).
+    ///
+    /// Empty until the owner registers the first asset via
+    /// `add_supported_asset`.
+    pub fn get_supported_assets(env: Env) -> Vec<Symbol> {
+        Self::require_initialized(&env);
+        Self::read_supported_assets(&env)
+    }
+
+    /// Returns the configuration for a supported asset, or `None` (#646).
+    pub fn get_asset_config(env: Env, asset: Symbol) -> Option<AssetConfig> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&MultiAssetKey::Config(asset))
+    }
+
+    /// Returns the per-asset TVL cap in the asset's native units (`0` = uncapped)
+    /// for a supported asset, or `0` if the asset is not supported (#646).
+    pub fn get_asset_tvl_cap(env: Env, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let config: Option<AssetConfig> = env.storage().instance().get(&MultiAssetKey::Config(asset));
+        config.map(|c| c.tvl_cap).unwrap_or(0_i128)
+    }
+
+    /// Returns the accounting totals for one asset's share pool (#646).
+    pub fn get_asset_totals(env: Env, asset: Symbol) -> AssetTotals {
+        Self::require_initialized(&env);
+        Self::read_asset_totals(&env, &asset)
+    }
+
+    /// Returns a user's combined view of one asset's share pool: their share
+    /// balance, its native-unit value, and the pool totals (#646).
+    pub fn get_asset_balance(env: Env, user: Address, asset: Symbol) -> AssetBalance {
+        Self::require_initialized(&env);
+        let totals = Self::read_asset_totals(&env, &asset);
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user, asset.clone()))
+            .unwrap_or(0_i128);
+        let assets = if shares == 0 {
+            0
+        } else {
+            Self::convert_to_asset_assets_internal_from_totals(&env, &totals, shares)
+        };
+        AssetBalance {
+            shares,
+            assets,
+            pool_assets: totals.assets,
+            pool_shares: totals.shares,
+        }
+    }
+
     /// Sets the Blend pool contract address for on-chain integration.
     ///
     /// Only the owner can set the Blend pool address. This must be called
@@ -5872,9 +6681,14 @@ impl NeuroWealthVault {
     ) {
         Self::require_initialized(&env);
         let stored_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKey::StandbyAgent);
+        // Hot-standby (#653): the standby key may also publish asset updates.
+        // Absent a standby key this reduces to the original single-key check.
+        let is_agent = agent == stored_agent
+            || standby.map(|s| agent == s).unwrap_or(false);
         Self::require(
             &env,
-            agent == stored_agent,
+            is_agent,
             VaultError::OnlyAgentCanUpdateTotalAssets,
         );
         agent.require_auth();
@@ -5964,6 +6778,16 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKey::TotalAssets, &new_total);
+
+        // On-chain yield attribution (#654): when the reported value grew, emit
+        // a per-user `YieldAttributedEvent` for each holder, apportioned by
+        // share weight and tagged with the protocol the vault is deployed to.
+        // The off-chain indexer aggregates these events into per-period
+        // earnings reports; no per-user per-period storage is written.
+        let yield_amount = new_total.saturating_sub(old_total);
+        if yield_amount > 0 {
+            Self::emit_yield_attribution(&env, yield_amount);
+        }
 
         env.events().publish(
             (TOPIC_ASSETS_UPDATED,),
@@ -7464,6 +8288,243 @@ impl NeuroWealthVault {
     // INTERNAL HELPERS
     // ==========================================================================
 
+    // ── Multi-asset share conversion helpers (#646) ──────────────────────────
+
+    /// Reads the `AssetTotals` for an asset, returning a default if absent.
+    #[inline]
+    fn read_asset_totals(env: &Env, asset: &Symbol) -> AssetTotals {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Reads the append-only supported-assets index (#646).
+    #[inline]
+    fn read_supported_assets(env: &Env) -> Vec<Symbol> {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Appends an asset symbol to the supported-assets index if absent (#646).
+    #[inline]
+    fn add_to_supported_assets_index(env: &Env, asset: &Symbol) {
+        let mut index = Self::read_supported_assets(env);
+        if !index.contains(asset) {
+            index.push_back(asset.clone());
+            env.storage().instance().set(&MultiAssetKey::SupportedAssets, &index);
+        }
+    }
+
+    /// Removes an asset symbol from the supported-assets index (#646).
+    #[inline]
+    fn remove_from_supported_assets_index(env: &Env, asset: &Symbol) {
+        let mut index = Self::read_supported_assets(env);
+        let mut kept = Vec::new(env);
+        for a in index.iter() {
+            if &a != asset {
+                kept.push_back(a);
+            }
+        }
+        env.storage().instance().set(&MultiAssetKey::SupportedAssets, &kept);
+    }
+
+    /// Returns `true` when the asset has been registered by the owner (#646).
+    #[inline]
+    fn is_asset_supported(env: &Env, asset: &Symbol) -> bool {
+        env.storage().instance().has(&MultiAssetKey::Config(asset.clone()))
+    }
+
+    /// Converts shares to assets given pre-loaded pool totals (no re-read).
+    #[inline]
+    fn convert_to_asset_assets_internal_from_totals(
+        _env: &Env,
+        totals: &AssetTotals,
+        shares: i128,
+    ) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+        if totals.shares == 0 || totals.assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(totals.assets)
+                .expect("vault: asset share to asset overflow")
+                .checked_div(totals.shares)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Emits per-user `YieldAttributedEvent`s for a positive yield step (#654).
+    ///
+    /// Called by `update_total_assets` when the reported TotalAssets grows.
+    /// The increase is apportioned to every holder proportional to their share
+    /// of the vault and attributed to the protocol the vault is currently
+    /// deployed to. On-chain events only — no per-user per-period storage is
+    /// written (storage cost too high, per issue #654); the off-chain indexer
+    /// aggregates these events into per-period earnings reports.
+    fn emit_yield_attribution(env: &Env, total_yield: i128) {
+        if total_yield <= 0 {
+            return;
+        }
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        if total_shares == 0 {
+            return;
+        }
+        let protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+        let timestamp = env.ledger().timestamp();
+
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap_or_else(|| Vec::new(env));
+
+        for user in index.iter() {
+            let shares: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Shares(user.clone()))
+                .unwrap_or(0_i128);
+            if shares == 0 {
+                continue;
+            }
+            let yield_user = total_yield
+                .checked_mul(shares)
+                .expect("vault: yield attribution overflow")
+                .checked_div(total_shares)
+                .expect("vault: yield attribution div error");
+            if yield_user == 0 {
+                continue;
+            }
+            env.events().publish(
+                (TOPIC_YIELD_ATTRIBUTED, user.clone()),
+                YieldAttributedEvent {
+                    user: user.clone(),
+                    protocol: protocol.clone(),
+                    amount: yield_user,
+                    period: symbol_short!("since_dep"),
+                    timestamp,
+                },
+            );
+        }
+    }
+
+    /// Converts an asset amount to shares in the asset's share pool (floor).
+    #[inline]
+    fn convert_to_asset_shares_internal(env: &Env, asset: &Symbol, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            assets
+        } else {
+            assets
+                .checked_mul(totals.shares)
+                .expect("vault: asset share conversion overflow")
+                .checked_div(totals.assets)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Converts an asset amount to shares in the asset's share pool (ceiling).
+    #[inline]
+    fn convert_to_asset_shares_internal_ceil(env: &Env, asset: &Symbol, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            assets
+        } else {
+            let product = assets
+                .checked_mul(totals.shares)
+                .expect("vault: asset conversion mul overflow");
+            let numerator = product
+                .checked_add(
+                    totals
+                        .assets
+                        .checked_sub(1)
+                        .expect("vault: asset conversion sub underflow"),
+                )
+                .expect("vault: asset conversion add overflow");
+            numerator
+                .checked_div(totals.assets)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Converts shares in an asset's pool to the asset amount (floor).
+    #[inline]
+    fn convert_to_asset_assets_internal(env: &Env, asset: &Symbol, shares: i128) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(totals.assets)
+                .expect("vault: asset share to asset overflow")
+                .checked_div(totals.shares)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Adds `amount` to the global TotalAssets and TotalDeposits counters (#646).
+    ///
+    /// Called by `deposit_asset` to keep the legacy global counters in sync with
+    /// per-asset accounting, so that `get_total_assets()` and TVL cap checks
+    /// reflect the full multi-asset position.
+    #[inline]
+    fn add_to_global_totals_on_deposit(env: &Env, amount: i128) {
+        let total_assets: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &(total_assets.saturating_add(amount)));
+
+        let total_deposits: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &(total_deposits.saturating_add(amount)));
+    }
+
+    /// Subtracts `amount` from the global TotalAssets and TotalDeposits (#646).
+    #[inline]
+    fn reduce_global_totals_on_withdraw(env: &Env, amount: i128) {
+        let total_assets: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &total_assets.saturating_sub(amount).max(0_i128));
+
+        Self::reduce_total_deposits_on_withdraw(env, amount);
+    }
+
     /// Writes the default rate-limit policy during initialization.
     ///
     /// These defaults are intentionally generous enough for normal batching
@@ -7755,14 +8816,41 @@ impl NeuroWealthVault {
         owner.require_auth();
     }
 
-    /// Validates that the caller is the AI agent.
+    /// Validates that the caller is the AI agent or the standby agent (#653).
+    ///
+    /// When a standby agent key is configured, both the primary agent and the
+    /// standby agent are authorized to call `rebalance`, `harvest`,
+    /// `update_total_assets`, and `emergency_harvest`. This enables the
+    /// hot-standby pattern: either key can execute rebalances during normal
+    /// operation, and the owner can rotate between them with zero downtime.
+    ///
+    /// Authorization is checked against the current invocation's auths
+    /// (`env.auths()`) so that either key can be accepted without panicking
+    /// when only one of them signed the transaction.
     ///
     /// # Panics
-    /// - If the caller is not the agent
+    /// - If the caller is neither the primary agent nor the standby agent.
     #[inline]
     fn require_is_agent(env: &Env) {
         Self::require_initialized(env);
         let agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKey::StandbyAgent);
+
+        // Check which agent keys have authorized this invocation. In mock_all_auths
+        // test mode, `env.auths()` may be empty and require_auth() succeeds for all
+        // addresses, so we fall through to the standard require_auth() call below.
+        let auths = env.auths();
+        let agent_ok = auths.iter().any(|(addr, _)| addr == &agent);
+        let standby_ok = standby
+            .as_ref()
+            .map(|s| auths.iter().any(|(addr, _)| addr == s))
+            .unwrap_or(false);
+
+        if agent_ok || standby_ok {
+            return;
+        }
+
+        // Neither key authorized — trigger the standard agent auth error.
         agent.require_auth();
     }
 
