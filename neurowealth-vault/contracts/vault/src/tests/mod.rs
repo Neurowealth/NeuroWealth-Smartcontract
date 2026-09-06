@@ -35,6 +35,7 @@ mod test_limits;
 mod test_math_limits;
 mod test_multi_protocol;
 mod test_multi_user_concurrent;
+mod test_multi_asset;
 mod test_no_privilege_escalation_proptest;
 mod test_pause;
 mod test_pool_config_idempotent;
