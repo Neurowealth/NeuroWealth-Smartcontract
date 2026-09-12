@@ -9,7 +9,7 @@
 // Most events publish a single-element topic tuple, `(TOPIC_X,)`. Three
 // events additionally publish an indexed `Address` as topic 1 so indexers can
 // filter per user without scanning payloads: [`TOPIC_DEPOSIT`],
-// [`TOPIC_WITHDRAW`], and [`TOPIC_USER_STATEGY_UPDATED`].
+// [`TOPIC_WITHDRAW`], and [`TOPIC_USER_STRATEGY_UPDATED`].
 
 #![warn(missing_docs)]
 
@@ -22,7 +22,7 @@ pub const TOPIC_DEPOSIT: Symbol = symbol_short!("deposit");
 /// Topic 0 for `WithdrawEvent`; topic 1 is the withdrawing user's `Address`.
 ///
 /// Published by both `withdraw` and `withdraw_all`.
-pub const TOPIC_WITHRAW: Symbol = symbol_short!("withdraw");
+pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
 /// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
@@ -73,7 +73,7 @@ pub const TOPIC_DEX_POOL_CONFIGURED: Symbol = symbol_short!("dex_cfg");
 /// `DataKey::CurrentProtocol` changed.
 pub const TOPIC_PROTOCOL_CHANGED: Symbol = symbol_short!("proto_chg");
 /// Topic 0 for `UserStrategyUpdatedEvent`; topic 1 is the user's `Address`.
-pub const TOPIC_USER_STATEGY_UPDATED: Symbol = symbol_short!("usr_strat");
+pub const TOPIC_USER_STRATEGY_UPDATED: Symbol = symbol_short!("usr_strat");
 /// Topic for `RebalanceFailedEvent`, published when a protocol exit leg leaves
 /// a non-zero balance behind and the rebalance aborts without reverting.
 pub const TOPIC_REBALANCE_FAILED: Symbol = symbol_short!("reb_fail");
@@ -142,7 +142,6 @@ pub const TOPIC_RATE_LIMIT_HIT: Symbol = symbol_short!("rate_hit");
 
 /// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
 /// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
-pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
 
 // ============================================================================
 // Multi-protocol adapter events (#656)
