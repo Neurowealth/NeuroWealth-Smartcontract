@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
+import { Keypair, nativeToScVal } from '@stellar/stellar-sdk';
 
 /**
  * Unit tests for the event listener (#688).
@@ -33,9 +34,21 @@ let eventsResponse: { events: any[] } | null = null;
 let eventsError: Error | null = null;
 let requestedStartLedgers: number[] = [];
 let getLatestLedgerCalls = 0;
+let yieldDecision: { shouldRebalance: boolean; targetProtocol?: string } = { shouldRebalance: false };
+let submissions: Array<{ contractId: string; protocol: string; config: { expectedApyBps: number; minOut: string } }> = [];
+let submissionOutcome: { submitted: boolean; hash?: string; reason?: string } | null = null;
 
-function event(ledger: number, topic: string, id: string) {
-  return { id, ledger, topic: [{ toString: () => topic }] };
+/** The vault deposits 100 USDC (100_0000000 stroops) in every fixture event. */
+function event(ledger: number, topic: string, id: string, value: unknown = depositValue()) {
+  return { id, ledger, topic: [{ toString: () => topic }], value };
+}
+
+function depositValue(amountStroops = 100_0000000n) {
+  return nativeToScVal({
+    user: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+    amount: amountStroops,
+    shares: amountStroops,
+  });
 }
 
 async function startAndPoll(): Promise<void> {
@@ -57,6 +70,9 @@ beforeEach(async () => {
   eventsError = null;
   requestedStartLedgers = [];
   getLatestLedgerCalls = 0;
+  yieldDecision = { shouldRebalance: false };
+  submissions = [];
+  submissionOutcome = null;
 
   (global as any).setInterval = (fn: PollCycle, ms: number) => {
     capturedInterval = fn;
@@ -72,10 +88,16 @@ beforeEach(async () => {
     alertCalls.push(payload);
   };
 
+  const submitter = require('./rebalanceSubmitter');
+  submitter.submitRebalance = async (target: any) => {
+    submissions.push(target);
+    return submissionOutcome ?? { submitted: true, hash: 'hash-fixture', status: 'SUCCESS' };
+  };
+
   const yieldComparison = require('./yieldComparison');
   yieldComparison.evaluateYield = async (strategy: string, protocol: string, amount: number) => {
     yieldCalls.push([strategy, protocol, amount]);
-    return { shouldRebalance: false };
+    return yieldDecision;
   };
 
   const loggerModule = require('./logger');
@@ -87,7 +109,14 @@ beforeEach(async () => {
     logLines.push('WARN ' + args.map(String).join(' '));
   };
   logger.error = (...args: unknown[]) => {
-    logLines.push('ERROR ' + args.map(String).join(' '));
+    // Structured fields are serialised so a test can assert on the reason
+    // instead of on "object Object".
+    logLines.push(
+      "ERROR " +
+        args
+          .map((a) => (typeof a === "object" && a !== null ? JSON.stringify(a) : String(a)))
+          .join(" "),
+    );
   };
 
   const dbModule = require('./db');
@@ -150,15 +179,15 @@ describe('event detection (#688)', () => {
     eventsResponse = { events: [event(1000, 'deposit', 'evt-1')] };
     await startAndPoll();
 
-    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 150000 }]);
-    assert.deepStrictEqual(yieldCalls, [['balanced', 'none', 0]]);
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 100 }]);
+    assert.deepStrictEqual(yieldCalls, [['balanced', 'none', 100]]);
   });
 
   it('alerts for a withdraw event without evaluating yield', async () => {
     eventsResponse = { events: [event(1001, 'withdraw', 'evt-2')] };
     await startAndPoll();
 
-    assert.deepStrictEqual(alertCalls, [{ type: 'withdraw', amount: 150000 }]);
+    assert.deepStrictEqual(alertCalls, [{ type: 'withdraw', amount: 100 }]);
     assert.deepStrictEqual(yieldCalls, []);
   });
 
@@ -181,9 +210,9 @@ describe('event detection (#688)', () => {
     await startAndPoll();
 
     assert.deepStrictEqual(alertCalls, [
-      { type: 'deposit', amount: 150000 },
-      { type: 'withdraw', amount: 150000 },
-      { type: 'deposit', amount: 150000 },
+      { type: 'deposit', amount: 100 },
+      { type: 'withdraw', amount: 100 },
+      { type: 'deposit', amount: 100 },
     ]);
   });
 
@@ -228,7 +257,7 @@ describe('persistence and error handling (#688)', () => {
     await startAndPoll();
 
     assert.deepStrictEqual(dbQueries, []);
-    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 150000 }], 'the alert still happens');
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 100 }], 'the alert still happens');
   });
 
   it('survives a failed poll and keeps polling', async () => {
@@ -242,7 +271,7 @@ describe('persistence and error handling (#688)', () => {
     eventsError = null;
     eventsResponse = { events: [event(1100, 'deposit', 'evt-50')] };
     await capturedInterval!();
-    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 150000 }], 'the next poll still runs');
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 100 }], 'the next poll still runs');
   });
 
   it('keeps going when the database write fails', async () => {
@@ -255,7 +284,7 @@ describe('persistence and error handling (#688)', () => {
     eventsResponse = { events: [event(1030, 'deposit', 'evt-60')] };
     await startAndPoll();
 
-    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 150000 }]);
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 100 }]);
     assert.ok(logLines.some((l) => l.startsWith('ERROR')), 'the db failure is logged');
   });
 });
@@ -298,5 +327,66 @@ describe('missing configuration (#688)', () => {
       delete require.cache[modulePath];
       require('./eventListener');
     }
+  });
+});
+
+describe('rebalance submission (#687)', () => {
+  it('leaves the decision unsubmitted and says why when nothing is configured', async () => {
+    delete process.env.AGENT_SECRET_KEY;
+    delete process.env.REBALANCE_EXPECTED_APY_BPS;
+    delete process.env.REBALANCE_MIN_OUT;
+    yieldDecision = { shouldRebalance: true, targetProtocol: 'dex' };
+
+    eventsResponse = { events: [event(2000, 'deposit', 'evt-70')] };
+    await startAndPoll();
+
+    assert.ok(
+      logLines.some((l) => l.includes('Rebalance submission is not configured')),
+      'the listener should say it is only logging the decision',
+    );
+  });
+
+  it('submits the rebalance when the operator configured it', async () => {
+    process.env.AGENT_SECRET_KEY = Keypair.random().secret();
+    process.env.REBALANCE_EXPECTED_APY_BPS = '650';
+    process.env.REBALANCE_MIN_OUT = '900000000';
+    yieldDecision = { shouldRebalance: true, targetProtocol: 'dex' };
+
+    eventsResponse = { events: [event(2001, 'deposit', 'evt-71')] };
+    await startAndPoll();
+
+    assert.strictEqual(submissions.length, 1, 'exactly one submission');
+    assert.strictEqual(submissions[0].protocol, 'dex');
+    assert.strictEqual(submissions[0].contractId, VAULT_ID);
+    assert.strictEqual(submissions[0].config.expectedApyBps, 650);
+    assert.ok(logLines.some((l) => l.includes('Rebalance submitted')));
+  });
+
+  it('logs a failed submission and keeps watching', async () => {
+    process.env.AGENT_SECRET_KEY = Keypair.random().secret();
+    process.env.REBALANCE_EXPECTED_APY_BPS = '650';
+    process.env.REBALANCE_MIN_OUT = '900000000';
+    yieldDecision = { shouldRebalance: true, targetProtocol: 'dex' };
+    submissionOutcome = { submitted: false, reason: 'the network rejected the transaction' };
+
+    eventsResponse = { events: [event(2002, 'deposit', 'evt-72')] };
+    await startAndPoll();
+
+    assert.ok(logLines.some((l) => l.startsWith('ERROR') && l.includes('rejected')));
+  });
+
+  it('reads the amount from the event instead of a fixed value', async () => {
+    eventsResponse = { events: [event(2003, 'deposit', 'evt-73', depositValue(42_0000000n))] };
+    await startAndPoll();
+
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 42 }]);
+    assert.deepStrictEqual(yieldCalls, [['balanced', 'none', 42]]);
+  });
+
+  it('treats an unreadable payload as zero rather than guessing', async () => {
+    eventsResponse = { events: [event(2004, 'deposit', 'evt-74', nativeToScVal(7))] };
+    await startAndPoll();
+
+    assert.deepStrictEqual(alertCalls, [{ type: 'deposit', amount: 0 }]);
   });
 });
