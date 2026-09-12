@@ -1,8 +1,4 @@
-import { Server, Contract, Address, rpc } from '@stellar/stellar-sdk';
 import { getWallet } from './walletService';
-
-const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
-const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || 'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
 
 export interface UserPortfolio {
   balance: number;
