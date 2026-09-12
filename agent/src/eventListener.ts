@@ -1,9 +1,14 @@
-import { rpc } from '@stellar/stellar-sdk';
+import { rpc, scValToNative } from '@stellar/stellar-sdk';
 import { pool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { processEventForAlerts } from './alertEngine';
 import logger from './logger';
 import { withRetry } from './retry';
+import {
+  rebalanceConfigFromEnv,
+  submitRebalance,
+  type RebalanceOutcome,
+} from './rebalanceSubmitter';
 
 export { pool };
 
@@ -13,6 +18,73 @@ export const server = new rpc.Server(rpcUrl);
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 
 let eventInterval: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Reads the user and USDC amount out of an event payload (#687).
+ *
+ * The vault emits `DepositEvent { user, amount, shares }`; amounts arrive in
+ * stroops (7 decimals) and are returned here in whole USDC, which is the unit the
+ * alert rules compare against. An event whose payload cannot be read yields zero
+ * rather than a guess.
+ */
+export function decodeEventPayload(value: unknown): { user: string | null; amount: number } {
+  try {
+    const native = scValToNative(value as never) as Record<string, unknown> | Map<string, unknown> | null;
+    if (!native) return { user: null, amount: 0 };
+
+    const read = (key: string): unknown =>
+      native instanceof Map ? native.get(key) : (native as Record<string, unknown>)[key];
+
+    const rawAmount = read('amount');
+    const stroops =
+      typeof rawAmount === 'bigint'
+        ? rawAmount
+        : typeof rawAmount === 'number'
+          ? BigInt(Math.trunc(rawAmount))
+          : typeof rawAmount === 'string' && /^[0-9]+$/.test(rawAmount)
+            ? BigInt(rawAmount)
+            : null;
+
+    const rawUser = read('user');
+    const user = typeof rawUser === 'string' ? rawUser : null;
+
+    if (stroops === null) return { user, amount: 0 };
+    return { user, amount: Number(stroops) / 10 ** 7 };
+  } catch {
+    return { user: null, amount: 0 };
+  }
+}
+
+/**
+ * Submits the rebalance the yield decision asked for, or explains why it did not (#687).
+ *
+ * Submission is opt-in on configuration: `AGENT_SECRET_KEY`,
+ * `REBALANCE_EXPECTED_APY_BPS` and `REBALANCE_MIN_OUT` all have to be set, because the
+ * last two decide how much the on-chain trade may lose. Without them the listener
+ * keeps making the decision and logs it, rather than rebalancing with values
+ * nobody chose.
+ */
+async function maybeSubmitRebalance(targetProtocol: string): Promise<void> {
+  const configured = rebalanceConfigFromEnv(process.env);
+  if (!configured.ok) {
+    logger.info(
+      { reason: configured.reason },
+      'Rebalance submission is not configured; decision logged only',
+    );
+    return;
+  }
+
+  const outcome: RebalanceOutcome = await submitRebalance(
+    { contractId: VAULT_CONTRACT_ID, protocol: targetProtocol, config: configured.config },
+    { server },
+  );
+
+  if (outcome.submitted) {
+    logger.info({ hash: outcome.hash, protocol: targetProtocol }, 'Rebalance submitted');
+  } else {
+    logger.error({ reason: outcome.reason }, 'Rebalance submission failed');
+  }
+}
 
 export function stopEventListener() {
   if (eventInterval) {
@@ -68,7 +140,11 @@ export async function startEventListener() {
 
           if (!eventType) continue;
 
-          logger.info({ eventType, ledger: event.ledger }, 'Detected event');
+          const decoded = decodeEventPayload(event.value);
+          logger.info(
+            { eventType, ledger: event.ledger, user: decoded.user, amount: decoded.amount },
+            'Detected event',
+          );
 
           await logEventToDb(eventType, event.id, event.ledger);
 
@@ -77,14 +153,15 @@ export async function startEventListener() {
             const userStrategy = 'balanced';
             const currentProtocol = 'none';
 
-            const decision = await evaluateYield(userStrategy, currentProtocol, 0);
+            const decision = await evaluateYield(userStrategy, currentProtocol, decoded.amount);
 
             if (decision.shouldRebalance) {
               logger.info({ targetProtocol: decision.targetProtocol }, 'Rebalance needed');
+              await maybeSubmitRebalance(decision.targetProtocol);
             }
           }
 
-          const alertPayload = { type: eventType, amount: 150000 };
+          const alertPayload = { type: eventType, amount: decoded.amount };
           await processEventForAlerts(alertPayload);
 
           startLedger = Math.max(startLedger, event.ledger + 1);
