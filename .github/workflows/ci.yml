@@ -65,6 +65,9 @@ jobs:
           - name: "Vault UI Accessibility & Notifications"
             step: "vault-ui-test"
             working_directory: "packages/vault-ui"
+          - name: "Monitoring Unit Tests"
+            step: "monitoring-test"
+            working_directory: "packages/monitoring"
           - name: "Frontend Lint"
             step: "frontend-lint"
             working_directory: "frontend"
@@ -153,6 +156,14 @@ jobs:
               ;;
             vault-ui-test)
               npm install
+              npm run test
+              ;;
+            monitoring-test)
+              # packages/monitoring depends on vault-client through
+              # file:../vault-client, so its dist/ types have to exist before
+              # the package can install, typecheck or run its tests.
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
               npm run test
               ;;
             frontend-lint)
