@@ -11,6 +11,15 @@ export interface MonitoringConfig {
   thresholds: AlertThresholds;
   metricsBackendUrl?: string;
   enablePauseDrill?: boolean;
+  /** Insurance fund alerting. When omitted, no insurance alert is raised. */
+  insurance?: InsuranceConfig;
+}
+
+export interface InsuranceConfig {
+  /** Balance below this level raises an insurance-fund alert. */
+  minimumFundLevel: number;
+  /** Minimum time between insurance alerts, defaults to one hour. */
+  alertCooldownMs?: number;
 }
 
 export interface AlertWebhook {
@@ -42,6 +51,8 @@ export interface HealthMetrics {
   userDepositCap: bigint;
   pendingUpgrade?: PendingTimelock;
   pendingAgent?: PendingTimelock;
+  /** Insurance fund balance in USDC, when the contract exposes it. */
+  insuranceFundBalance?: number;
 }
 
 export interface PendingTimelock {
@@ -72,7 +83,9 @@ export type AlertType =
   | "agent_update_proposed"
   | "owner_transfer_initiated"
   | "anomalous_activity"
-  | "rpc_connectivity";
+  | "rpc_connectivity"
+  // Raised by the monitor itself when the insurance fund drops below its minimum.
+  | "insurance_fund_level";
 
 export interface MetricRecord {
   timestamp: number;
