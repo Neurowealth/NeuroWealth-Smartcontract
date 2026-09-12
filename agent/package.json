@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "test": "ts-node --transpile-only src/openAiKeyManager.test.ts && ts-node --transpile-only src/rateLimiter.test.ts && ts-node --transpile-only src/db.test.ts"
   },
   "keywords": [],
@@ -32,6 +34,9 @@
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.0"
   }

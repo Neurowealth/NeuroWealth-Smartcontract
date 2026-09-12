@@ -1,7 +1,7 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert';
 import { MetricsEngine } from './metrics';
-import { createMetricsApp, startMetricsServer } from './metricsApi';
+import { startMetricsServer } from './metricsApi';
 
 const T0 = 1_700_000_000_000;
 
@@ -128,9 +128,7 @@ describe('Metrics API (Issue #652)', () => {
   const { engine, now } = makeEngine();
   engine.recordTvl(1_000_000, 0.07);
   engine.recordHeartbeat(true);
-  const app = createMetricsApp(engine);
   let server: import('node:http').Server;
-  let baseUrl = '';
 
   after(async () => {
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));

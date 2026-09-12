@@ -132,8 +132,9 @@ export class OpenAIKeyManager {
         this.keyState[keyIndex].isHealthy = true;
         this.keyState[keyIndex].failureCount = 0;
         return result;
-      } catch (error: any) {
-        const status = error?.status || error?.response?.status;
+      } catch (error) {
+        const typed = error as { status?: number; response?: { status?: number } };
+        const status = typed?.status || typed?.response?.status;
         const message = error instanceof Error ? error.message : String(error);
 
         this.keyState[keyIndex].failureCount += 1;
