@@ -65,6 +65,9 @@ jobs:
           - name: "Vault UI Accessibility & Notifications"
             step: "vault-ui-test"
             working_directory: "packages/vault-ui"
+          - name: "WhatsApp Bot Lint"
+            step: "whatsapp-lint"
+            working_directory: "whatsapp"
           - name: "Frontend Lint"
             step: "frontend-lint"
             working_directory: "frontend"
@@ -154,6 +157,10 @@ jobs:
             vault-ui-test)
               npm install
               npm run test
+              ;;
+            whatsapp-lint)
+              npm ci
+              npm run lint
               ;;
             frontend-lint)
               npm ci
