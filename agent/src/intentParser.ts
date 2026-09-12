@@ -45,7 +45,26 @@ Only output valid JSON matching this exact schema. If the user wants to withdraw
 
   try {
     const parsed = JSON.parse(result) as ParsedIntent;
-    
+
+    // The prompt asks for one of six actions, so anything else - including a
+    // non-object response such as an array or null - is a malformed reply and
+    // must not be handed back as if it were an intent.
+    const allowedActions: ParsedIntent['action'][] = [
+      'deposit',
+      'withdraw',
+      'balance',
+      'earnings',
+      'switch_strategy',
+      'get_apy',
+    ];
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !allowedActions.includes(parsed.action)
+    ) {
+      throw new Error('Malformed intent response: expected an object with a supported action');
+    }
+
     // Basic validations
     if (parsed.amount !== undefined && typeof parsed.amount === 'number' && parsed.amount <= 0) {
       throw new Error("Amount must be greater than 0");
