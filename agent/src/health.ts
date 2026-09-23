@@ -1,14 +1,14 @@
 import express from 'express';
 import { Pool } from 'pg';
-import { SorobanRpc } from '@stellar/stellar-sdk';
+import { rpc } from '@stellar/stellar-sdk';
 import { getPoolMetrics } from './db';
 import { openAiKeyManager } from './openAiKeyManager';
 
 const router = express.Router();
 let dbPool: Pool | null = null;
-let rpcServer: SorobanRpc.Server | null = null;
+let rpcServer: rpc.Server | null = null;
 
-export function configureHealthChecks(pool: Pool, server: SorobanRpc.Server) {
+export function configureHealthChecks(pool: Pool, server: rpc.Server) {
   dbPool = pool;
   rpcServer = server;
 }
