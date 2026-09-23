@@ -62,6 +62,9 @@ jobs:
           - name: "Vault Client Typecheck"
             step: "vault-client-typecheck"
             working_directory: "packages/vault-client"
+          - name: "Agent Lint"
+            step: "agent-lint"
+            working_directory: "agent"
           - name: "Vault UI Accessibility & Notifications"
             step: "vault-ui-test"
             working_directory: "packages/vault-ui"
@@ -154,6 +157,10 @@ jobs:
             vault-ui-test)
               npm install
               npm run test
+              ;;
+            agent-lint)
+              npm ci
+              npm run lint
               ;;
             frontend-lint)
               npm ci

@@ -27,8 +27,7 @@ describe('OpenAIKeyManager (#712)', () => {
     const result = await manager.executeWithRotation(async (client) => {
       callCount++;
       if (client.apiKey === 'bad-key') {
-        const err: any = new Error('Rate limit exceeded');
-        err.status = 429;
+        const err = Object.assign(new Error('Rate limit exceeded'), { status: 429 });
         throw err;
       }
       return 'success-from-good-key';
