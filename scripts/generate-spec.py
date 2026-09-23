@@ -736,22 +736,121 @@ class ContractSpecGenerator:
         }
         
     def _parse_event_topics(self) -> Dict[str, str]:
-        # 1. Parse topics.rs to map constant name to symbol string
-        # e.g., pub const TOPIC_INIT: Symbol = symbol_short!("init");
-        topic_const_to_symbol = {}
-        for match in re.finditer(r"pub\s+const\s+(\w+):\s*Symbol\s*=\s*symbol_short!\(\"([^\"]+)\"\);", self.topics_source):
+        """Map each event struct to the symbol its emit site publishes (#693).
+
+        The previous implementation matched exactly one shape:
+
+            env.events().publish((TOPIC_X,), SomeEvent {
+
+        It misses every emit site that
+          - writes the call chain across lines (env / .events() / .publish(...)),
+          - publishes an indexed Address as a second topic,
+          - qualifies the constant (topics::TOPIC_EMERGENCY_PAUSED),
+          - or inlines the symbol (symbol_short!("mev_alert")),
+        which is why 23 of the 65 generated events read "unknown" although topics.rs
+        declares a topic for each of them.
+        """
+        # 1. topics.rs: constant name -> literal symbol.
+        topic_const_to_symbol: Dict[str, str] = {}
+        for match in re.finditer(
+            r'pub\s+const\s+([A-Z0-9_]+)\s*:\s*Symbol\s*=\s*symbol_short!\s*\(\s*"([^"]+)"\s*\)\s*;',
+            self.topics_source,
+        ):
             topic_const_to_symbol[match.group(1)] = match.group(2)
-            
-        # 2. Parse lib.rs to map event name to topic constant name
-        # e.g., env.events().publish((TOPIC_INIT,), VaultInitializedEvent { ...
-        event_to_symbol = {}
-        for match in re.finditer(r"env\.events\(\)\.publish\(\s*\(\s*(\w+)\s*,\s*\)\s*,\s*(\w+Event)", self.source):
-            const_name = match.group(1)
-            event_name = match.group(2)
-            if const_name in topic_const_to_symbol:
-                event_to_symbol[event_name] = topic_const_to_symbol[const_name]
-                
+
+        # 2. lib.rs: follow each publish() call to its event struct.
+        event_to_symbol: Dict[str, str] = {}
+        for topics_expr, event_name in self._publish_sites():
+            symbol = self._resolve_topic_expression(topics_expr, topic_const_to_symbol)
+            if symbol:
+                event_to_symbol[event_name] = symbol
+
+        # 3. Last resort: the constant named after the event itself, read from
+        #    topics.rs, so the answer stays sourced from the canonical file
+        #    instead of being guessed when an emit site is written in a shape
+        #    this parser does not recognise.
+        for event_name in re.findall(r'pub\s+struct\s+(\w+Event)\b', self.source):
+            if event_name in event_to_symbol:
+                continue
+            stem = event_name[: -len("Event")]
+            derived = "TOPIC_" + re.sub(r'(?<!^)(?=[A-Z])', "_", stem).upper()
+            if derived in topic_const_to_symbol:
+                event_to_symbol[event_name] = topic_const_to_symbol[derived]
+
         return event_to_symbol
+
+    def _publish_sites(self) -> list[tuple[str, str]]:
+        """Yield (topic expression, event struct name) for every publish() call."""
+        sites: list[tuple[str, str]] = []
+        for match in re.finditer(r'[.]\s*publish\s*\(', self.source):
+            idx = match.end()
+            depth = 1
+            while idx < len(self.source) and depth > 0:
+                char = self.source[idx]
+                if char == '(':
+                    depth += 1
+                elif char == ')':
+                    depth -= 1
+                idx += 1
+
+            arguments = self.source[match.end() : idx - 1]
+            pieces = self._split_top_level(arguments)
+            if len(pieces) != 2:
+                continue
+
+            topics_expr, data_expr = pieces[0].strip(), pieces[1].strip()
+            if topics_expr.startswith('(') and topics_expr.endswith(')'):
+                topic_pieces = self._split_top_level(topics_expr[1:-1])
+                if not topic_pieces:
+                    continue
+                topics_expr = topic_pieces[0].strip()
+
+            event_match = re.match(r'([A-Za-z_][A-Za-z0-9_]*)', data_expr)
+            if not event_match:
+                continue
+            event_name = event_match.group(1)
+            if event_name.endswith("Event"):
+                sites.append((topics_expr, event_name))
+        return sites
+
+    @staticmethod
+    def _split_top_level(expression: str) -> list[str]:
+        """Split on commas that are outside parentheses, brackets and strings."""
+        pieces: list[str] = []
+        depth = 0
+        in_string = False
+        current = ""
+        for char in expression:
+            if char == chr(34):
+                in_string = not in_string
+            elif not in_string and char in "([{":
+                depth += 1
+            elif not in_string and char in ")]}":
+                depth -= 1
+
+            if char == "," and depth == 0 and not in_string:
+                pieces.append(current)
+                current = ""
+                continue
+            current += char
+
+        pieces.append(current)
+        return [piece for piece in pieces if piece.strip()]
+
+    @staticmethod
+    def _resolve_topic_expression(
+        expression: str, topic_const_to_symbol: Dict[str, str]
+    ) -> str:
+        """Resolve a topic expression to the literal symbol topics.rs declares."""
+        expression = expression.strip()
+
+        inline = re.search(r'symbol_short!\s*\(\s*"([^"]+)"', expression)
+        if inline:
+            return inline.group(1)
+
+        name = expression.split("::")[-1].strip()
+        return topic_const_to_symbol.get(name, "")
+
 
     def _get_functions(self) -> List[Dict[str, Any]]:
         """Extract all public functions from contract source."""
