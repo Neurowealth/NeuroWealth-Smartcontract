@@ -12,7 +12,7 @@
     "test": "jest"
   },
   "dependencies": {
-    "@neurowealth/vault-client": "workspace:*",
+    "@neurowealth/vault-client": "file:../vault-client",
     "@stellar/stellar-sdk": "^12.3.0",
     "pino": "^8.16.0",
     "pino-pretty": "^10.2.0",

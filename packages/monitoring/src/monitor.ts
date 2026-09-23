@@ -10,7 +10,10 @@ export class VaultMonitor {
   private alertEngine: AlertEngine;
   private alertDispatcher: AlertDispatcher;
   private state: MonitoringState;
-  private monitoringInterval: NodeJS.Timer | null = null;
+  // ReturnType<typeof setInterval> rather than the deprecated NodeJS.Timer
+  // global: the latter is not assignable to clearInterval under current
+  // @types/node, which is why this file did not typecheck.
+  private monitoringInterval: ReturnType<typeof setInterval> | null = null;
   private lastInsuranceAlertAt: number = 0;
 
   constructor(private config: MonitoringConfig) {
@@ -121,9 +124,10 @@ export class VaultMonitor {
       await this.alertDispatcher.dispatch({
         id: `insurance_low_${now}`,
         type: "insurance_fund_level",
-        severity: "${balance < minLevel * 0.5 ? "critical" : "warning"}",
+        severity: balance < minLevel * 0.5 ? "critical" : "warning",
         title: "Insurance Fund Low",
-        message: `Insurance fund balance is $balance, below threshold $minLevel`.
+        message:
+          `Insurance fund balance is ${balance}, below the minimum of ${minLevel}.`,
         timestamp: now,
       });
     }
