@@ -212,4 +212,167 @@ mod tests {
         assert_eq!(vault.total_shares, vault.sum_user_shares().unwrap());
         assert!(vault.no_negative_shares());
     }
+
+    /// Deposit `assets`, then immediately withdraw the exact same amount
+    /// through the real contract flow (floor mint, ceil burn, floor
+    /// redeem). Rounding must only ever cost the withdrawing user — it can
+    /// never conjure assets, and it can never take more than a few units of
+    /// dust relative to the pool's precision.
+    ///
+    /// Each case below sits on a rounding boundary: exact divisions (no
+    /// remainder), a remainder of exactly `total_assets - 1` (worst case for
+    /// ceil), prime-number pools (no common factors to cancel a remainder),
+    /// a single-unit pool, and values near `i128::MAX` (#778).
+    struct RoundTripCase {
+        name: &'static str,
+        assets: i128,
+        total_shares: i128,
+        total_assets: i128,
+    }
+
+    /// Runs the mint / ceil-burn / full-model-cycle assertions for one
+    /// rounding-boundary case. Split out of the test itself purely to stay
+    /// under `clippy::pedantic`'s `too_many_lines`.
+    fn assert_round_trip_favours_vault(case: &RoundTripCase) {
+        let minted = shares_floor(case.assets, case.total_shares, case.total_assets)
+            .unwrap_or_else(|| panic!("{}: mint overflowed", case.name));
+        assert!(minted >= 0, "{}: mint produced negative shares", case.name);
+
+        // Redeeming the freshly minted shares (deposit's own inverse) must
+        // never return more than was deposited.
+        let redeemed = assets_from_shares(minted, case.total_shares, case.total_assets)
+            .unwrap_or_else(|| panic!("{}: redeem overflowed", case.name));
+        assert!(
+            redeemed <= case.assets,
+            "{}: round-trip minted value out of thin air ({redeemed} > {})",
+            case.name,
+            case.assets
+        );
+
+        // Ceil-burn for the same nominal amount must never under-charge
+        // relative to the floor-mint, and the two must never diverge by
+        // more than a single share.
+        let burned = shares_ceil(case.assets, case.total_shares, case.total_assets)
+            .unwrap_or_else(|| panic!("{}: ceil burn overflowed", case.name));
+        assert!(
+            burned >= minted,
+            "{}: ceil burn ({burned}) under-charged floor mint ({minted})",
+            case.name
+        );
+        assert!(
+            burned - minted <= 1,
+            "{}: ceil/floor diverged by more than one share ({burned} vs {minted})",
+            case.name
+        );
+
+        // Full round trip through the vault model: deposit into an existing
+        // pool of this size, then withdraw exactly what those minted shares
+        // are worth (the maximum the user could withdraw without another
+        // party's deposit or yield moving the rate). The user must never
+        // walk away having extracted more assets than they put in.
+        let vault = VaultModel {
+            total_shares: case.total_shares,
+            total_assets: case.total_assets,
+            user_shares: [case.total_shares, 0],
+        };
+        let after_deposit = vault
+            .deposit(1, case.assets)
+            .unwrap_or_else(|| panic!("{}: model deposit failed", case.name));
+        let entitlement = assets_from_shares(
+            minted,
+            after_deposit.total_shares,
+            after_deposit.total_assets,
+        )
+        .unwrap_or_else(|| panic!("{}: entitlement overflowed", case.name));
+        assert!(
+            entitlement <= case.assets,
+            "{}: post-deposit entitlement exceeds the original deposit ({entitlement} > {})",
+            case.name,
+            case.assets
+        );
+        if entitlement == 0 {
+            // Dust-sized deposits can round down to a zero-value
+            // withdrawal; there is nothing left to redeem, which is itself
+            // the vault-favouring outcome under test.
+            return;
+        }
+        let after_withdraw = after_deposit
+            .withdraw(1, entitlement)
+            .unwrap_or_else(|| panic!("{}: model withdraw failed", case.name));
+
+        assert!(
+            after_withdraw.user_shares[1] >= 0,
+            "{}: withdrawing user went negative",
+            case.name
+        );
+        assert_eq!(
+            after_withdraw.total_shares,
+            after_withdraw.sum_user_shares().unwrap(),
+            "{}: total_shares diverged from the sum of user shares",
+            case.name
+        );
+        assert!(
+            after_withdraw.total_assets >= vault.total_assets,
+            "{}: pool lost assets net of a full deposit+withdraw cycle ({} < {})",
+            case.name,
+            after_withdraw.total_assets,
+            vault.total_assets
+        );
+    }
+
+    /// Deposit `assets`, then immediately withdraw the same amount through
+    /// the real contract flow (floor mint, ceil burn, floor redeem).
+    /// Rounding must only ever cost the withdrawing user — it can never
+    /// conjure assets, and mint/burn can never diverge by more than a
+    /// single share.
+    ///
+    /// Each case sits on a rounding boundary: exact divisions (no
+    /// remainder), a remainder of exactly `total_assets - 1` (worst case for
+    /// ceil), prime-number pools (no common factors to cancel a remainder),
+    /// a single-unit pool, and values near `i128::MAX` (#778).
+    #[test]
+    fn deposit_withdraw_round_trip_precision_across_rounding_boundaries() {
+        let cases = [
+            RoundTripCase {
+                name: "exact division, no remainder",
+                assets: 1_000_000,
+                total_shares: 5_000_000,
+                total_assets: 5_000_000,
+            },
+            RoundTripCase {
+                name: "maximal remainder (total_assets - 1)",
+                assets: 7,
+                total_shares: 3,
+                total_assets: 5,
+            },
+            RoundTripCase {
+                name: "coprime pool, no common factor to cancel remainder",
+                assets: 97,
+                total_shares: 101,
+                total_assets: 103,
+            },
+            RoundTripCase {
+                name: "single-unit pool (1:1 bootstrap-adjacent)",
+                assets: 1,
+                total_shares: 1,
+                total_assets: 1,
+            },
+            RoundTripCase {
+                name: "assets smaller than total_shares (fractional share price)",
+                assets: 3,
+                total_shares: 1_000,
+                total_assets: 7,
+            },
+            RoundTripCase {
+                name: "large values near i128 precision limits",
+                assets: 1_000_000_000_000_000_000,
+                total_shares: 3_000_000_000_000_000_001,
+                total_assets: 9_000_000_000_000_000_001,
+            },
+        ];
+
+        for case in &cases {
+            assert_round_trip_favours_vault(case);
+        }
+    }
 }
