@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "test": "ts-node --transpile-only src/cryptoUtils.test.ts && ts-node --transpile-only src/intentParser.test.ts && ts-node --transpile-only src/otpService.test.ts && ts-node --transpile-only src/stateManager.test.ts && ts-node --transpile-only src/walletService.test.ts && ts-node --transpile-only src/webhook.test.ts",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "lint": "eslint src --ext .ts",
