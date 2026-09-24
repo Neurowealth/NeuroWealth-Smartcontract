@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { startEventListener, stopEventListener, server, pool } from './eventListener';
+import { closePool } from './db';
 import { evaluateYield } from './yieldComparison';
 import { runRebalanceCycle } from './userStrategies';
 import healthRouter, { configureHealthChecks } from './health';
@@ -86,6 +87,73 @@ function startDecisionLoop() {
   }, 60 * 60 * 1000);
 }
 
+let isShuttingDown = false;
+
+export async function gracefulShutdown(
+  signal: string,
+  serverInstance?: import('http').Server,
+  options = { timeoutMs: 10000, exitProcess: true }
+): Promise<void> {
+  if (isShuttingDown) {
+    logger.warn(`${signal} received while shutdown already in progress; ignoring duplicate signal`);
+    return;
+  }
+  isShuttingDown = true;
+  logger.info(`${signal} received, initiating graceful shutdown`);
+
+  // Force exit safeguard timer
+  let forceTimer: NodeJS.Timeout | null = null;
+  if (options.exitProcess) {
+    forceTimer = setTimeout(() => {
+      logger.fatal('Graceful shutdown timed out; forcing process exit');
+      process.exit(1);
+    }, options.timeoutMs);
+    forceTimer.unref();
+  }
+
+  // 1. Stop hourly decision loop
+  if (decisionInterval) {
+    clearInterval(decisionInterval);
+    decisionInterval = null;
+    logger.info('Decision loop stopped');
+  }
+
+  // 2. Stop accepting incoming HTTP connections and drain in-flight requests
+  if (serverInstance) {
+    await new Promise<void>((resolve) => {
+      serverInstance.close((err) => {
+        if (err) {
+          logger.warn({ error: err.message }, 'Error closing HTTP server');
+        } else {
+          logger.info('HTTP server closed');
+        }
+        resolve();
+      });
+    });
+  }
+
+  // 3. Gracefully stop event listener and await completion of in-flight polls
+  try {
+    await stopEventListener();
+  } catch (err) {
+    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Error stopping event listener');
+  }
+
+  // 4. Drain and close PostgreSQL connection pool
+  try {
+    await closePool();
+  } catch (err) {
+    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Error closing database pool');
+  }
+
+  if (forceTimer) clearTimeout(forceTimer);
+  logger.info('Graceful shutdown completed successfully');
+
+  if (options.exitProcess) {
+    process.exit(0);
+  }
+}
+
 async function main() {
   logger.info('Starting NeuroWealth AI Agent');
 
@@ -97,36 +165,23 @@ async function main() {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
   });
 
-  // Graceful shutdown
-  async function shutdown(signal: string) {
-    logger.info(`${signal} received, shutting down`);
-
-    if (decisionInterval) {
-      clearInterval(decisionInterval);
-      decisionInterval = null;
-    }
-
-    stopEventListener();
-
-    serverInstance.close(() => {
-      logger.info('HTTP server closed');
+  process.on('SIGTERM', () => {
+    gracefulShutdown('SIGTERM', serverInstance).catch((err) => {
+      logger.fatal({ error: err instanceof Error ? err.message : String(err) }, 'Shutdown error');
+      process.exit(1);
     });
-
-    try {
-      await pool.end();
-      logger.info('Database pool closed');
-    } catch {
-      // ignore
-    }
-
-    process.exit(0);
-  }
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  });
+  process.on('SIGINT', () => {
+    gracefulShutdown('SIGINT', serverInstance).catch((err) => {
+      logger.fatal({ error: err instanceof Error ? err.message : String(err) }, 'Shutdown error');
+      process.exit(1);
+    });
+  });
 }
 
-main().catch((err) => {
-  logger.fatal({ error: err.message }, 'Startup failed');
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    logger.fatal({ error: err.message }, 'Startup failed');
+    process.exit(1);
+  });
+}

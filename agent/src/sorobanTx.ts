@@ -1,4 +1,4 @@
-import { Keypair, TransactionBuilder, Networks, Contract, rpc, Account, TimeoutInfinite, scValToNative } from '@stellar/stellar-sdk';
+import { Keypair, TransactionBuilder, Networks, Contract, rpc, Account, TimeoutInfinite, xdr } from '@stellar/stellar-sdk';
 import logger from './logger';
 import { server } from './eventListener';
 
@@ -11,7 +11,7 @@ if (secretKey) {
   try {
     agentKeypair = Keypair.fromSecret(secretKey);
   } catch (err) {
-    logger.error('Invalid SOROBAN_SECRET_KEY provided.');
+    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Invalid SOROBAN_SECRET_KEY provided.');
   }
 }
 
@@ -23,7 +23,7 @@ async function loadAccount(publicKey: string): Promise<Account> {
 /**
  * Submits a transaction to the vault contract.
  */
-async function submitVaultTransaction(method: string, args: any[] = []): Promise<boolean> {
+async function submitVaultTransaction(method: string, args: xdr.ScVal[] = []): Promise<boolean> {
   if (!agentKeypair) {
     logger.warn('No SOROBAN_SECRET_KEY set. Cannot submit transaction.');
     return false;
@@ -56,17 +56,17 @@ async function submitVaultTransaction(method: string, args: any[] = []): Promise
       return false;
     }
 
-    tx = rpc.assembleTransaction(tx, networkPassphrase, simulated).build();
+    tx = rpc.assembleTransaction(tx, simulated).build();
     tx.sign(agentKeypair);
 
     const txResponse = await server.sendTransaction(tx);
     
     if (txResponse.status === 'ERROR') {
-      logger.error({ error: txResponse.errorResultXdr }, 'Transaction submission failed');
+      logger.error({ error: txResponse.errorResult }, 'Transaction submission failed');
       return false;
     }
 
-    if (txResponse.status === 'SUCCESS' || txResponse.status === 'PENDING') {
+    if (txResponse.status === 'PENDING') {
       // In production, we'd poll for GetTransaction status, but we'll consider it submitted for now.
       logger.info({ hash: txResponse.hash, status: txResponse.status }, `Transaction submitted successfully.`);
       return true;
