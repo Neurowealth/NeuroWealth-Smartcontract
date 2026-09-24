@@ -58,3 +58,9 @@ export interface AuditLogRecord {
   details?: Record<string, any>;
   created_at: string;
 }
+
+export interface AgentStateRecord {
+  key: string;
+  value: Record<string, any>;
+  updated_at: string;
+}
