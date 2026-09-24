@@ -8,6 +8,7 @@ import logger from './logger';
 import { initializeTracing } from './tracing';
 import { submitAutoCompoundTx, submitRebalanceTx } from './sorobanTx';
 import { getCurrentAllocation } from './userStrategies';
+import { RollupScheduler } from './dataRollup';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -23,6 +24,7 @@ app.use(userRateLimiter);
 app.use(healthRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
+const rollupScheduler = new RollupScheduler(pool);
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -93,6 +95,12 @@ async function main() {
   await startEventListener();
   startDecisionLoop();
 
+  if (process.env.DATABASE_URL) {
+    rollupScheduler.start();
+  } else {
+    logger.warn('DATABASE_URL is not set; nightly rollup/cleanup job disabled');
+  }
+
   const serverInstance = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Agent HTTP server listening');
   });
@@ -106,6 +114,7 @@ async function main() {
       decisionInterval = null;
     }
 
+    rollupScheduler.stop();
     stopEventListener();
 
     serverInstance.close(() => {
