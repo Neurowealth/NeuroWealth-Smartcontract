@@ -3183,6 +3183,48 @@
       ]
     },
     {
+      "name": "ProtocolApprovalScheduledEvent",
+      "topic": "ttl_sch",
+      "description": "Emitted alongside ApprovalTtlUpdatedEvent whenever the shared protocol approval TTL is persisted, so operators can schedule a renewal before the approval window closes (Issue #847). Publishing the event never extends or renews an approval.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "Protocol whose approval window is described: SymbolShort(\"blend\") for the legacy Blend-only setter, SymbolShort(\"dex\") for a DEX-only window, or SymbolShort(\"both\") when the shared TTL covers every protocol approval the vault can issue."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Ledger in which the emitting call was executed"
+        },
+        {
+          "name": "approval_ttl",
+          "type": "u32",
+          "description": "Persisted approval TTL in ledgers, equal to get_approval_ttl()"
+        },
+        {
+          "name": "expiry_ledger",
+          "type": "u32",
+          "description": "Ledger at which the approval granted with this TTL expires"
+        },
+        {
+          "name": "available_window",
+          "type": "u32",
+          "description": "Ledgers of usable window between now and expiry (expiry_ledger - current_ledger)"
+        },
+        {
+          "name": "lead_time",
+          "type": "u32",
+          "description": "Ledgers of lead time reserved for the renewal transaction"
+        },
+        {
+          "name": "renewal_deadline_ledger",
+          "type": "u32",
+          "description": "Ledger by which a renewal should be submitted so the approval never lapses (expiry_ledger - lead_time)"
+        }
+      ]
+    },
+    {
       "name": "MaxConsecutiveFailuresUpdatedEvent",
       "topic": "maxf_upd",
       "description": "Emitted by the contract.",
