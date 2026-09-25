@@ -42,3 +42,18 @@ See `BRIDGE_ARCHITECTURE.txt` for detailed architecture documentation.
 - Add integration tests with Axelar testnet
 - Add production deployment configuration
 - Set up monitoring dashboards
+
+### Durable state and restart recovery (#848, #850)
+
+- Every transfer transition is persisted before the call returns, together with
+  its workflow `stage`, `attemptCount`, a sanitised `lastError` and the
+  `nextAttemptAt` backoff deadline.
+- `BridgeManager.loadDurableState()` must be awaited at startup so in-flight
+  transfers are known again after a restart.
+- `TransferReconciler.reconcileOnStartup()` then walks the durable non-terminal
+  records, queries both chains, and decides per record whether to resume, mark
+  confirmed, or leave it retryable. It never resubmits a transfer the
+  destination already executed and never touches a terminal record.
+- The new columns (`stage`, `attempt_count`, `last_error`, `next_attempt_at`,
+  `last_reconciled_at`, `idempotency_key`, confirmation depths) live in
+  `schema.sql`; existing deployments need them before deploying this version.

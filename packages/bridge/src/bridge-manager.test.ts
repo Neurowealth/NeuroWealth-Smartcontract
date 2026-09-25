@@ -75,8 +75,19 @@ function axelarAccepts(txHash = "0xbridge"): void {
   mockedAxios.post.mockResolvedValueOnce({ data: { transactionHash: txHash } });
 }
 
-function axelarReports(status: string, destinationTxHash?: string): void {
-  mockedAxios.get.mockResolvedValueOnce({ data: { status, destinationTxHash } });
+/**
+ * Reports a bridge status. `confirmationDepth` defaults to a depth that
+ * satisfies the configured requirement (#851) so the suite exercises the
+ * confirmation path; pass an explicit depth to test a shallower window.
+ */
+function axelarReports(
+  status: string,
+  destinationTxHash?: string,
+  confirmationDepth = 12,
+): void {
+  mockedAxios.get.mockResolvedValueOnce({
+    data: { status, destinationTxHash, confirmationDepth },
+  });
 }
 
 /** Drives a fresh transfer into the requested status via the public API. */
@@ -192,6 +203,33 @@ describe("initiation", () => {
 });
 
 describe("executeAxelarTransfer", () => {
+  it("records a durable stage once the bridge message is in flight", async () => {
+    const manager = newManager();
+    const { id } = await newDeposit(manager);
+    axelarAccepts("0xbridge");
+
+    await manager.executeAxelarTransfer(id, "0xsrc");
+
+    expect(manager.getTransfer(id)).toMatchObject({
+      stage: "submitted",
+      attemptCount: 1,
+    });
+  });
+
+  it("refuses to submit the same transfer twice", async () => {
+    const manager = newManager();
+    const { id } = await newDeposit(manager);
+    axelarAccepts("0xbridge");
+    await manager.executeAxelarTransfer(id, "0xsrc");
+    mockedAxios.post.mockClear();
+
+    // The durable record is authoritative: a resubmission attempt is refused
+    // instead of putting a second bridge message in flight (#848).
+    await expect(manager.executeAxelarTransfer(id, "0xsrc-again")).rejects.toThrow();
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(manager.getTransfer(id)).toMatchObject({ stage: "submitted" });
+  });
+
   it("moves pending -> confirming and records hashes", async () => {
     const manager = newManager();
     const { id, netAmount } = await newDeposit(manager);

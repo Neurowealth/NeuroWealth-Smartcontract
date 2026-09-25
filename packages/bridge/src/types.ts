@@ -11,6 +11,30 @@ export type BridgeStatus =
   | "failed"
   | "cancelled";
 
+/**
+ * Durable workflow stage of a transfer (#848).
+ *
+ * The stage is persisted alongside the transfer so a restarted process can
+ * resume from the exact point it stopped at instead of re-deriving it from
+ * process memory:
+ *
+ * - `observed`  - source-chain transfer seen, nothing submitted to the bridge
+ * - `submitted` - the bridge message is in flight (`bridgeTxHash` recorded)
+ * - `confirmed` - the destination chain confirmed the transfer
+ * - `completed` - terminal, user-visible settlement finished
+ */
+export type TransferStage = "observed" | "submitted" | "confirmed" | "completed";
+
+/** Stage a transfer starts in. */
+export const INITIAL_STAGE: TransferStage = "observed";
+
+/** Stages from which a transfer must never be submitted again. */
+export const SUBMITTED_STAGES: readonly TransferStage[] = [
+  "submitted",
+  "confirmed",
+  "completed",
+];
+
 export interface BridgeConfig {
   // Stellar
   stellarRpcUrl: string;
@@ -93,4 +117,21 @@ export interface BridgeEvent {
 export interface StoredBridgeTransfer extends BridgeTransfer {
   retriesRemaining: number;
   lastRetryTime?: number;
+
+  // ── #848 durable workflow state ────────────────────────────────────────
+  /** Workflow stage the transfer had reached when it was last persisted. */
+  stage: TransferStage;
+  /** How many times an external submission/reconciliation has been attempted. */
+  attemptCount: number;
+  /** Sanitised description of the last failure, or `undefined` when healthy. */
+  lastError?: string;
+  /** Earliest timestamp (ms) at which an unknown external state may be retried. */
+  nextAttemptAt?: number;
+  /** Last time a reconciliation pass inspected this record (ms). */
+  lastReconciledAt?: number;
 }
+
+/** Fields a reconciliation pass may write back to a durable record. */
+export type BridgeTransferPatch = Partial<
+  Omit<StoredBridgeTransfer, "id">
+>;

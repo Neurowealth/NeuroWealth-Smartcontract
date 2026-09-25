@@ -13,7 +13,13 @@ import {
   BridgeQuote,
   BridgeStatus,
   StoredBridgeTransfer,
+  BridgeChain,
+  BridgeTransferPatch,
+  INITIAL_STAGE,
+  TransferStage,
 } from "./types";
+import { BridgeStore, InMemoryBridgeStore, isTerminalStatus } from "./bridge-store";
+import { redactTransfer, sanitizeErrorMessage } from "./redaction";
 
 /**
  * Allowed status transitions. `confirmed` and `cancelled` are terminal;
@@ -33,18 +39,58 @@ export function canTransition(from: BridgeStatus, to: BridgeStatus): boolean {
   return ALLOWED_TRANSITIONS[from].includes(to);
 }
 
+/** Base delay of the reconciliation backoff for unknown external states (#850). */
+export const RECONCILE_BACKOFF_BASE_MS = 30_000;
+/** Upper bound of the reconciliation backoff (#850). */
+export const RECONCILE_BACKOFF_MAX_MS = 15 * 60_000;
+
+/**
+ * Exponential, bounded backoff for records whose external state could not be
+ * determined. Unknown states stay retryable but never hot-loop.
+ */
+export function backoffDelayMs(attemptCount: number): number {
+  const exponent = Math.max(0, Math.min(attemptCount, 16));
+  return Math.min(
+    RECONCILE_BACKOFF_BASE_MS * 2 ** exponent,
+    RECONCILE_BACKOFF_MAX_MS,
+  );
+}
+
+/** Result of looking a transfer up on one of the two chains (#850). */
+export type ExternalChainState = "found" | "missing" | "unknown";
+
+/** What the bridge knows about a transfer after probing both chains. */
+export interface ExternalTransferState {
+  sourceChain: ExternalChainState;
+  destinationChain: ExternalChainState;
+  axelarStatus?: string;
+  destinationTxHash?: string;
+  confirmationDepth?: number;
+}
+
 export class BridgeManager {
   private logger = pino();
   private stellarServer: StellarSdk.SorobanRpc.Server;
   private ethersProvider: ethers.Provider;
   private bridgeTransfers: Map<string, StoredBridgeTransfer> = new Map();
 
-  constructor(private config: BridgeConfig) {
+  constructor(
+    private config: BridgeConfig,
+    private store: BridgeStore = new InMemoryBridgeStore(),
+  ) {
     this.stellarServer = new StellarSdk.SorobanRpc.Server(config.stellarRpcUrl);
     this.ethersProvider = new ethers.JsonRpcProvider(config.ethereumRpcUrl);
 
     // #851 - Validate confirmation depth configuration
     this.validateConfirmationDepths();
+  }
+
+  /**
+   * The durable store backing this manager. A restarted process must construct
+   * its manager with the same store to see in-flight transfers (#848).
+   */
+  getStore(): BridgeStore {
+    return this.store;
   }
 
   /**
@@ -54,7 +100,7 @@ export class BridgeManager {
     const requiredChains: BridgeChain[] = ["stellar", "ethereum"];
 
     for (const chain of requiredChains) {
-      const depth = this.config.confirmationDepths[chain];
+      const depth = this.config.confirmationDepths?.[chain];
       if (depth === undefined || depth === null) {
         throw new Error(
           `Confirmation depth not configured for chain: ${chain}. Please set confirmationDepths.${chain} in config.`,
@@ -83,11 +129,58 @@ export class BridgeManager {
    * #851 - Get the required confirmation depth for a destination chain
    */
   private getConfirmationDepth(chain: BridgeChain): number {
-    const depth = this.config.confirmationDepths[chain];
+    const depth = this.config.confirmationDepths?.[chain];
     if (depth === undefined) {
       throw new Error(`No confirmation depth configured for chain: ${chain}`);
     }
     return depth;
+  }
+
+  /**
+   * #848 - Restores every durable record into the in-memory mirror.
+   *
+   * Must be awaited before serving traffic: after a restart the process knows
+   * about in-flight transfers only because they were written to the store on
+   * every transition.
+   */
+  async loadDurableState(): Promise<StoredBridgeTransfer[]> {
+    const records = await this.store.getAll();
+    for (const record of records) {
+      this.bridgeTransfers.set(record.id, { ...record });
+    }
+
+    const nonTerminal = records.filter((record) => !isTerminalStatus(record.status));
+    this.logger.info(
+      {
+        restored: records.length,
+        nonTerminal: nonTerminal.length,
+      },
+      "Durable bridge state loaded",
+    );
+    return nonTerminal;
+  }
+
+  /**
+   * #848/#850 - Durable records that still need work after a restart.
+   */
+  async getIncompleteTransfers(): Promise<StoredBridgeTransfer[]> {
+    return this.store.getNonTerminal();
+  }
+
+  /**
+   * #850 - Makes a durable record visible to the in-memory operations (poll,
+   * resume) so reconciliation can drive it without a full reload.
+   */
+  attachDurableRecord(record: StoredBridgeTransfer): void {
+    this.bridgeTransfers.set(record.id, { ...record });
+  }
+
+  /**
+   * #851 - Confirmation depth a destination chain requires, exposed for the
+   * reconciliation pass.
+   */
+  getRequiredConfirmationDepth(chain: BridgeChain): number {
+    return this.getConfirmationDepth(chain);
   }
 
   /**
@@ -122,34 +215,28 @@ export class BridgeManager {
     }
 
     // #849 - Check for existing transfer with same idempotency key
-    if (idempotencyKey) {
-      const existingTransfer = Array.from(this.bridgeTransfers.values()).find(
-        (t) => t.idempotencyKey === idempotencyKey,
-      );
-
-      if (existingTransfer) {
-        // Verify that the payload matches the original request
-        if (
-          existingTransfer.user !== destinationStellarAddress ||
-          existingTransfer.amount !== usdcAmount ||
-          existingTransfer.sourceChain !== "ethereum" ||
-          existingTransfer.destinationChain !== "stellar"
-        ) {
-          throw new Error(
-            "Idempotency key already used with different parameters. Use a new key.",
-          );
-        }
-
-        // Return the existing transfer for safe retry
-        this.logger.info(
-          { transferId: existingTransfer.id, idempotencyKey },
-          "Returning existing transfer for idempotent retry",
+    const existingTransfer = await this.findByIdempotencyKey(idempotencyKey);
+    if (existingTransfer) {
+      if (
+        existingTransfer.user !== destinationStellarAddress ||
+        existingTransfer.amount !== usdcAmount ||
+        existingTransfer.sourceChain !== "ethereum" ||
+        existingTransfer.destinationChain !== "stellar"
+      ) {
+        throw new Error(
+          "Idempotency key already used with different parameters. Use a new key.",
         );
-        return {
-          ...existingTransfer,
-          status: existingTransfer.status,
-        };
       }
+
+      // Return the existing transfer for safe retry
+      this.logger.info(
+        { transfer: redactTransfer(existingTransfer), idempotencyKey },
+        "Returning existing transfer for idempotent retry",
+      );
+      return {
+        ...existingTransfer,
+        status: existingTransfer.status,
+      };
     }
 
     // Calculate bridge fee
@@ -174,14 +261,10 @@ export class BridgeManager {
       requiredConfirmationDepth: this.getConfirmationDepth("stellar"), // #851 - Store required depth
     };
 
-    // Store transfer
-    this.bridgeTransfers.set(transfer.id, {
-      ...transfer,
-      retriesRemaining: 3,
-    });
+    await this.persistNew(transfer);
 
     this.logger.info(
-      { transferId: transfer.id, status: transfer.status, idempotencyKey },
+      { transfer: redactTransfer(this.mirror(transfer.id)!), idempotencyKey },
       "Bridge transfer initiated",
     );
 
@@ -220,34 +303,28 @@ export class BridgeManager {
     }
 
     // #849 - Check for existing transfer with same idempotency key
-    if (idempotencyKey) {
-      const existingTransfer = Array.from(this.bridgeTransfers.values()).find(
-        (t) => t.idempotencyKey === idempotencyKey,
-      );
-
-      if (existingTransfer) {
-        // Verify that the payload matches the original request
-        if (
-          existingTransfer.user !== stellarUserAddress ||
-          existingTransfer.amount !== usdcAmount ||
-          existingTransfer.sourceChain !== "stellar" ||
-          existingTransfer.destinationChain !== "ethereum"
-        ) {
-          throw new Error(
-            "Idempotency key already used with different parameters. Use a new key.",
-          );
-        }
-
-        // Return the existing transfer for safe retry
-        this.logger.info(
-          { transferId: existingTransfer.id, idempotencyKey },
-          "Returning existing transfer for idempotent retry",
+    const existingTransfer = await this.findByIdempotencyKey(idempotencyKey);
+    if (existingTransfer) {
+      if (
+        existingTransfer.user !== stellarUserAddress ||
+        existingTransfer.amount !== usdcAmount ||
+        existingTransfer.sourceChain !== "stellar" ||
+        existingTransfer.destinationChain !== "ethereum"
+      ) {
+        throw new Error(
+          "Idempotency key already used with different parameters. Use a new key.",
         );
-        return {
-          ...existingTransfer,
-          status: existingTransfer.status,
-        };
       }
+
+      // Return the existing transfer for safe retry
+      this.logger.info(
+        { transfer: redactTransfer(existingTransfer), idempotencyKey },
+        "Returning existing transfer for idempotent retry",
+      );
+      return {
+        ...existingTransfer,
+        status: existingTransfer.status,
+      };
     }
 
     // Calculate bridge fee
@@ -273,13 +350,10 @@ export class BridgeManager {
       requiredConfirmationDepth: this.getConfirmationDepth("ethereum"), // #851 - Store required depth
     };
 
-    this.bridgeTransfers.set(transfer.id, {
-      ...transfer,
-      retriesRemaining: 3,
-    });
+    await this.persistNew(transfer);
 
     this.logger.info(
-      { transferId: transfer.id, status: transfer.status, idempotencyKey },
+      { transfer: redactTransfer(this.mirror(transfer.id)!), idempotencyKey },
       "Bridge transfer initiated",
     );
 
@@ -321,10 +395,20 @@ export class BridgeManager {
     if (!transfer) {
       throw new Error(`Transfer not found: ${transferId}`);
     }
+
     this.assertTransition(transfer, "confirming");
 
+    // #848 - A restart must never create a second source-chain submission.
+    // Once a bridge message is in flight the durable record is authoritative:
+    // the reconciliation pass polls it instead of re-submitting.
+    if (transfer.stage !== INITIAL_STAGE || transfer.bridgeTxHash) {
+      throw new Error(
+        `Transfer ${transferId} was already submitted (stage: ${transfer.stage})`,
+      );
+    }
+
     this.logger.info(
-      { transferId, sourceChainTxHash },
+      { transfer: redactTransfer(transfer), sourceChainTxHash },
       "Executing Axelar transfer",
     );
 
@@ -332,7 +416,9 @@ export class BridgeManager {
       // Build GMP message payload
       const payload = this.encodeGMPPayload(transfer);
 
-      // Send via Axelar API
+      // Send via Axelar API. The transfer id doubles as the external
+      // idempotency key, so a retried submission collapses onto the message
+      // that is already in flight (#848).
       const axelarResponse = await axios.post(
         `${this.config.axelarApiUrl}/transfers`,
         {
@@ -343,6 +429,7 @@ export class BridgeManager {
           payload,
           amount: transfer.netAmount.toString(),
           gasLimit: "500000",
+          idempotencyKey: transfer.id,
         },
       );
 
@@ -350,22 +437,35 @@ export class BridgeManager {
 
       // Update transfer status
       this.setStatus(transfer, "confirming");
+      transfer.stage = "submitted"; // #848
       transfer.sourceChainTxHash = sourceChainTxHash;
       transfer.bridgeTxHash = bridgeTxHash;
+      transfer.attemptCount += 1;
+      transfer.lastError = undefined;
+      transfer.nextAttemptAt = undefined;
       transfer.updatedAt = Date.now();
+      await this.persist(transfer);
 
       this.logger.info(
-        { transferId, bridgeTxHash },
+        { transfer: redactTransfer(transfer), bridgeTxHash },
         "Axelar transfer submitted",
       );
 
       return bridgeTxHash;
     } catch (error) {
-      this.logger.error({ error, transferId }, "Axelar transfer failed");
+      // #848 - Persist the failure (sanitised) so a restart knows what happened
+      // and can back off instead of hammering the bridge.
+      transfer.attemptCount += 1;
+      transfer.errorMessage = sanitizeErrorMessage(error);
+      transfer.lastError = transfer.errorMessage;
+      transfer.nextAttemptAt = Date.now() + backoffDelayMs(transfer.attemptCount);
       this.setStatus(transfer, "failed");
-      transfer.errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
-      transfer.updatedAt = Date.now();
+      await this.persist(transfer);
+
+      this.logger.error(
+        { transfer: redactTransfer(transfer), errorClass: this.classifyError(error) },
+        "Axelar transfer failed",
+      );
       throw error;
     }
   }
@@ -411,28 +511,111 @@ export class BridgeManager {
 
         if (currentDepth >= requiredDepth) {
           this.setStatus(transfer, "confirmed");
+          transfer.stage = "confirmed"; // #848
           transfer.destinationTxHash = response.data.destinationTxHash;
+          transfer.lastError = undefined;
+          transfer.nextAttemptAt = undefined;
+          await this.persist(transfer);
           this.logger.info(
             { transferId, currentDepth, requiredDepth },
             "Transfer confirmed with sufficient depth",
           );
         } else {
+          await this.persist(transfer);
           this.logger.info(
             { transferId, currentDepth, requiredDepth },
             "Transfer executed but waiting for required confirmation depth",
           );
         }
       } else if (axelarStatus === "failed") {
+        transfer.attemptCount += 1;
+        transfer.lastError = "Axelar reported the transfer as failed";
+        transfer.nextAttemptAt = Date.now() + backoffDelayMs(transfer.attemptCount);
         this.setStatus(transfer, "failed");
+        await this.persist(transfer);
       }
 
       return transfer.status;
     } catch (error) {
+      // An unreachable bridge is an unknown external state, not a failure:
+      // keep the record retryable with bounded backoff (#850).
+      transfer.attemptCount += 1;
+      transfer.lastError = sanitizeErrorMessage(error);
+      transfer.nextAttemptAt = Date.now() + backoffDelayMs(transfer.attemptCount);
+      await this.persist(transfer);
+
       this.logger.error(
-        { error, transferId },
+        { transfer: redactTransfer(transfer), errorClass: this.classifyError(error) },
         "Failed to poll transfer status",
       );
       return transfer.status;
+    }
+  }
+
+  /**
+   * #850 - Queries both chains before a decision is made, so reconciliation
+   * never resubmits a transfer the destination already executed.
+   */
+  async probeExternalState(
+    transfer: StoredBridgeTransfer,
+  ): Promise<ExternalTransferState> {
+    const sourceChain = await this.probeSourceChain(transfer);
+    const destination = await this.probeDestinationChain(transfer);
+    return { sourceChain, ...destination };
+  }
+
+  private async probeSourceChain(
+    transfer: StoredBridgeTransfer,
+  ): Promise<ExternalChainState> {
+    if (!transfer.sourceChainTxHash) {
+      // Nothing has been submitted on the source chain yet.
+      return "unknown";
+    }
+
+    try {
+      if (transfer.sourceChain === "ethereum") {
+        const receipt = await this.ethersProvider.getTransactionReceipt(
+          transfer.sourceChainTxHash,
+        );
+        return receipt ? "found" : "missing";
+      }
+
+      const response = await this.stellarServer.getTransaction(
+        transfer.sourceChainTxHash,
+      );
+      return response && response.status !== "NOT_FOUND" ? "found" : "missing";
+    } catch (error) {
+      this.logger.debug(
+        { transferId: transfer.id, errorClass: this.classifyError(error) },
+        "Source-chain probe inconclusive",
+      );
+      return "unknown";
+    }
+  }
+
+  private async probeDestinationChain(
+    transfer: StoredBridgeTransfer,
+  ): Promise<Omit<ExternalTransferState, "sourceChain">> {
+    if (!transfer.bridgeTxHash) {
+      return { destinationChain: "unknown" };
+    }
+
+    try {
+      const response = await axios.get(
+        `${this.config.axelarApiUrl}/transfers/${transfer.bridgeTxHash}`,
+      );
+      return {
+        destinationChain: "found",
+        axelarStatus: response.data.status,
+        destinationTxHash: response.data.destinationTxHash,
+        confirmationDepth: response.data.confirmationDepth || 0,
+      };
+    } catch (error) {
+      this.logger.debug(
+        { transferId: transfer.id, errorClass: this.classifyError(error) },
+        "Destination-chain probe inconclusive",
+      );
+      return { destinationChain: "unknown" };
     }
   }
 
@@ -457,7 +640,11 @@ export class BridgeManager {
 
     transfer.retriesRemaining -= 1;
     transfer.lastRetryTime = Date.now();
+    transfer.attemptCount += 1;
+    transfer.lastError = undefined;
+    transfer.nextAttemptAt = Date.now() + backoffDelayMs(transfer.attemptCount);
     this.setStatus(transfer, "pending");
+    await this.persist(transfer);
   }
 
   /**
@@ -474,6 +661,8 @@ export class BridgeManager {
     }
 
     this.setStatus(transfer, "cancelled");
+    transfer.stage = "completed"; // #848 - nothing left to resume
+    await this.persist(transfer);
 
     this.logger.info({ transferId }, "Transfer cancelled");
   }
@@ -517,6 +706,89 @@ export class BridgeManager {
     this.assertTransition(transfer, to);
     transfer.status = to;
     transfer.updatedAt = Date.now();
+  }
+
+  /**
+   * #848 - Persists a brand new transfer and mirrors it in memory.
+   */
+  private async persistNew(transfer: BridgeTransfer): Promise<void> {
+    const record: StoredBridgeTransfer = {
+      ...transfer,
+      retriesRemaining: 3,
+      stage: INITIAL_STAGE,
+      attemptCount: 0,
+    };
+    this.bridgeTransfers.set(record.id, record);
+    await this.store.save(record);
+  }
+
+  /**
+   * #848 - Write-through persistence. The durable copy is the source of truth
+   * after a restart, so every mutation lands in the store before the caller
+   * continues.
+   */
+  private async persist(transfer: StoredBridgeTransfer): Promise<void> {
+    this.bridgeTransfers.set(transfer.id, transfer);
+    await this.store.update(transfer.id, this.toPatch(transfer));
+  }
+
+  /**
+   * Builds the patch written to the store: the full durable workflow state
+   * minus the identity field, with free-form text already sanitised.
+   */
+  private toPatch(transfer: StoredBridgeTransfer): BridgeTransferPatch {
+    const { id: _id, user: _user, amount: _amount, bridgeFee: _bridgeFee, netAmount: _net, ...rest } =
+      transfer;
+    return { ...rest, lastError: transfer.lastError };
+  }
+
+  private mirror(transferId: string): StoredBridgeTransfer | undefined {
+    return this.bridgeTransfers.get(transferId);
+  }
+
+  private async findByIdempotencyKey(
+    idempotencyKey: string | undefined,
+  ): Promise<StoredBridgeTransfer | undefined> {
+    if (!idempotencyKey) {
+      return undefined;
+    }
+
+    // Durable lookup first: after a restart the mirror is empty, and a retry
+    // must still return the original transfer instead of creating a second one.
+    const all = await this.store.getAll();
+    return all.find((t) => t.idempotencyKey === idempotencyKey);
+  }
+
+  /**
+   * #850 - Coarse error classes used by the reconciliation summary.
+   */
+  classifyError(error: unknown): string {
+    const message =
+      error instanceof Error ? error.message : String(error ?? "unknown");
+    const lower = message.toLowerCase();
+
+    if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
+    if (
+      [
+        "econnreset",
+        "econnrefused",
+        "etimedout",
+        "enotfound",
+        "network",
+        "socket",
+        "reset by peer",
+        "getaddrinfo",
+        "unreachable",
+        "failed to fetch",
+      ].some((needle) => lower.includes(needle))
+    ) {
+      return "network";
+    }
+    if (lower.includes("429") || lower.includes("rate limit"))
+      return "rate_limited";
+    if (lower.includes("not found") || lower.includes("404"))
+      return "not_found";
+    return "unknown";
   }
 
   /**

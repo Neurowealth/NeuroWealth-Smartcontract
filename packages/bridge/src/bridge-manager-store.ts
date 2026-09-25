@@ -14,6 +14,7 @@ import {
   BridgeStatus,
   StoredBridgeTransfer,
   BridgeChain,
+  INITIAL_STAGE,
 } from "./types";
 
 /**
@@ -179,6 +180,8 @@ export class BridgeManager {
     this.bridgeTransfers.set(transfer.id, {
       ...transfer,
       retriesRemaining: 3,
+      stage: INITIAL_STAGE,
+      attemptCount: 0,
     });
 
     this.logger.info(
@@ -277,6 +280,8 @@ export class BridgeManager {
     this.bridgeTransfers.set(transfer.id, {
       ...transfer,
       retriesRemaining: 3,
+      stage: INITIAL_STAGE,
+      attemptCount: 0,
     });
 
     this.logger.info(

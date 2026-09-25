@@ -39,11 +39,27 @@ BridgeManager
   - Polls transfer status
   - Handles retries and timeouts
   - Validates amounts against min/max
+  - Writes every transition through to the store, so a restart resumes from
+    durable state instead of process memory (#848)
+  - loadDurableState() rebuilds the in-memory view from the store at startup
 
 BridgeStore
   - Persistent storage for bridge transfers
-  - In-memory (development) or SQL (production)
+  - In-memory (development) or SQL/PostgreSQL (production)
   - Tracks: ID, status, addresses, amounts, hashes, retries
+  - Durable workflow state: stage, attempt count, sanitised last error,
+    next-attempt deadline and last reconciliation time (#848)
+  - Writes are atomic: a record is either fully updated or left untouched
+
+TransferReconciler
+  - Startup pass over every durable non-terminal record (#850)
+  - Queries BOTH chains before deciding, so a transfer the destination already
+    executed is adopted rather than resubmitted
+  - Actions: skipped_terminal, resumed, confirmed, failed, awaiting_external,
+    backoff
+  - Unknown external states stay retryable behind a bounded exponential
+    backoff (30s base, 15m cap) instead of hot-looping
+  - Returns a summary with counts by action, terminal state and error class
 
 BridgeMonitor
   - Continuous monitoring of pending transfers
