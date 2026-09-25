@@ -53,6 +53,9 @@ pub const TOPIC_OWNERSHIP_INITIATED: Symbol = symbol_short!("own_init");
 pub const TOPIC_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("own_xfer");
 /// Topic for `OwnershipTransferCancelledEvent`, published by `cancel_ownership_transfer`.
 pub const TOPIC_OWNERSHIP_CANCELLED: Symbol = symbol_short!("own_cncl");
+/// Topic for `MultisigSetEvent`, published by `set_multisig` when governance
+/// migrates from a single owner key to a multi-sig contract (issue #464).
+pub const TOPIC_MULTISIG_SET: Symbol = symbol_short!("msig_set");
 /// Topic for `AssetsUpdatedEvent`, published by `update_total_assets`.
 pub const TOPIC_ASSETS_UPDATED: Symbol = symbol_short!("assets");
 /// Topic for `UpgradedEvent`, published by `execute_upgrade`.

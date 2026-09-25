@@ -329,6 +329,12 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
     ProtocolNotWhitelisted = 82,
+    /// The supplied multi-sig target is not a contract address (#464).
+    MultisigContractInvalid = 83,
+    /// The vault is already governed by a multi-sig contract (#464).
+    MultisigAlreadySet = 84,
+    /// The address cannot be the zero/multisig address itself (#464).
+    MultisigCannotBeCurrentOwner = 85,
 
 }
 
@@ -390,6 +396,10 @@ pub enum DataKey {
     /// Contract owner address
     /// Can perform administrative functions (pause, upgrade, set limits)
     Owner,
+    /// Multi-sig governor contract address (issue #464).
+    /// Set once by `set_multisig` when migrating from single-owner to M-of-N
+    /// multi-sig governance; equals the stored `Owner` afterwards.
+    MultisigGovernor,
     /// Pending owner address for two-step ownership transfer
     PendingOwner,
     /// Total Value Locked cap
@@ -1252,6 +1262,19 @@ pub struct OwnershipTransferCancelledEvent {
     pub cancelled_pending: Address,
 }
 
+/// Emitted when governance migrates from a single owner key to a multi-sig
+/// contract via `set_multisig` (issue #464).
+///
+/// # Topics
+/// - `SymbolShort("msig_set")` (`TOPIC_MULTISIG_SET`) - Event identifier
+#[contracttype]
+pub struct MultisigSetEvent {
+    /// Single owner address that governed the vault until the migration
+    pub previous_owner: Address,
+    /// Multi-sig contract address that now governs the vault (M-of-N)
+    pub multisig_contract: Address,
+}
+
 /// Information about a pending ownership transfer.
 ///
 /// Returned by `get_pending_ownership` when a transfer is in progress.
@@ -2051,12 +2074,12 @@ use topics::{
     TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
     TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
     TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
-    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
-    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
-    TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
-    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
-    TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
-    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTISIG_SET, TOPIC_OWNERSHIP_CANCELLED,
+    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED,
+    TOPIC_PROTOCOL_CHANGED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED,
+    TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED,
+    TOPIC_STANDBY_AGENT_UPDATED, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
@@ -2332,6 +2355,22 @@ impl NeuroWealthVault {
             panic_with_error!(env, error);
         }
     }
+
+    /// True when the strkey encodes a contract address (`C…`) rather than an
+    /// account (`G…`). Used to validate the multi-sig governor (issue #464):
+    /// a contract is required because only contract addresses can authorize
+    /// `owner.require_auth()` in cross-contract invocations.
+    #[inline]
+    fn multisig_strkey_is_contract_impl(strkey: &String) -> bool {
+        let bytes = strkey.to_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        // StrKey version byte: 'C' = contract ('C' == 0x43).
+        let first = bytes.get(0).unwrap();
+        first == b'C'
+    }
+
 
     /// The canonical "burned" Stellar account: the ed25519 public key whose
     /// 32-byte payload is all zeros. No known private key can sign for it.
@@ -7253,7 +7292,6 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Owner, &new_owner);
         env.storage().instance().remove(&DataKey::PendingOwner);
-
         env.events().publish(
             (TOPIC_OWNERSHIP_TRANSFERRED,),
             OwnershipTransferredEvent {
@@ -7322,6 +7360,93 @@ impl NeuroWealthVault {
     pub fn get_pending_owner(env: Env) -> Option<Address> {
         Self::require_initialized(&env);
         env.storage().instance().get(&DataKey::PendingOwner)
+    }
+
+    /// Migrates governance from a single owner key to a multi-sig contract
+    /// (issue #464, approach 1: external multi-sig wrapper).
+    ///
+    /// `multisig_contract` is the address of a deployed multi-sig contract
+    /// that requires M-of-N signer approvals for owner operations. After
+    /// this call, every owner-gated vault operation (`pause`, `unpause`,
+    /// `schedule_upgrade`, `execute_upgrade`, `update_agent`, …) is executed
+    /// by the multi-sig contract on behalf of its signers: the vault's
+    /// `Owner` is set to the multi-sig contract address, so `owner.require_auth()`
+    /// succeeds when the multi-sig contract itself invokes the vault.
+    ///
+    /// The two-step timelock flows (`schedule_upgrade` → `execute_upgrade`,
+    /// `update_agent` → `confirm_agent_update`) and the pause/unpause
+    /// mechanism are preserved unchanged — only the authorizing party
+    /// changes. Each owner operation becomes a multi-sig proposal that must
+    /// gather M signatures before it can be executed against the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `multisig_contract` - Address of the deployed multi-sig contract
+    ///   that will take over governance.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MultisigSetEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::MultisigAlreadySet`] if `Owner` is already a
+    ///   contract-governed multi-sig (one migration per vault lifetime).
+    /// - [`VaultError::MultisigCannotBeCurrentOwner`] if the target equals
+    ///   the current owner.
+    /// - [`VaultError::MultisigContractInvalid`] if the target address is
+    ///   not a contract address (cannot hold governance).
+    pub fn set_multisig(env: Env, multisig_contract: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+
+        Self::require(
+            &env,
+            multisig_contract != owner,
+            VaultError::MultisigCannotBeCurrentOwner,
+        );
+
+        // The multi-sig governor must be a contract address (strkey `C…`):
+        // account addresses cannot authorize as a contract in cross-contract
+        // invocations, so governance would be lost.
+        Self::require(
+            &env,
+            Self::multisig_strkey_is_contract_impl(&multisig_strkey),
+            VaultError::MultisigContractInvalid,
+        );
+
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::MultisigGovernor),
+            VaultError::MultisigAlreadySet,
+        );
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultisigGovernor, &multisig_contract);
+        env.storage().instance().set(&DataKey::Owner, &multisig_contract);
+
+        env.events().publish(
+            (TOPIC_MULTISIG_SET,),
+            MultisigSetEvent {
+                previous_owner: owner,
+                multisig_contract: multisig_contract.clone(),
+            },
+        );
+    }
+
+    /// Returns the multi-sig governor contract address, if set (issue #464).
+    ///
+    /// After migration this equals the stored `Owner`; before migration it is
+    /// `None` and a single key still governs the vault.
+    pub fn get_multisig(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::MultisigGovernor)
     }
 
     /// Returns the pending ownership information, if any.

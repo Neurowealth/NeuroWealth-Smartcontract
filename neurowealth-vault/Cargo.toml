@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
   "contracts/vault",
+  "contracts/multisig",
   "fuzz",
   "share-math",
 ]
