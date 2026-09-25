@@ -57,7 +57,7 @@ proptest! {
                 if withdraw_amount <= 0 {
                     continue;
                 }
-                client.withdraw(user, &withdraw_amount);
+                client.withdraw(user, &withdraw_amount, &None);
             }
 
             // Verify the invariant after each operation

@@ -317,7 +317,7 @@ fn test_idle_plus_deployed_equals_total_across_rebalance_cycle() {
 
     // STEP 3: Partial withdraw
     let withdraw_amount = 5_000_000_i128; // 5 USDC
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
     let idle = client.get_idle_balance();
     let deployed = client.get_deployed_assets();
     let total = client.get_total_assets();

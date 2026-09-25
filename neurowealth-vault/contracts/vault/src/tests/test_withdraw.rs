@@ -39,7 +39,7 @@ fn test_full_withdrawal_burns_all_shares() {
     assert!(shares_before > 0);
 
     let balance = client.get_balance(&user);
-    client.withdraw(&user, &balance);
+    client.withdraw(&user, &balance, &None);
 
     assert_eq!(client.get_shares(&user), 0, "All shares should be burned");
     assert_eq!(client.get_balance(&user), 0, "Balance should be zero");
@@ -65,7 +65,7 @@ fn test_withdraw_all_after_yield_burns_all_shares_to_zero() {
     let balance_before = client.get_balance(&user);
     assert_eq!(balance_before, 15_000_000_i128);
 
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_balance(&user), 0);
@@ -86,7 +86,7 @@ fn test_partial_withdraw_then_yield_then_full_drain_leaves_zero_shares() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
 
     // Partial withdrawal before yield.
-    client.withdraw(&user, &3_000_000_i128);
+    client.withdraw(&user, &3_000_000_i128, &None);
     assert!(client.get_shares(&user) > 0);
 
     // Yield accrual: mint 5M into the vault (vault holds 12M, share price rises).
@@ -94,7 +94,7 @@ fn test_partial_withdraw_then_yield_then_full_drain_leaves_zero_shares() {
     client.update_total_assets(&agent, &12_000_000_i128, &false, &0);
 
     // Withdraw the remaining balance; no dust/orphan shares may remain.
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_balance(&user), 0);
@@ -115,7 +115,7 @@ fn test_multiple_deposits_then_withdraw_all_leaves_zero_shares() {
     }
     assert_eq!(client.get_shares(&user), 10_500_000_i128);
 
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_balance(&user), 0);
@@ -138,7 +138,7 @@ fn test_partial_withdrawal_reduces_shares() {
     let initial_shares = client.get_shares(&user);
     let withdraw_amount = 3_000_000_i128;
 
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let remaining_shares = client.get_shares(&user);
     assert!(
@@ -162,7 +162,7 @@ fn test_withdraw_more_than_balance_panics() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     let excessive_amount = deposit_amount + 1_000_000_i128;
-    client.withdraw(&user, &excessive_amount);
+    client.withdraw(&user, &excessive_amount, &None);
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn test_withdraw_zero_panics() {
 
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.withdraw(&user, &0);
+    client.withdraw(&user, &0, &None);
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn test_withdraw_while_paused_panics() {
     assert!(client.is_paused());
 
     let balance = client.get_balance(&user);
-    client.withdraw(&user, &balance);
+    client.withdraw(&user, &balance, &None);
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn test_withdraw_with_no_balance_panics() {
     let user = Address::generate(&env);
     assert_eq!(client.get_balance(&user), 0);
 
-    client.withdraw(&user, &1_000_000_i128);
+    client.withdraw(&user, &1_000_000_i128, &None);
 }
 
 #[test]
@@ -238,7 +238,7 @@ fn test_withdraw_all_detailed_invariants() {
 
     let expected_usdc = client.convert_to_assets(&original_shares);
 
-    let withdrawn = client.withdraw_all(&user);
+    let withdrawn = client.withdraw_all(&user, &None);
 
     assert_eq!(
         client.get_shares(&user),
@@ -279,7 +279,7 @@ fn test_withdraw_emits_event() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     let withdraw_amount = 3_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
     assert_eq!(

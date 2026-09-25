@@ -122,7 +122,7 @@ fn test_multi_user_concurrent_deposit_withdraw() {
                     continue;
                 }
                 let withdraw_amount = amount.min(balance / 2).max(MIN_DEPOSIT);
-                client.withdraw(user, &withdraw_amount);
+                client.withdraw(user, &withdraw_amount, &None);
             }
             _ => unreachable!(),
         }
@@ -163,7 +163,7 @@ fn test_multi_user_concurrent_deposit_withdraw() {
     for user in &users {
         let balance = client.get_balance(user);
         if balance > 0 {
-            client.withdraw(user, &balance);
+            client.withdraw(user, &balance, &None);
         }
         assert_eq!(client.get_balance(user), 0);
         assert_eq!(client.get_shares(user), 0);
@@ -239,7 +239,7 @@ fn test_concurrent_deposit_deposit_withdraw_correct_amounts() {
     mint_and_deposit(&env, &client, &usdc_token, &user_a, a_deposit);
     mint_and_deposit(&env, &client, &usdc_token, &user_b, b_deposit);
 
-    client.withdraw(&user_a, &a_withdraw);
+    client.withdraw(&user_a, &a_withdraw, &None);
 
     let a_balance = client.get_balance(&user_a);
     let b_balance = client.get_balance(&user_b);
@@ -356,7 +356,7 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
 
     // User A makes a partial withdrawal while Blend holds assets.
     let withdraw_a1 = 4_000_000_i128;
-    client.withdraw(&user_a, &withdraw_a1);
+    client.withdraw(&user_a, &withdraw_a1, &None);
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // Agent harvests (compounds yield back into Blend).
@@ -367,7 +367,7 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
 
     // User B makes a partial withdrawal.
     let withdraw_b1 = 3_000_000_i128;
-    client.withdraw(&user_b, &withdraw_b1);
+    client.withdraw(&user_b, &withdraw_b1, &None);
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // Second harvest after the second withdrawal.
@@ -377,11 +377,11 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
     // Both users withdraw their remaining balances; vault should be fully drained.
     let balance_a = client.get_balance(&user_a);
     if balance_a > 0 {
-        client.withdraw(&user_a, &balance_a);
+        client.withdraw(&user_a, &balance_a, &None);
     }
     let balance_b = client.get_balance(&user_b);
     if balance_b > 0 {
-        client.withdraw(&user_b, &balance_b);
+        client.withdraw(&user_b, &balance_b, &None);
     }
 
     assert_eq!(client.get_shares(&user_a), 0);
@@ -418,7 +418,7 @@ fn test_concurrent_withdrawal_triggers_partial_blend_exit() {
 
     // Withdraw 7 USDC: vault pulls 5 idle and 2 from Blend (partial exit).
     let withdraw_amount = 7_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let balance_after = client.get_balance(&user);
     assert_eq!(balance_after, deposit - withdraw_amount);

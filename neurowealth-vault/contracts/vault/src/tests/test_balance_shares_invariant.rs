@@ -154,7 +154,7 @@ fn test_invariant_partial_withdrawal() {
     token_client.mint(&contract_id, &yield_amount);
     client.update_total_assets(&agent, &(deposit_amount + yield_amount), &false, &0);
 
-    client.withdraw(&user, &4_000_000);
+    client.withdraw(&user, &4_000_000, &None);
 
     let mut users = Vec::new(&env);
     users.push_back(user.clone());
@@ -180,7 +180,7 @@ fn test_invariant_full_withdrawal() {
     token_client.mint(&contract_id, &yield_amount);
     client.update_total_assets(&agent, &(deposit_amount + yield_amount), &false, &0);
 
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     let remaining_balance = client.get_balance(&user);
     let remaining_shares = client.get_shares(&user);
@@ -299,7 +299,7 @@ fn test_invariant_sequential_lifecycle() {
     assert_global_vault_invariants(&client, &users);
 
     // 5. Partial Withdraw
-    client.withdraw(&user_a, &6_000_000);
+    client.withdraw(&user_a, &6_000_000, &None);
     assert_global_vault_invariants(&client, &users);
 
     // 6. Blend Update
@@ -313,7 +313,7 @@ fn test_invariant_sequential_lifecycle() {
     assert_global_vault_invariants(&client, &users);
 
     // 7. Withdraw Remaining
-    client.withdraw_all(&user_a);
+    client.withdraw_all(&user_a, &None);
     assert_global_vault_invariants(&client, &users);
 }
 
@@ -405,6 +405,6 @@ fn test_invariant_rounding_edge_cases() {
 
     assert_global_vault_invariants(&client, &users);
 
-    client.withdraw(&user_b, &1);
+    client.withdraw(&user_b, &1, &None);
     assert_global_vault_invariants(&client, &users);
 }

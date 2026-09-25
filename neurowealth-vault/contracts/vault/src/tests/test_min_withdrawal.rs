@@ -18,14 +18,14 @@ fn test_min_withdrawal_setting_and_enforcement() {
     client.deposit(&user, &500_0000000);
 
     // Attempt withdrawal below minimum (50 USDC) -> should panic with BelowMinimumWithdrawal
-    let res = client.try_withdraw(&user, &50_0000000);
+    let res = client.try_withdraw(&user, &50_0000000, &None);
     assert_eq!(res, Err(Ok(VaultError::BelowMinimumWithdrawal)));
 
     // Withdraw at or above minimum (150 USDC) -> success
-    client.withdraw(&user, &150_0000000);
+    client.withdraw(&user, &150_0000000, &None);
 
     // Full exit withdraw_all bypasses minimum check
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 }
 
 #[test]

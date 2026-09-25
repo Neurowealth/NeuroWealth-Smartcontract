@@ -120,9 +120,9 @@ fn withdrawal_and_withdraw_all_share_the_same_user_bucket() {
 
     set_limit(&client, RATE_LIMIT_WITHDRAW, 1, 2);
     mint_and_deposit(&env, &client, &usdc_token, &user, 3_000_000);
-    client.withdraw(&user, &1_000_000);
+    client.withdraw(&user, &1_000_000, &None);
     assert!(
-        client.try_withdraw_all(&user).is_err(),
+        client.try_withdraw_all(&user, &None).is_err(),
         "withdraw_all must not bypass the withdraw bucket"
     );
     assert_eq!(

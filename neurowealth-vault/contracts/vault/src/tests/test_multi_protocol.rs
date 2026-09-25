@@ -330,7 +330,7 @@ fn test_withdrawal_pulls_from_both_protocols_proportionally() {
 
     // Withdraw half the vault. Nothing is idle, so it must come from the pools.
     let withdraw_amount = 50_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     assert_eq!(token.balance(&user), withdraw_amount);
 
@@ -355,7 +355,7 @@ fn test_withdraw_all_exits_both_protocols() {
 
     client.rebalance_multi(&7_000, &3_000, &0_i128);
 
-    let returned = client.withdraw_all(&user);
+    let returned = client.withdraw_all(&user, &None);
 
     assert_eq!(returned, amount);
     assert_eq!(token.balance(&user), amount);
@@ -375,7 +375,7 @@ fn test_partial_withdrawal_smaller_than_idle_does_not_touch_protocols() {
     let before = client.get_protocol_breakdown();
     assert_eq!(client.get_idle_balance(), 20_000_000);
 
-    client.withdraw(&user, &10_000_000_i128);
+    client.withdraw(&user, &10_000_000_i128, &None);
 
     assert_eq!(
         client.get_protocol_breakdown(),
@@ -401,11 +401,11 @@ fn test_multi_user_withdrawals_preserve_allocation_ratio() {
     client.rebalance_multi(&5_000, &5_000, &0_i128);
     assert_eq!(client.get_protocol_breakdown(), (50_000_000, 50_000_000));
 
-    client.withdraw(&alice, &20_000_000_i128);
+    client.withdraw(&alice, &20_000_000_i128, &None);
     let (b1, d1) = client.get_protocol_breakdown();
     assert_eq!(b1, d1, "50/50 ratio must hold after alice's withdrawal");
 
-    client.withdraw(&bob, &20_000_000_i128);
+    client.withdraw(&bob, &20_000_000_i128, &None);
     let (b2, d2) = client.get_protocol_breakdown();
     assert_eq!(b2, d2, "50/50 ratio must hold after bob's withdrawal");
 
@@ -577,6 +577,6 @@ fn test_solvency_invariant_holds_across_multi_protocol_cycle() {
     }
 
     // Everything is still redeemable.
-    let returned = client.withdraw_all(&user);
+    let returned = client.withdraw_all(&user, &None);
     assert_eq!(returned, amount);
 }

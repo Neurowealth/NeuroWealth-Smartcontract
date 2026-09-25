@@ -97,7 +97,7 @@ fn test_zero_share_holders_are_filtered_out() {
     mint_and_deposit(&env, &client, &usdc, &u3, 7_000_000);
 
     // u2 fully withdraws: shares -> 0, but the index slot stays.
-    client.withdraw_all(&u2);
+    client.withdraw_all(&u2, &None);
     assert_eq!(client.get_shares(&u2), 0);
 
     // The full listing omits the zero-share holder.
@@ -124,7 +124,7 @@ fn test_redeposit_does_not_duplicate_index_entry() {
     mint_and_deposit(&env, &client, &usdc, &u2, 3_000_000);
 
     // u2 fully withdraws then re-deposits.
-    client.withdraw_all(&u2);
+    client.withdraw_all(&u2, &None);
     mint_and_deposit(&env, &client, &usdc, &u2, 2_000_000);
 
     let (all, _) = client.get_users_with_shares(&0, &10);

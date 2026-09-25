@@ -67,6 +67,8 @@ mod test_upgrade_timelock;
 mod test_user_strategy;
 mod test_users_with_shares;
 mod test_withdraw;
+mod test_withdraw_slippage;
+mod test_multisig;
 mod test_yield;
 mod utils;
 

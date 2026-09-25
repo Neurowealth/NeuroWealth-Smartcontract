@@ -170,7 +170,7 @@ impl ReentrantMockToken {
 
                 if mode == symbol_short!("withdrw") {
                     // Attempt re-entrant withdrawal mid-execution
-                    vault_client.withdraw(&reentrant_user, &reentrant_amount);
+                    vault_client.withdraw(&reentrant_user, &reentrant_amount, &None);
                 } else if mode == symbol_short!("deposit") {
                     // Attempt re-entrant deposit mid-execution
                     vault_client.deposit(&reentrant_user, &reentrant_amount);
@@ -236,7 +236,7 @@ fn test_reentrant_withdraw_blocked_by_cei_ordering() {
     // Because user_shares was ALREADY updated to 0 before transfer, the re-entrant withdraw
     // fails with InsufficientShares (#8 or #10), causing the transaction to safely panic/revert.
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        vault_client.withdraw(&user, &amount);
+        vault_client.withdraw(&user, &amount, &None);
     }));
 
     assert!(

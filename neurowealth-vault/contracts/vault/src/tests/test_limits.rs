@@ -501,7 +501,7 @@ fn test_lowering_user_deposit_cap_below_current_deposit_blocks_new_deposits() {
 
     // 6. User A withdraws 400 USDC (succeeds)
     let withdraw_400 = 400_000_000_i128;
-    client.withdraw(&user_a, &withdraw_400);
+    client.withdraw(&user_a, &withdraw_400, &None);
     assert_eq!(client.get_balance(&user_a), deposit_800 - withdraw_400);
 
     // 7. User A deposits 100 USDC (succeeds since 400 + 100 <= 500)

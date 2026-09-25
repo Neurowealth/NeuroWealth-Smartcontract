@@ -605,7 +605,7 @@ fn test_agent_cannot_withdraw_victim_funds() {
         "withdraw",
         (victim.clone(), amount).into_val(&env),
     );
-    let accepted = client.try_withdraw(&victim, &amount).is_ok();
+    let accepted = client.try_withdraw(&victim, &amount, &None).is_ok();
     env.mock_all_auths();
 
     assert!(!accepted, "agent must not withdraw another user's funds");
@@ -625,7 +625,7 @@ fn test_agent_cannot_withdraw_all_victim_funds() {
         "withdraw_all",
         (victim.clone(),).into_val(&env),
     );
-    let accepted = client.try_withdraw_all(&victim).is_ok();
+    let accepted = client.try_withdraw_all(&victim, &None).is_ok();
     env.mock_all_auths();
 
     assert!(
@@ -947,7 +947,7 @@ fn test_agent_cannot_front_run_user_deposit() {
     client.deposit(&victim, &extra);
 
     // Agent withdraws only its own position.
-    client.withdraw(&agent, &agent_deposit);
+    client.withdraw(&agent, &agent_deposit, &None);
 
     assert!(
         client.get_shares(&agent) <= agent_shares,

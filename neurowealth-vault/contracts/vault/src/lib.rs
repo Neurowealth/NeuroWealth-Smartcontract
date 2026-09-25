@@ -118,7 +118,7 @@
 //!
 //! ## Withdraw USDC
 //! ```ignore
-//! vault_client.withdraw(&user, &amount);
+//! vault_client.withdraw(&user, &amount, &None);
 //! ```
 
 // `missing_docs` cannot be denied crate-wide: `#[contract]`, `#[contracttype]`,
@@ -329,6 +329,12 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
     ProtocolNotWhitelisted = 82,
+    /// The supplied multi-sig target is not a contract address (#464).
+    MultisigContractInvalid = 83,
+    /// The vault is already governed by a multi-sig contract (#464).
+    MultisigAlreadySet = 84,
+    /// The address cannot be the zero/multisig address itself (#464).
+    MultisigCannotBeCurrentOwner = 85,
 
 }
 
@@ -390,6 +396,10 @@ pub enum DataKey {
     /// Contract owner address
     /// Can perform administrative functions (pause, upgrade, set limits)
     Owner,
+    /// Multi-sig governor contract address (issue #464).
+    /// Set once by `set_multisig` when migrating from single-owner to M-of-N
+    /// multi-sig governance; equals the stored `Owner` afterwards.
+    MultisigGovernor,
     /// Pending owner address for two-step ownership transfer
     PendingOwner,
     /// Total Value Locked cap
@@ -1252,6 +1262,19 @@ pub struct OwnershipTransferCancelledEvent {
     pub cancelled_pending: Address,
 }
 
+/// Emitted when governance migrates from a single owner key to a multi-sig
+/// contract via `set_multisig` (issue #464).
+///
+/// # Topics
+/// - `SymbolShort("msig_set")` (`TOPIC_MULTISIG_SET`) - Event identifier
+#[contracttype]
+pub struct MultisigSetEvent {
+    /// Single owner address that governed the vault until the migration
+    pub previous_owner: Address,
+    /// Multi-sig contract address that now governs the vault (M-of-N)
+    pub multisig_contract: Address,
+}
+
 /// Information about a pending ownership transfer.
 ///
 /// Returned by `get_pending_ownership` when a transfer is in progress.
@@ -2051,12 +2074,12 @@ use topics::{
     TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
     TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
     TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
-    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED,
-    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
-    TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE,
-    TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
-    TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_STANDBY_AGENT_UPDATED,
-    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
+    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTISIG_SET, TOPIC_OWNERSHIP_CANCELLED,
+    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED,
+    TOPIC_PROTOCOL_CHANGED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED,
+    TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_SUPPORTED_ASSETS_UPDATED,
+    TOPIC_STANDBY_AGENT_UPDATED, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED,
     TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW, TOPIC_YIELD_ATTRIBUTED,
     TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
@@ -2332,6 +2355,22 @@ impl NeuroWealthVault {
             panic_with_error!(env, error);
         }
     }
+
+    /// True when the strkey encodes a contract address (`C…`) rather than an
+    /// account (`G…`). Used to validate the multi-sig governor (issue #464):
+    /// a contract is required because only contract addresses can authorize
+    /// `owner.require_auth()` in cross-contract invocations.
+    #[inline]
+    fn multisig_strkey_is_contract_impl(strkey: &String) -> bool {
+        let bytes = strkey.to_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        // StrKey version byte: 'C' = contract ('C' == 0x43).
+        let first = bytes.get(0).unwrap();
+        first == b'C'
+    }
+
 
     /// The canonical "burned" Stellar account: the ed25519 public key whose
     /// 32-byte payload is all zeros. No known private key can sign for it.
@@ -2845,12 +2884,21 @@ impl NeuroWealthVault {
     /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
     /// - If the USDC transfer fails.
     /// - If the user's withdrawal rate-limit bucket is exhausted.
-    pub fn withdraw(env: Env, user: Address, amount: i128) {
+    /// - If `min_amount_out` is set and the reconciled withdrawal falls below
+    ///   it (issue #463 slippage protection).
+    pub fn withdraw(env: Env, user: Address, amount: i128, min_amount_out: Option<i128>) {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
+
+        // Issue #463: the slippage floor must be non-negative when provided.
+        if let Some(min_out) = min_amount_out {
+            if min_out < 0 {
+                panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+            }
+        }
 
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
@@ -2957,6 +3005,20 @@ impl NeuroWealthVault {
             actual_to_return > 0,
             VaultError::InsufficientLiquidity,
         );
+
+        // Issue #463 — slippage protection: when the user supplies a floor,
+        // the reconciled withdrawal (idle balance + DEX/Blend pull) must
+        // meet it, otherwise the whole withdrawal reverts. Partial fills
+        // remain possible only when the caller passes `None`.
+        if let Some(min_out) = min_amount_out {
+            if actual_to_return < min_out {
+                env.events().publish(
+                    (symbol_short!("min_out"), user.clone()),
+                    (actual_to_return, min_out),
+                );
+                panic_with_error!(&env, VaultError::MinOutNotMet);
+            }
+        }
 
         // Share-based withdrawal:
         // - Convert reconciled asset amount to shares
@@ -3079,12 +3141,21 @@ impl NeuroWealthVault {
     /// - If the vault has no assets.
     /// - If the USDC transfer fails.
     /// - If the user's withdrawal rate-limit bucket is exhausted.
-    pub fn withdraw_all(env: Env, user: Address) -> i128 {
+    /// - If `min_amount_out` is set and the reconciled withdrawal falls below
+    ///   it (issue #463 slippage protection).
+    pub fn withdraw_all(env: Env, user: Address, min_amount_out: Option<i128>) -> i128 {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+
+        // Issue #463: the slippage floor must be non-negative when provided.
+        if let Some(min_out) = min_amount_out {
+            if min_out < 0 {
+                panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+            }
+        }
 
         // Check if user has locked shares (#636)
         let locked_shares: i128 = env
@@ -3166,6 +3237,20 @@ impl NeuroWealthVault {
 
         Self::require(&env, usdc_to_return > 0, VaultError::NoAssetsToReturn);
         Self::require(&env, shares_to_burn > 0, VaultError::NoSharesToBurn);
+
+        // Issue #463 — slippage protection: when the user supplies a floor,
+        // the reconciled withdrawal must meet it or the whole withdrawal
+        // reverts. Partial fills remain possible only when the caller
+        // passes `None`.
+        if let Some(min_out) = min_amount_out {
+            if usdc_to_return < min_out {
+                env.events().publish(
+                    (symbol_short!("min_out"), user.clone()),
+                    (usdc_to_return, min_out),
+                );
+                panic_with_error!(&env, VaultError::MinOutNotMet);
+            }
+        }
 
         // Update user shares
         let new_user_shares = user_shares
@@ -7207,7 +7292,6 @@ impl NeuroWealthVault {
 
         env.storage().instance().set(&DataKey::Owner, &new_owner);
         env.storage().instance().remove(&DataKey::PendingOwner);
-
         env.events().publish(
             (TOPIC_OWNERSHIP_TRANSFERRED,),
             OwnershipTransferredEvent {
@@ -7276,6 +7360,93 @@ impl NeuroWealthVault {
     pub fn get_pending_owner(env: Env) -> Option<Address> {
         Self::require_initialized(&env);
         env.storage().instance().get(&DataKey::PendingOwner)
+    }
+
+    /// Migrates governance from a single owner key to a multi-sig contract
+    /// (issue #464, approach 1: external multi-sig wrapper).
+    ///
+    /// `multisig_contract` is the address of a deployed multi-sig contract
+    /// that requires M-of-N signer approvals for owner operations. After
+    /// this call, every owner-gated vault operation (`pause`, `unpause`,
+    /// `schedule_upgrade`, `execute_upgrade`, `update_agent`, …) is executed
+    /// by the multi-sig contract on behalf of its signers: the vault's
+    /// `Owner` is set to the multi-sig contract address, so `owner.require_auth()`
+    /// succeeds when the multi-sig contract itself invokes the vault.
+    ///
+    /// The two-step timelock flows (`schedule_upgrade` → `execute_upgrade`,
+    /// `update_agent` → `confirm_agent_update`) and the pause/unpause
+    /// mechanism are preserved unchanged — only the authorizing party
+    /// changes. Each owner operation becomes a multi-sig proposal that must
+    /// gather M signatures before it can be executed against the vault.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `multisig_contract` - Address of the deployed multi-sig contract
+    ///   that will take over governance.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MultisigSetEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::MultisigAlreadySet`] if `Owner` is already a
+    ///   contract-governed multi-sig (one migration per vault lifetime).
+    /// - [`VaultError::MultisigCannotBeCurrentOwner`] if the target equals
+    ///   the current owner.
+    /// - [`VaultError::MultisigContractInvalid`] if the target address is
+    ///   not a contract address (cannot hold governance).
+    pub fn set_multisig(env: Env, multisig_contract: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+
+        Self::require(
+            &env,
+            multisig_contract != owner,
+            VaultError::MultisigCannotBeCurrentOwner,
+        );
+
+        // The multi-sig governor must be a contract address (strkey `C…`):
+        // account addresses cannot authorize as a contract in cross-contract
+        // invocations, so governance would be lost.
+        Self::require(
+            &env,
+            Self::multisig_strkey_is_contract_impl(&multisig_strkey),
+            VaultError::MultisigContractInvalid,
+        );
+
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::MultisigGovernor),
+            VaultError::MultisigAlreadySet,
+        );
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultisigGovernor, &multisig_contract);
+        env.storage().instance().set(&DataKey::Owner, &multisig_contract);
+
+        env.events().publish(
+            (TOPIC_MULTISIG_SET,),
+            MultisigSetEvent {
+                previous_owner: owner,
+                multisig_contract: multisig_contract.clone(),
+            },
+        );
+    }
+
+    /// Returns the multi-sig governor contract address, if set (issue #464).
+    ///
+    /// After migration this equals the stored `Owner`; before migration it is
+    /// `None` and a single key still governs the vault.
+    pub fn get_multisig(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::MultisigGovernor)
     }
 
     /// Returns the pending ownership information, if any.
