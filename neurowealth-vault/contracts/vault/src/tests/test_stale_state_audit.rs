@@ -16,7 +16,7 @@ fn test_withdraw_zero_shares_fails_early_before_protocol_interaction() {
 
     // User has no shares in the vault. Calling withdraw should fail early with InsufficientShares (#8)
     // without performing any external protocol calls or state mutations.
-    client.withdraw(&user, &1_000_000_i128);
+    client.withdraw(&user, &1_000_000_i128, &None);
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn test_deposit_and_withdraw_cei_flow() {
     assert_eq!(client.get_shares(&user), amount);
     assert_eq!(client.get_total_assets(), amount);
 
-    client.withdraw(&user, &amount);
+    client.withdraw(&user, &amount, &None);
 
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_total_assets(), 0);

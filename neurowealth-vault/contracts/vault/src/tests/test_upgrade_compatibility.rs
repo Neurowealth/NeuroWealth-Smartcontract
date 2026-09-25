@@ -162,7 +162,7 @@ fn test_config_keys_survive_deposit_withdraw_cycle() {
     let user = Address::generate(&env);
     let deposit = 1_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     // Configuration must be unchanged.
     assert_eq!(

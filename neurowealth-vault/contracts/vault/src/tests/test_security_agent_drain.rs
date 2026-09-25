@@ -165,7 +165,7 @@ fn test_security_inflation_attack_bounded_by_actual_assets() {
 
     // Withdraw half of B's balance.
     let half = b_balance_before / 2;
-    client.withdraw(&user_b, &half);
+    client.withdraw(&user_b, &half, &None);
 
     let b_balance_after = client.get_balance(&user_b);
     assert_eq!(b_balance_after, b_balance_before - half);

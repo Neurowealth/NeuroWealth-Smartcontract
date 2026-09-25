@@ -118,7 +118,7 @@
 //!
 //! ## Withdraw USDC
 //! ```ignore
-//! vault_client.withdraw(&user, &amount);
+//! vault_client.withdraw(&user, &amount, &None);
 //! ```
 
 // `missing_docs` cannot be denied crate-wide: `#[contract]`, `#[contracttype]`,
@@ -2845,12 +2845,21 @@ impl NeuroWealthVault {
     /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
     /// - If the USDC transfer fails.
     /// - If the user's withdrawal rate-limit bucket is exhausted.
-    pub fn withdraw(env: Env, user: Address, amount: i128) {
+    /// - If `min_amount_out` is set and the reconciled withdrawal falls below
+    ///   it (issue #463 slippage protection).
+    pub fn withdraw(env: Env, user: Address, amount: i128, min_amount_out: Option<i128>) {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
+
+        // Issue #463: the slippage floor must be non-negative when provided.
+        if let Some(min_out) = min_amount_out {
+            if min_out < 0 {
+                panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+            }
+        }
 
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
@@ -2957,6 +2966,20 @@ impl NeuroWealthVault {
             actual_to_return > 0,
             VaultError::InsufficientLiquidity,
         );
+
+        // Issue #463 — slippage protection: when the user supplies a floor,
+        // the reconciled withdrawal (idle balance + DEX/Blend pull) must
+        // meet it, otherwise the whole withdrawal reverts. Partial fills
+        // remain possible only when the caller passes `None`.
+        if let Some(min_out) = min_amount_out {
+            if actual_to_return < min_out {
+                env.events().publish(
+                    (symbol_short!("min_out"), user.clone()),
+                    (actual_to_return, min_out),
+                );
+                panic_with_error!(&env, VaultError::MinOutNotMet);
+            }
+        }
 
         // Share-based withdrawal:
         // - Convert reconciled asset amount to shares
@@ -3079,12 +3102,21 @@ impl NeuroWealthVault {
     /// - If the vault has no assets.
     /// - If the USDC transfer fails.
     /// - If the user's withdrawal rate-limit bucket is exhausted.
-    pub fn withdraw_all(env: Env, user: Address) -> i128 {
+    /// - If `min_amount_out` is set and the reconciled withdrawal falls below
+    ///   it (issue #463 slippage protection).
+    pub fn withdraw_all(env: Env, user: Address, min_amount_out: Option<i128>) -> i128 {
         Self::require_initialized(&env);
         user.require_auth();
 
         Self::require_not_paused(&env);
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+
+        // Issue #463: the slippage floor must be non-negative when provided.
+        if let Some(min_out) = min_amount_out {
+            if min_out < 0 {
+                panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+            }
+        }
 
         // Check if user has locked shares (#636)
         let locked_shares: i128 = env
@@ -3166,6 +3198,20 @@ impl NeuroWealthVault {
 
         Self::require(&env, usdc_to_return > 0, VaultError::NoAssetsToReturn);
         Self::require(&env, shares_to_burn > 0, VaultError::NoSharesToBurn);
+
+        // Issue #463 — slippage protection: when the user supplies a floor,
+        // the reconciled withdrawal must meet it or the whole withdrawal
+        // reverts. Partial fills remain possible only when the caller
+        // passes `None`.
+        if let Some(min_out) = min_amount_out {
+            if usdc_to_return < min_out {
+                env.events().publish(
+                    (symbol_short!("min_out"), user.clone()),
+                    (usdc_to_return, min_out),
+                );
+                panic_with_error!(&env, VaultError::MinOutNotMet);
+            }
+        }
 
         // Update user shares
         let new_user_shares = user_shares

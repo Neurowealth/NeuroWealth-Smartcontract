@@ -38,7 +38,7 @@ fn test_deposit_withdraw_sequence_smoke() {
                 continue;
             }
             let withdraw_amount = amount.min(balance / 2).max(MIN_DEPOSIT);
-            client.withdraw(&user, &withdraw_amount);
+            client.withdraw(&user, &withdraw_amount, &None);
         }
 
         let user_shares = client.get_shares(&user);

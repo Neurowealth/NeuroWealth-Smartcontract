@@ -274,7 +274,7 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
     let withdraw_amount = 1_000_000_i128;
     let user_balance_before = token_client.balance(&user);
 
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     let user_balance_after = token_client.balance(&user);
     assert_eq!(

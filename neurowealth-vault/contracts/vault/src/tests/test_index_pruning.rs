@@ -37,7 +37,7 @@ fn deposit_and_withdraw_all(
     token_client.mint(&user, &amount);
 
     client.deposit(&user, &amount);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     user
 }
@@ -56,7 +56,7 @@ fn deposit_and_partial_withdraw(
     client.deposit(&user, &amount);
     // Withdraw half (rounded down), leaving the user in the index
     let half = amount / 2;
-    client.withdraw(&user, &half);
+    client.withdraw(&user, &half, &None);
 
     user
 }
@@ -130,7 +130,7 @@ fn test_index_tracks_active_users_only() {
 
     // Phase 2: Have 25 of them fully withdraw (prune should remove them)
     for i in 0..25 {
-        client.withdraw_all(&active_users[i]);
+        client.withdraw_all(&active_users[i], &None);
     }
 
     let (users_phase2, _) = client.get_users_with_shares(&0, &1000);
@@ -284,7 +284,7 @@ fn test_partial_withdraw_does_not_prune() {
 
     // Partial withdraw (50%)
     let half = deposit_amount / 2;
-    client.withdraw(&user, &half);
+    client.withdraw(&user, &half, &None);
 
     // User should still be in the index
     let (users, _) = client.get_users_with_shares(&0, &1000);
@@ -292,7 +292,7 @@ fn test_partial_withdraw_does_not_prune() {
     assert!(found, "User should remain in index after partial withdrawal");
 
     // Full withdraw
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     // User should now be pruned
     let (users_after, _) = client.get_users_with_shares(&0, &1000);

@@ -145,7 +145,7 @@ fn test_withdraw_blocked_while_paused() {
     assert!(client.is_paused());
 
     let balance = client.get_balance(&user);
-    client.withdraw(&user, &balance);
+    client.withdraw(&user, &balance, &None);
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn test_emergency_pause_blocks_operations_and_emits_event() {
     );
 
     // 5. Asserts a withdrawal attempt panics with VaultError::Paused (#35)
-    let withdraw_res = client.try_withdraw(&user, &amount);
+    let withdraw_res = client.try_withdraw(&user, &amount, &None);
     assert_eq!(
         withdraw_res,
         Err(Ok(soroban_sdk::Error::from_contract_error(35))),
@@ -538,7 +538,7 @@ fn pause_matrix_withdraw_blocked() {
     client.pause(&owner);
 
     assert_eq!(
-        client.try_withdraw(&user, &1_000_000_i128),
+        client.try_withdraw(&user, &1_000_000_i128, &None),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR))),
         "withdraw must be blocked while paused"
     );
@@ -557,7 +557,7 @@ fn pause_matrix_withdraw_all_blocked() {
     client.pause(&owner);
 
     assert_eq!(
-        client.try_withdraw_all(&user),
+        client.try_withdraw_all(&user, &None),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR))),
         "withdraw_all must be blocked while paused"
     );
@@ -1059,11 +1059,11 @@ fn pause_matrix_withdraw_resumes_after_unpause() {
 
     client.pause(&owner);
     assert_eq!(
-        client.try_withdraw(&user, &1_000_000_i128),
+        client.try_withdraw(&user, &1_000_000_i128, &None),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR)))
     );
 
     client.unpause(&owner);
     assert!(!client.is_paused());
-    client.withdraw(&user, &1_000_000_i128);
+    client.withdraw(&user, &1_000_000_i128, &None);
 }

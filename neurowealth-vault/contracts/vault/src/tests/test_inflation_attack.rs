@@ -130,7 +130,7 @@ fn test_victim_can_withdraw_full_deposit_after_donation() {
     let victim_deposit = 25_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &victim, victim_deposit);
 
-    let returned = client.withdraw_all(&victim);
+    let returned = client.withdraw_all(&victim, &None);
     assert_eq!(
         returned, victim_deposit,
         "victim must withdraw their full deposit despite the donation"

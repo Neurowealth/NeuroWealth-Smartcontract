@@ -229,7 +229,7 @@ fn test_tvl_cap_lowered_below_assets_does_not_block_withdrawals() {
     client.set_tvl_cap(&lowered_cap);
 
     // Step 4: User withdraws full 8_000 USDC — MUST succeed (no cap check)
-    client.withdraw(&user, &deposit_amount);
+    client.withdraw(&user, &deposit_amount, &None);
     assert_eq!(client.get_total_assets(), 0);
 
     // Step 5: New deposit exceeding the lowered cap must be rejected

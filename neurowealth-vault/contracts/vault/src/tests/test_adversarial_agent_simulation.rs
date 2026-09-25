@@ -725,7 +725,7 @@ fn test_agent_self_withdraw_mutates_only_allowlisted_fields() {
     mint_and_deposit(&env, &client, &usdc_token, &agent, amount);
 
     let before = snapshot_vault_state(&client, &[agent.clone()]);
-    client.withdraw(&agent, &amount);
+    client.withdraw(&agent, &amount, &None);
 
     let after = snapshot_vault_state(&client, &[agent.clone()]);
     let changed = diff_vault_state(&before, &after);

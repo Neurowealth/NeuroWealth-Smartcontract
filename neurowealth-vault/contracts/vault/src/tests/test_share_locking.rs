@@ -214,7 +214,7 @@ fn test_withdraw_locked_shares_restricted() {
 
     // Try to withdraw more than unlocked shares - should fail
     let unlockable_amount = (amount / 2) - 1_000_i128; // Less than unlocked amount
-    client.withdraw(&user, &unlockable_amount);
+    client.withdraw(&user, &unlockable_amount, &None);
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn test_withdraw_all_with_locked_shares() {
     client.unlock_shares(&user);
 
     // Withdraw all should work now
-    let withdrawn = client.withdraw_all(&user);
+    let withdrawn = client.withdraw_all(&user, &None);
     assert!(withdrawn > 0);
 }
 

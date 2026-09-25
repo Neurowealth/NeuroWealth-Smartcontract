@@ -72,7 +72,7 @@ fn test_withdraw_transfer_delta_matches_requested_amount() {
     let vault_before = token_client.balance(&contract_id);
     let user_before = token_client.balance(&user);
 
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     assert_eq!(
         token_client.balance(&user) - user_before,
@@ -146,7 +146,7 @@ fn test_deposit_withdraw_round_trip_conserves_tokens() {
     let user_start = token_client.balance(&user);
 
     client.deposit(&user, &amount);
-    client.withdraw_all(&user);
+    client.withdraw_all(&user, &None);
 
     // With an exact-transfer asset and no fees, a full round trip conserves
     // the user's tokens and leaves the vault empty. A deflationary asset

@@ -317,7 +317,7 @@ fn test_blend_pool_rotation_with_partial_user_withdrawal() {
 
     // User withdraws some funds (requires exit from old pool)
     let withdraw_amount = 3_000_000_i128;
-    client.withdraw(&user, &withdraw_amount);
+    client.withdraw(&user, &withdraw_amount, &None);
 
     // Verify funds were exited from old pool to cover withdrawal
     let remaining_deployed = old_pool_client.supplied(&usdc_token);
