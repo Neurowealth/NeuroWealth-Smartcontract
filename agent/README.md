@@ -16,6 +16,22 @@ The NeuroWealth agent is an autonomous background service that continuously moni
 
 ---
 
+## Configuration (#752)
+
+Copy `.env.example` to `.env` and configure the environment:
+
+```bash
+cp .env.example .env
+```
+
+Key environment variables include:
+- `SOROBAN_RPC_URL` / `SOROBAN_NETWORK_PASSPHRASE` / `VAULT_CONTRACT_ID` — Stellar & Soroban RPC endpoint and vault address.
+- `DATABASE_URL` — PostgreSQL connection string for user strategies, rebalances, and ledger cursor.
+- `SOROBAN_SECRET_KEY` — Stellar secret key for signing automated rebalance and compounding transactions.
+- `PORT` / `METRICS_PORT` — Agent API and metrics server ports.
+
+---
+
 ## Key Modules
 
 - **Yield Comparison Engine** (`src/yieldComparison.ts`): Aggregates real-time and historical (7d/30d/90d) APYs, calculating risk-adjusted return ratios (Sharpe-like metric) and enforcing the 0.5% minimum improvement threshold.

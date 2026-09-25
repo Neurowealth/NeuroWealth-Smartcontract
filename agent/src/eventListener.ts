@@ -10,12 +10,13 @@ import { decodeVaultTransfer, vaultEventType } from './vaultEventPayload';
 import { DEFAULT_STRATEGY, getCurrentAllocation, getUserStrategy } from './userStrategies';
 import { submitRebalanceTx } from './sorobanTx';
 
+import { EventCircuitBreaker, CircuitBreakerStatus } from './eventCircuitBreaker';
+
 export { pool };
 
 const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 export const server = new rpc.Server(rpcUrl);
 
-const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const EVENTS_PAGE_LIMIT = 100;
 
 let eventInterval: ReturnType<typeof setInterval> | null = null;
@@ -46,9 +47,10 @@ export async function stopEventListener(timeoutMs = 5000): Promise<void> {
 /**
  * Listens for on-chain deposit and withdraw events from the vault contract.
  * Detects new deposits within 5 seconds and triggers yield deployment.
+ * Protects RPC with exponential backoff and circuit-breaking on sustained failures.
  */
 export async function startEventListener() {
-  if (!VAULT_CONTRACT_ID) {
+  if (!process.env.VAULT_CONTRACT_ID) {
     logger.warn('VAULT_CONTRACT_ID is not set. Event listener requires a contract ID to monitor.');
     return;
   }
@@ -72,8 +74,30 @@ export async function startEventListener() {
       logger.info({ startLedger: startSequence }, 'Starting event listener from initial ledger (no saved cursor)');
     }
 
-    const filters: rpc.Api.EventFilter[] = [{ type: 'contract', contractIds: [VAULT_CONTRACT_ID] }];
+    const filters: rpc.Api.EventFilter[] = [{ type: 'contract', contractIds: [process.env.VAULT_CONTRACT_ID!] }];
     let polling = false;
+    isStopped = false;
+
+    const scheduleNextTick = (delayMs: number) => {
+      if (isStopped) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(() => {
+        void pollTick();
+      }, delayMs);
+    };
+
+    const pollTick = async () => {
+      if (isStopped || polling) return;
+
+      if (!eventCircuitBreaker.canExecute()) {
+        const backoffDelay = eventCircuitBreaker.getNextDelayMs();
+        logger.warn(
+          { state: eventCircuitBreaker.getState(), nextDelayMs: backoffDelay },
+          'Soroban event polling skipped: circuit breaker open/in cooldown',
+        );
+        scheduleNextTick(backoffDelay);
+        return;
+      }
 
     eventInterval = setInterval(() => {
       // A slow poll must not overlap the next tick, or the same page would be
@@ -140,10 +164,30 @@ export async function startEventListener() {
           polling = false;
           activePollingPromise = null;
         }
-      })();
-    }, 5000);
 
+        // Successfully completed poll cycle
+        eventCircuitBreaker.recordSuccess();
+        scheduleNextTick(eventCircuitBreaker.getNextDelayMs());
+      } catch (error) {
+        eventCircuitBreaker.recordFailure(error);
+        const nextDelay = eventCircuitBreaker.getNextDelayMs();
+        logger.error(
+          {
+            error: error instanceof Error ? error.message : error,
+            nextPollInMs: nextDelay,
+            circuitState: eventCircuitBreaker.getState(),
+          },
+          'Error polling Soroban events; backing off',
+        );
+        scheduleNextTick(nextDelay);
+      } finally {
+        polling = false;
+      }
+    };
+
+    scheduleNextTick(eventCircuitBreaker.getNextDelayMs());
   } catch (error) {
+    eventCircuitBreaker.recordFailure(error);
     logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to initialize event listener');
   }
 }

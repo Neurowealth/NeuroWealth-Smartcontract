@@ -10,8 +10,8 @@ let agentKeypair: Keypair | null = null;
 if (secretKey) {
   try {
     agentKeypair = Keypair.fromSecret(secretKey);
-  } catch (err) {
-    logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Invalid SOROBAN_SECRET_KEY provided.');
+  } catch {
+    logger.error('Invalid SOROBAN_SECRET_KEY provided.');
   }
 }
 

@@ -11,10 +11,10 @@ export interface ConversationSession {
   rateLimitWindowStart: number;
 }
 
-const MAX_IN_MEMORY_SESSIONS = 10000;
-const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes session inactivity timeout
-const RATE_LIMIT_MAX_MESSAGES = 10;
-const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
+const MAX_IN_MEMORY_SESSIONS = parseInt(process.env.WHATSAPP_MAX_SESSIONS || '10000', 10);
+const SESSION_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SESSION_TIMEOUT_MS || '900000', 10); // 15 minutes default
+const RATE_LIMIT_MAX_MESSAGES = parseInt(process.env.WHATSAPP_RATE_LIMIT_MAX_MESSAGES || '10', 10);
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.WHATSAPP_RATE_LIMIT_WINDOW_MS || '60000', 10); // 1 minute default
 
 const sessions = new Map<string, ConversationSession>();
 

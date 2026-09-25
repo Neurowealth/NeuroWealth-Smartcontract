@@ -1,4 +1,4 @@
-import { Address, Contract, rpc, scValToNative } from '@stellar/stellar-sdk';
+import { Account, Address, Contract, rpc, scValToNative, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 
 function requirePublicEnv(name: string): string {
   const value = process.env[name];
@@ -28,50 +28,52 @@ const STRATEGY_MAP: Record<string, VaultState['strategy']> = {
   growth: 'Growth',
 };
 
+export async function simulateContractCall(
+  method: string,
+  args: xdr.ScVal[] = [],
+  callerAddress: string,
+): Promise<unknown> {
+  const account = new Account(callerAddress, '0');
+  const contract = new Contract(VAULT_CONTRACT_ID);
+  const tx = new TransactionBuilder(account, {
+    fee: '100',
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+    throw new Error(`Simulation failed for ${method}: ${'error' in sim ? sim.error : 'No retval'}`);
+  }
+  return scValToNative(sim.result.retval);
+}
+
 export async function fetchVaultState(userAddress?: string): Promise<VaultState> {
   if (!userAddress) {
     return { balance: 0, strategy: 'Balanced', exchangeRate: 1.0, apy: 0 };
   }
 
   try {
-    const contract = new Contract(VAULT_CONTRACT_ID);
-    const address = new Address(userAddress);
+    const userScVal = new Address(userAddress).toScVal();
 
-    const [balanceRes, strategyRes, exchangeRateRes, totalAssetsRes, totalSharesRes] = await Promise.all([
-      server.simulateContractInvocation({
-        contractAddress: VAULT_CONTRACT_ID,
-        method: 'get_balance',
-        methodArgs: { user: address.toScVal() },
-      }),
-      server.simulateContractInvocation({
-        contractAddress: VAULT_CONTRACT_ID,
-        method: 'get_user_strategy',
-        methodArgs: { user: address.toScVal() },
-      }),
-      server.simulateContractInvocation({
-        contractAddress: VAULT_CONTRACT_ID,
-        method: 'get_exchange_rate',
-      }),
-      server.simulateContractInvocation({
-        contractAddress: VAULT_CONTRACT_ID,
-        method: 'get_total_assets',
-      }),
-      server.simulateContractInvocation({
-        contractAddress: VAULT_CONTRACT_ID,
-        method: 'get_total_shares',
-      }),
+    const [balanceRes, strategyRes, exchangeRateRes, totalAssetsRes, totalSharesRes] = await Promise.allSettled([
+      simulateContractCall('get_balance', [userScVal], userAddress),
+      simulateContractCall('get_user_strategy', [userScVal], userAddress),
+      simulateContractCall('get_exchange_rate', [], userAddress),
+      simulateContractCall('get_total_assets', [], userAddress),
+      simulateContractCall('get_total_shares', [], userAddress),
     ]);
 
-    void contract;
-
-    const balance = Number(scValToNative(balanceRes.result.retval)) / 1e7;
-    const rawStrategy = String(scValToNative(strategyRes.result.retval));
+    const balance = balanceRes.status === 'fulfilled' ? Number(balanceRes.value) / 1e7 : 0;
+    const rawStrategy = strategyRes.status === 'fulfilled' ? String(strategyRes.value).toLowerCase() : '';
     const strategy = STRATEGY_MAP[rawStrategy] || 'Balanced';
-    const exchangeRateRaw = Number(scValToNative(exchangeRateRes.result.retval)) / 1e7;
-    const totalAssets = Number(scValToNative(totalAssetsRes.result.retval)) / 1e7;
-    const totalShares = Number(scValToNative(totalSharesRes.result.retval)) / 1e7;
+    const exchangeRateRaw = exchangeRateRes.status === 'fulfilled' ? Number(exchangeRateRes.value) / 1e7 : 0;
+    const totalAssets = totalAssetsRes.status === 'fulfilled' ? Number(totalAssetsRes.value) / 1e7 : 0;
+    const totalShares = totalSharesRes.status === 'fulfilled' ? Number(totalSharesRes.value) / 1e7 : 0;
 
-    const exchangeRate = exchangeRateRaw || (totalShares > 0 ? totalAssets / totalShares : 1.0);
+    const exchangeRate = exchangeRateRaw > 0 ? exchangeRateRaw : (totalShares > 0 ? totalAssets / totalShares : 1.0);
     const apy = totalAssets > 0 && totalShares > 0
       ? Number((((totalAssets / totalShares - 1) * 365 * 100).toFixed(2)))
       : 0;

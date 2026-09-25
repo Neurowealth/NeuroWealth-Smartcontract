@@ -6,8 +6,8 @@ interface OTPRecord {
   attempts: number;
 }
 
-const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes expiration
-const MAX_ATTEMPTS = 3;
+const OTP_TTL_MS = parseInt(process.env.WHATSAPP_OTP_TTL_MS || '300000', 10); // 5 minutes default
+const MAX_ATTEMPTS = parseInt(process.env.WHATSAPP_OTP_MAX_ATTEMPTS || '3', 10);
 
 // In-memory OTP storage keyed by phone number hash
 const otpStore = new Map<string, OTPRecord>();
