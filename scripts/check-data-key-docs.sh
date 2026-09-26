@@ -10,12 +10,19 @@
 #
 # Exits non-zero if any variant is missing from the docs.
 
+# -e: exit immediately on any command failure
+# -u: treat unset variables as errors
+# -o pipefail: a pipeline fails if any command in it fails, not just the last
 set -euo pipefail
 
+# Resolve the repo root relative to this script's own location, so it works
+# regardless of the caller's current working directory.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB_RS="$REPO_ROOT/neurowealth-vault/contracts/vault/src/lib.rs"
 ARCH_MD="$REPO_ROOT/ARCHITECTURE.md"
 
+# Fail fast with a clear message if either input file is missing, rather
+# than letting later commands fail confusingly.
 if [ ! -f "$LIB_RS" ]; then
   echo "ERROR: lib.rs not found at $LIB_RS" >&2
   exit 1
@@ -37,12 +44,16 @@ while IFS= read -r line; do
     IN_ENUM=1
     continue
   fi
-  # Detect end of enum
+  # Detect end of enum — the closing brace at the start of a line, once
+  # we're already inside the enum block.
   if [ "$IN_ENUM" -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*\}'; then
     break
   fi
   if [ "$IN_ENUM" -eq 1 ]; then
-    # Extract variant name: PascalCase word at start of line (after whitespace)
+    # Extract variant name: PascalCase word at start of line (after whitespace).
+    # sed prints only the captured group if the pattern matches; if it
+    # doesn't match (e.g. a blank line or attribute like #[derive(...)]),
+    # `variant` ends up empty and is skipped below.
     variant=$(echo "$line" | sed -nE 's/^[[:space:]]+([A-Z][A-Za-z0-9_]*).*/\1/p')
     if [ -n "$variant" ]; then
       LIB_VARIANTS+=("$variant")
@@ -50,6 +61,9 @@ while IFS= read -r line; do
   fi
 done < "$LIB_RS"
 
+# If nothing was captured, the enum-detection regex likely didn't match —
+# e.g. the enum was renamed or reformatted — so bail out loudly instead of
+# silently reporting "0 variants, all in sync".
 if [ ${#LIB_VARIANTS[@]} -eq 0 ]; then
   echo "ERROR: No DataKey variants found in lib.rs — check the enum definition." >&2
   exit 1
@@ -69,6 +83,8 @@ while IFS= read -r line; do
     PAST_HEADER=1
     continue
   fi
+  # Only start looking for code fences once we're past the right heading,
+  # so an unrelated earlier ``` block in the doc isn't mistaken for this one.
   if [ "$PAST_HEADER" -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*```'; then
     if [ "$IN_BLOCK" -eq 0 ]; then
       IN_BLOCK=1
@@ -89,6 +105,8 @@ echo "Found ${#DOC_VARIANTS[@]} DataKey variants in ARCHITECTURE.md"
 echo ""
 
 # ── 3. Compare ───────────────────────────────────────────────────────────────
+# Variants that exist in the code but have no matching entry in the docs —
+# these are the ones that must cause a failure.
 MISSING=()
 for v in "${LIB_VARIANTS[@]}"; do
   found=0
@@ -103,6 +121,10 @@ for v in "${LIB_VARIANTS[@]}"; do
   fi
 done
 
+# Variants that exist in the docs but no longer exist in the code — likely
+# stale documentation left over from a rename/removal. Flagged as a
+# warning rather than a failure, since removing docs for a deprecated-but-
+# intentionally-retained variant may not always be desired immediately.
 EXTRA=()
 for d in "${DOC_VARIANTS[@]}"; do
   found=0
@@ -138,6 +160,7 @@ if [ ${#EXTRA[@]} -gt 0 ]; then
 fi
 
 echo ""
+# Only missing (undocumented) variants fail the check; extras only warn.
 if [ "$FAIL" -gt 0 ]; then
   echo "❌ DATAKEY DOCS CHECK FAILED"
   echo "   Add the missing variants to the DataKey Structure section in ARCHITECTURE.md."

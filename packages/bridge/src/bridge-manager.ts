@@ -2,11 +2,15 @@
  * Main bridge manager - orchestrates cross-chain transfers via Axelar
  */
 
+import * as crypto from "crypto";
 import pino from "pino";
 import { v4 as uuidv4 } from "uuid";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { ethers } from "ethers";
 import axios from "axios";
+
+/** Maximum age (seconds) accepted for a webhook timestamp before it is rejected as a replay. */
+export const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300;
 import {
   BridgeConfig,
   BridgeTransfer,
@@ -689,6 +693,77 @@ export class BridgeManager {
       this.logger.error({ error }, "Failed to verify signature");
       return false;
     }
+  }
+
+  /**
+   * #854 - Verify the HMAC-SHA256 signature on an inbound bridge webhook.
+   *
+   * The provider signs `${timestamp}.${rawBody}` with the shared secret.
+   * Verification uses constant-time comparison to prevent timing attacks.
+   * Timestamps outside the tolerance window are rejected to prevent replays.
+   *
+   * @param rawBody   Raw (unparsed) request body buffer
+   * @param timestamp Unix seconds string from the provider header (e.g. "X-Bridge-Timestamp")
+   * @param signature Hex-encoded HMAC-SHA256 from the provider header (e.g. "X-Bridge-Signature")
+   * @param secret    Shared signing secret for this provider
+   * @param nowSeconds Current time in seconds (injectable for testing; defaults to Date.now()/1000)
+   * @returns true if the signature is valid and the timestamp is fresh
+   */
+  verifyWebhookSignature(
+    rawBody: Buffer,
+    timestamp: string,
+    signature: string,
+    secret: string,
+    nowSeconds: number = Date.now() / 1000,
+  ): boolean {
+    const ts = Number(timestamp);
+    if (!Number.isFinite(ts) || timestamp.trim() === "") {
+      this.logger.warn({ timestamp }, "Webhook rejected: malformed timestamp");
+      return false;
+    }
+
+    const age = nowSeconds - ts;
+    if (age < 0 || age > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS) {
+      this.logger.warn(
+        { age: Math.round(age), tolerance: WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS },
+        "Webhook rejected: stale or future timestamp",
+      );
+      return false;
+    }
+
+    let expected: Buffer;
+    try {
+      expected = Buffer.from(
+        crypto
+          .createHmac("sha256", secret)
+          .update(`${timestamp}.`)
+          .update(rawBody)
+          .digest("hex"),
+        "utf8",
+      );
+    } catch (error) {
+      this.logger.error({ error }, "Webhook HMAC computation failed");
+      return false;
+    }
+
+    let actual: Buffer;
+    try {
+      actual = Buffer.from(signature, "utf8");
+    } catch {
+      this.logger.warn("Webhook rejected: signature encoding error");
+      return false;
+    }
+
+    if (expected.length !== actual.length) {
+      this.logger.warn("Webhook rejected: invalid signature");
+      return false;
+    }
+
+    const valid = crypto.timingSafeEqual(expected, actual);
+    if (!valid) {
+      this.logger.warn("Webhook rejected: signature mismatch");
+    }
+    return valid;
   }
 
   private assertTransition(

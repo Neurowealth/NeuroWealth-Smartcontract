@@ -6,12 +6,14 @@
  * signature verification is exercised end to end.
  */
 
+import * as crypto from "crypto";
 import axios from "axios";
 import { ethers } from "ethers";
 import {
   ALLOWED_TRANSITIONS,
   BridgeManager,
   canTransition,
+  WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS,
 } from "./bridge-manager";
 import { BridgeConfig, BridgeStatus, BridgeTransfer } from "./types";
 
@@ -522,5 +524,106 @@ describe("verifyAxelarSignature", () => {
     await expect(
       newManager().verifyAxelarSignature("transfer-1", "0xdeadbeef", ETH_USER),
     ).resolves.toBe(false);
+  });
+});
+
+// ── #854 verifyWebhookSignature ───────────────────────────────────────────────
+
+const WEBHOOK_SECRET = "test-webhook-secret";
+
+function makeWebhookSignature(body: Buffer, timestamp: string): string {
+  return crypto
+    .createHmac("sha256", WEBHOOK_SECRET)
+    .update(`${timestamp}.`)
+    .update(body)
+    .digest("hex");
+}
+
+describe("verifyWebhookSignature (#854)", () => {
+  const FRESH_NOW = 1_700_000_000; // arbitrary fixed "now" in seconds
+
+  it("accepts a valid signed callback with a fresh timestamp", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const timestamp = String(FRESH_NOW);
+    const sig = makeWebhookSignature(body, timestamp);
+
+    expect(
+      newManager().verifyWebhookSignature(body, timestamp, sig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(true);
+  });
+
+  it("accepts duplicate delivery of the same request (idempotent)", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const timestamp = String(FRESH_NOW);
+    const sig = makeWebhookSignature(body, timestamp);
+    const manager = newManager();
+
+    expect(manager.verifyWebhookSignature(body, timestamp, sig, WEBHOOK_SECRET, FRESH_NOW)).toBe(true);
+    expect(manager.verifyWebhookSignature(body, timestamp, sig, WEBHOOK_SECRET, FRESH_NOW)).toBe(true);
+  });
+
+  it("rejects a callback with a changed body", () => {
+    const originalBody = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const timestamp = String(FRESH_NOW);
+    const sig = makeWebhookSignature(originalBody, timestamp);
+    const tamperedBody = Buffer.from('{"status":"executed","transferId":"t2"}');
+
+    expect(
+      newManager().verifyWebhookSignature(tamperedBody, timestamp, sig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
+  });
+
+  it("rejects a callback with an invalid signature", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const timestamp = String(FRESH_NOW);
+    const wrongSig = makeWebhookSignature(body, timestamp).replace(/.$/, "0");
+
+    expect(
+      newManager().verifyWebhookSignature(body, timestamp, wrongSig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
+  });
+
+  it("rejects a stale timestamp beyond the tolerance window", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const staleTs = String(FRESH_NOW - WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS - 1);
+    const sig = makeWebhookSignature(body, staleTs);
+
+    expect(
+      newManager().verifyWebhookSignature(body, staleTs, sig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
+  });
+
+  it("accepts a timestamp exactly at the tolerance boundary", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const boundaryTs = String(FRESH_NOW - WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS);
+    const sig = makeWebhookSignature(body, boundaryTs);
+
+    expect(
+      newManager().verifyWebhookSignature(body, boundaryTs, sig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(true);
+  });
+
+  it("rejects a future timestamp (possible clock skew / replay attempt)", () => {
+    const body = Buffer.from('{"status":"executed","transferId":"t1"}');
+    const futureTs = String(FRESH_NOW + 10);
+    const sig = makeWebhookSignature(body, futureTs);
+
+    expect(
+      newManager().verifyWebhookSignature(body, futureTs, sig, WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
+  });
+
+  it("rejects a malformed (non-numeric) timestamp", () => {
+    const body = Buffer.from("{}");
+    expect(
+      newManager().verifyWebhookSignature(body, "not-a-number", "anysig", WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
+  });
+
+  it("rejects an empty timestamp string", () => {
+    const body = Buffer.from("{}");
+    expect(
+      newManager().verifyWebhookSignature(body, "", "anysig", WEBHOOK_SECRET, FRESH_NOW),
+    ).toBe(false);
   });
 });

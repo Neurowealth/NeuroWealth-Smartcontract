@@ -11,6 +11,9 @@ interface PortfolioEvent {
   txHash?: string;
 }
 
+type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
+type SubscriptionStatus = 'idle' | 'pending' | 'active' | 'failed';
+
 interface PortfolioState {
   balance: {
     idle: number;
@@ -25,6 +28,9 @@ interface PortfolioState {
   lastUpdate: number;
   isConnected: boolean;
   connectionType: 'websocket' | 'polling' | 'disconnected';
+  connectionStatus: ConnectionStatus;
+  subscriptionStatus: SubscriptionStatus;
+  isStale: boolean;
 }
 
 interface UseRealtimePortfolioOptions {
@@ -32,9 +38,16 @@ interface UseRealtimePortfolioOptions {
   pollIntervalMs?: number;
   contractId?: string;
   accountAddress?: string;
+  maxReconnectAttempts?: number;
 }
 
 const DEFAULT_POLL_INTERVAL = 10000;
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_BACKOFF_MS = 30000;
+
+function eventDedupeKey(event: PortfolioEvent): string {
+  return event.txHash ?? `${event.type}-${event.timestamp}-${event.amount ?? ''}-${event.ledger ?? ''}`;
+}
 
 export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) {
   const {
@@ -42,6 +55,7 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
     pollIntervalMs = DEFAULT_POLL_INTERVAL,
     contractId,
     accountAddress,
+    maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS,
   } = options;
 
   const [state, setState] = useState<PortfolioState>({
@@ -50,6 +64,9 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
     lastUpdate: Date.now(),
     isConnected: false,
     connectionType: 'disconnected',
+    connectionStatus: 'connecting',
+    subscriptionStatus: 'idle',
+    isStale: true,
   });
 
   const [events, setEvents] = useState<PortfolioEvent[]>([]);
@@ -57,22 +74,103 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttempts = useRef(0);
+  // Guards against a socket that belongs to a previous account/contract subscription
+  // (e.g. still connecting, or about to fire a stray onclose) from mutating state
+  // after the subscription target has moved on.
+  const subscriptionKeyRef = useRef<string | null>(null);
+  const intentionalCloseRef = useRef(false);
 
   const addEvent = useCallback((event: PortfolioEvent) => {
-    setEvents(prev => [event, ...prev].slice(0, 100));
+    setEvents(prev => {
+      const key = eventDedupeKey(event);
+      if (prev.some(existing => eventDedupeKey(existing) === key)) {
+        return prev;
+      }
+      return [event, ...prev].slice(0, 100);
+    });
   }, []);
+
+  const fetchAuthoritativeSnapshot = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (contractId) params.set('contractId', contractId);
+      if (accountAddress) params.set('address', accountAddress);
+
+      const response = await fetch(`/api/portfolio?${params.toString()}`);
+      if (!response.ok) throw new Error('Failed to fetch portfolio');
+
+      const data = await response.json();
+      setState(prev => ({
+        ...prev,
+        balance: data.balance || prev.balance,
+        yieldAccrual: data.yield || prev.yieldAccrual,
+        lastUpdate: Date.now(),
+        isStale: false,
+      }));
+    } catch (error) {
+      console.error('[Realtime] Authoritative refresh failed:', error);
+    }
+  }, [contractId, accountAddress]);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) return;
+
+    console.log('[Realtime] Falling back to polling');
+    setState(prev => ({
+      ...prev,
+      isConnected: true,
+      connectionType: 'polling',
+      connectionStatus: 'connected',
+      subscriptionStatus: 'active',
+    }));
+
+    fetchAuthoritativeSnapshot();
+    pollRef.current = setInterval(fetchAuthoritativeSnapshot, pollIntervalMs);
+  }, [fetchAuthoritativeSnapshot, pollIntervalMs]);
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const subscriptionKey = `${contractId ?? ''}::${accountAddress ?? ''}`;
+    subscriptionKeyRef.current = subscriptionKey;
+    intentionalCloseRef.current = false;
+
+    setState(prev => ({
+      ...prev,
+      connectionStatus: reconnectAttempts.current > 0 ? 'reconnecting' : 'connecting',
+      subscriptionStatus: 'pending',
+    }));
 
     try {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // The subscription target changed while this socket was still connecting.
+        if (subscriptionKeyRef.current !== subscriptionKey) {
+          ws.close();
+          return;
+        }
+
         console.log('[Realtime] WebSocket connected');
+        const wasReconnect = reconnectAttempts.current > 0;
         reconnectAttempts.current = 0;
-        setState(prev => ({ ...prev, isConnected: true, connectionType: 'websocket' }));
+        stopPolling();
+
+        setState(prev => ({
+          ...prev,
+          isConnected: true,
+          connectionType: 'websocket',
+          connectionStatus: 'connected',
+          subscriptionStatus: 'active',
+        }));
 
         if (contractId) {
           ws.send(JSON.stringify({ action: 'subscribe', contractId }));
@@ -80,9 +178,17 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
         if (accountAddress) {
           ws.send(JSON.stringify({ action: 'subscribe_account', address: accountAddress }));
         }
+
+        // Events may have been missed while disconnected - resync from source of truth
+        // rather than waiting for the next incremental push.
+        if (wasReconnect) {
+          fetchAuthoritativeSnapshot();
+        }
       };
 
       ws.onmessage = (event) => {
+        if (subscriptionKeyRef.current !== subscriptionKey) return;
+
         try {
           const data = JSON.parse(event.data);
 
@@ -92,6 +198,7 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
               balance: data.balance || prev.balance,
               yieldAccrual: data.yield || prev.yieldAccrual,
               lastUpdate: Date.now(),
+              isStale: false,
             }));
           } else if (data.type === 'vault_event') {
             addEvent({
@@ -109,10 +216,30 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       };
 
       ws.onclose = () => {
-        console.log('[Realtime] WebSocket disconnected');
-        setState(prev => ({ ...prev, isConnected: false, connectionType: 'disconnected' }));
+        // Ignore closes from a stale socket, and skip auto-reconnect for closes we
+        // triggered ourselves (disconnect() / account switch).
+        if (subscriptionKeyRef.current !== subscriptionKey || intentionalCloseRef.current) {
+          return;
+        }
 
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+        console.log('[Realtime] WebSocket disconnected');
+        setState(prev => ({
+          ...prev,
+          isConnected: false,
+          connectionType: 'disconnected',
+          connectionStatus: 'reconnecting',
+          isStale: true,
+        }));
+
+        if (reconnectAttempts.current >= maxReconnectAttempts) {
+          console.error('[Realtime] Max reconnect attempts reached, falling back to polling');
+          setState(prev => ({ ...prev, subscriptionStatus: 'failed' }));
+          fetchAuthoritativeSnapshot();
+          startPolling();
+          return;
+        }
+
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), MAX_BACKOFF_MS);
         reconnectAttempts.current++;
         reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay);
       };
@@ -125,59 +252,40 @@ export function useRealtimePortfolio(options: UseRealtimePortfolioOptions = {}) 
       console.error('[Realtime] Failed to connect WebSocket:', error);
       startPolling();
     }
-  }, [wsUrl, contractId, accountAddress, addEvent]);
-
-  const startPolling = useCallback(() => {
-    if (pollRef.current) return;
-
-    console.log('[Realtime] Falling back to polling');
-    setState(prev => ({ ...prev, isConnected: true, connectionType: 'polling' }));
-
-    const fetchPortfolio = async () => {
-      try {
-        const params = new URLSearchParams();
-        if (contractId) params.set('contractId', contractId);
-        if (accountAddress) params.set('address', accountAddress);
-
-        const response = await fetch(`/api/portfolio?${params.toString()}`);
-        if (!response.ok) throw new Error('Failed to fetch portfolio');
-
-        const data = await response.json();
-        setState(prev => ({
-          ...prev,
-          balance: data.balance || prev.balance,
-          yieldAccrual: data.yield || prev.yieldAccrual,
-          lastUpdate: Date.now(),
-        }));
-      } catch (error) {
-        console.error('[Realtime] Polling error:', error);
-      }
-    };
-
-    fetchPortfolio();
-    pollRef.current = setInterval(fetchPortfolio, pollIntervalMs);
-  }, [contractId, accountAddress, pollIntervalMs]);
+  }, [wsUrl, contractId, accountAddress, addEvent, fetchAuthoritativeSnapshot, startPolling, stopPolling, maxReconnectAttempts]);
 
   const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+    intentionalCloseRef.current = true;
+    subscriptionKeyRef.current = null;
+    reconnectAttempts.current = 0;
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    setState(prev => ({ ...prev, isConnected: false, connectionType: 'disconnected' }));
-  }, []);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    stopPolling();
+
+    setState(prev => ({
+      ...prev,
+      isConnected: false,
+      connectionType: 'disconnected',
+      connectionStatus: 'disconnected',
+      subscriptionStatus: 'idle',
+    }));
+  }, [stopPolling]);
 
   useEffect(() => {
+    // A new contract/account means a brand new subscription - drop any events
+    // that belonged to the previous one before cancelling it and connecting fresh.
+    setEvents([]);
     connectWebSocket();
     return disconnect;
-  }, [connectWebSocket, disconnect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contractId, accountAddress, wsUrl]);
 
   return {
     ...state,
