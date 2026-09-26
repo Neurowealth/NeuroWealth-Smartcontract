@@ -47,6 +47,7 @@ mod test_rebalance_integration;
 // Pre-existing compile failures (MockTokenDataKey not #[contracttype], no std).
 // mod test_reentrancy_defense;
 mod test_require_initialized;
+mod test_rotation_accounting_invariants;
 mod test_rounding_math;
 mod test_rounding_small_amounts;
 mod test_security_agent_drain;
