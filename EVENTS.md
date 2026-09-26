@@ -331,8 +331,50 @@ pub struct ApprovalTtlUpdatedEvent {
 }
 ```
 
-### 8g. MaxConsecutiveFailuresUpdatedEvent
-**Topic:** `"maxf_upd"` (`TOPIC_MAX_FAILURES_UPDATED`)
+### 8f-a. ProtocolApprovalScheduledEvent
+**Topic:** `"ttl_sch"` (`TOPIC_APPROVAL_TTL_SCHEDULED`)
+
+Emitted alongside `ApprovalTtlUpdatedEvent` every time the shared approval TTL
+is persisted, so operators learn when the current protocol approval will expire
+**before** a rebalance fails because of a lapsed approval (Issue #847).
+
+Publishing the event is side-effect free: it never extends or renews an
+approval. The only write the call performs is the `ApprovalTtl` update itself.
+
+```rust
+pub struct ProtocolApprovalScheduledEvent {
+    pub protocol: Symbol,             // "blend" | "dex" | "both"
+    pub current_ledger: u32,          // Ledger of the emitting call
+    pub approval_ttl: u32,            // Persisted TTL, == get_approval_ttl()
+    pub expiry_ledger: u32,           // current_ledger + approval_ttl
+    pub available_window: u32,        // expiry_ledger - current_ledger
+    pub lead_time: u32,               // Renewal lead time in ledgers (5,000 ≈ 7 h)
+    pub renewal_deadline_ledger: u32, // expiry_ledger - lead_time
+}
+```
+
+**How consumers calculate the renewal lead time.** Nothing has to be replayed
+from transaction history - the payload already contains the schedule:
+
+```text
+available_window        = expiry_ledger - current_ledger
+renewal_deadline_ledger = expiry_ledger - lead_time
+```
+
+Submit the renewal transaction at or before `renewal_deadline_ledger` so the
+approval is refreshed while it is still live. When the configured TTL is
+shorter than the lead time (the 1,000-ledger minimum is), the contract reports
+the whole window as `lead_time` and sets `renewal_deadline_ledger` to the
+current ledger - i.e. renew immediately.
+
+`expiry_ledger` is computed with the same
+`ledger().sequence() + approval_ttl` expression the Blend and DEX approve
+paths use, so it always matches the persisted approval state exactly.
+`protocol` is `both` when set through `set_approval_ttl` (the shared TTL covers
+every protocol approval) and `blend` when set through the legacy
+`set_blend_approval_ttl`.
+
+### 8g. MaxConsecutiveFailuresUpdatedEvent**Topic:** `"maxf_upd"` (`TOPIC_MAX_FAILURES_UPDATED`)
 
 Emitted when the owner changes the circuit-breaker threshold via
 `set_max_consecutive_failures` (Issue #591 — this setter previously mutated
@@ -612,7 +654,7 @@ calls in their body.
 | `set_deposit_limits`             | ✅         | `DepositLimitsUpdatedEvent` (`dep_lim`)                                |
 | `set_rebalance_cooldown`         | ✅         | `RebalanceCooldownUpdatedEvent` (`reb_cd`)                             |
 | `set_max_consecutive_failures`   | ✅ **new** | `MaxConsecutiveFailuresUpdatedEvent` (`maxf_upd`) — added by #591      |
-| `set_approval_ttl`               | ✅         | `ApprovalTtlUpdatedEvent` (`ttl_upd`)                                  |
+| `set_approval_ttl`               | ✅         | `ApprovalTtlUpdatedEvent` (`ttl_upd`) + `ProtocolApprovalScheduledEvent` (`ttl_sch`) |
 | `set_blend_approval_ttl` (legacy)| ✅ **new** | `ApprovalTtlUpdatedEvent` (`ttl_upd`), shared with above — added by #591 |
 | `set_user_strategy`              | ✅         | `UserStrategyUpdatedEvent` (`usr_strat`)                               |
 | `update_agent`                   | ✅         | `AgentUpdateProposedEvent` (`agt_prop`)                                |

@@ -10,6 +10,36 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Approval-expiry readiness event (Issue #847):** `set_approval_ttl` and the
+  legacy `set_blend_approval_ttl` now emit `ProtocolApprovalScheduledEvent`
+  (`ttl_sch`) alongside `ApprovalTtlUpdatedEvent`, carrying the protocol, the
+  ledger the call ran in, the persisted TTL, the resulting `expiry_ledger`, the
+  `available_window`, the renewal `lead_time` (5,000 ledgers ~ 7 h) and the
+  `renewal_deadline_ledger`. Operators can schedule approval renewals from the
+  event payload alone instead of learning about a lapse from a failed
+  transaction. Emitting the event never extends or renews an approval.
+- **TTL and rent-extension failure-path tests (Issue #844):** Added
+  `test_ttl_extension_failures.rs` covering funded, partially funded (clamped
+  to the network entry window) and unfunded (already lapsed) extension
+  attempts, the exact-threshold expiry of protocol approvals, and the recovery
+  route for a lapsed `Shares` entry. `ARCHITECTURE.md` now lists every
+  TTL-bearing storage entry, its bump parameters and the operator recovery path.
+- **Durable bridge transfer workflow state (Issue #848):** Every bridge
+  transition is now written through to `BridgeStore` before the call returns,
+  and each record persists its workflow `stage` (`observed`/`submitted`/
+  `confirmed`/`completed`), `attemptCount`, sanitised `lastError`,
+  `nextAttemptAt` and `lastReconciledAt`. A restarted process rebuilds its
+  state with `loadDurableState()`; idempotency-key lookups resolve against the
+  store so a retry after a restart returns the original transfer. GMP payloads
+  and credentials are never persisted or logged (`redactTransfer`,
+  `sanitizeErrorMessage`).
+- **Startup reconciliation for the bridge (Issue #850):** New
+  `TransferReconciler.reconcileOnStartup()` scans durable non-terminal records,
+  queries both chains before deciding, never resubmits a transfer the
+  destination already executed, leaves terminal transfers queryable but
+  untouched, keeps unknown external states retryable behind a bounded
+  exponential backoff, and returns a summary with counts by action, terminal
+  state and error class. `schema.sql` gained the durable workflow columns.
 - **Agent-compromise adversarial suite (Issue #673):** Added `test_agent_compromise_scenarios.rs` covering owner-only calls, victim withdrawals, storage mutation, pause/upgrade/pool retarget, arbitrary `TotalAssets` manipulation, and deposit front-running. Documented the threat model in `SECURITY.md`.
 - **Formal verification of share accounting (Issue #672):** Extracted mint/burn/redeem math into the `share-math` crate, added Kani proofs for conservation, non-negative balances, monotonic exchange rate, round-trip value, and vault-favouring rounding, and wired `cargo kani -p share-math` into CI. Spec and maintenance process: `docs/FORMAL_VERIFICATION.md`.
 - **WCAG 2.1 AA vault UI (Issue #668):** Keyboard access, skip link, ARIA labels, AA contrast, rem-based type, axe-core in Vitest, and `docs/ACCESSIBILITY.md`.

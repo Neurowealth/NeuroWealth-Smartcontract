@@ -1147,6 +1147,56 @@ pub struct ApprovalTtlUpdatedEvent {
     pub new_ttl: u32,
 }
 
+/// Emitted alongside [`ApprovalTtlUpdatedEvent`] whenever the shared protocol
+/// approval TTL is persisted, so operators can schedule a renewal *before* the
+/// approval window closes instead of discovering the lapse through a failed
+/// rebalance (Issue #847).
+///
+/// The event is purely informational: emitting it never extends, renews, or
+/// otherwise mutates an on-chain approval. The only write performed by the
+/// emitting call is the `DataKey::ApprovalTtl` update itself.
+///
+/// # Renewal lead time
+///
+/// Consumers compute the renewal schedule directly from the payload:
+///
+/// ```text
+/// expiry_ledger          = current_ledger + approval_ttl   (already in the payload)
+/// available_window       = expiry_ledger - current_ledger
+/// renewal_deadline_ledger = expiry_ledger - lead_time      (already in the payload)
+/// ```
+///
+/// Scheduling a renewal transaction for `renewal_deadline_ledger` leaves
+/// `lead_time` ledgers (~7 h at ~5 s per ledger) of slack for the renewal
+/// transaction to land before the approval expires. When the configured TTL is
+/// shorter than the lead time the contract reports the full window as lead time
+/// and `renewal_deadline_ledger == current_ledger`, i.e. renew immediately.
+///
+/// # Topics
+/// - `SymbolShort("ttl_sch")` (`TOPIC_APPROVAL_TTL_SCHEDULED`) - Event identifier
+#[contracttype]
+pub struct ProtocolApprovalScheduledEvent {
+    /// Protocol whose approval window is described: `SymbolShort("blend")` for
+    /// the legacy Blend-only setter, `SymbolShort("dex")` for a DEX-only
+    /// window, or `SymbolShort("both")` when the shared TTL covers every
+    /// protocol approval the vault can issue.
+    pub protocol: Symbol,
+    /// Ledger in which the emitting call was executed
+    pub current_ledger: u32,
+    /// Persisted approval TTL in ledgers, equal to `get_approval_ttl()`
+    pub approval_ttl: u32,
+    /// Ledger at which the approval granted with this TTL expires
+    pub expiry_ledger: u32,
+    /// Ledgers of usable window between now and expiry (`expiry_ledger -
+    /// current_ledger`)
+    pub available_window: u32,
+    /// Ledgers of lead time reserved for the renewal transaction
+    pub lead_time: u32,
+    /// Ledger by which a renewal should be submitted so the approval never
+    /// lapses (`expiry_ledger - lead_time`)
+    pub renewal_deadline_ledger: u32,
+}
+
 /// Emitted when the owner changes the circuit-breaker threshold via
 /// `set_max_consecutive_failures`.
 ///
@@ -2096,9 +2146,16 @@ const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
 /// `current_ledger_sequence + ApprovalTtl`.
 const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 
+/// Ledgers of head-room reserved for renewing a protocol approval before it
+/// expires (Issue #847). At ~5 s per ledger this is roughly 7 hours. Consumers
+/// of [`ProtocolApprovalScheduledEvent`] submit their renewal transaction at or
+/// before `expiry_ledger - APPROVAL_RENEWAL_LEAD_LEDGERS`.
+pub const APPROVAL_RENEWAL_LEAD_LEDGERS: u32 = 5_000;
+
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
-    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_UPDATED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_SCHEDULED,
+    TOPIC_APPROVAL_TTL_UPDATED,
     TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
     TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
     TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
@@ -6131,6 +6188,10 @@ impl NeuroWealthVault {
     ///
     /// Emits:
     /// - `ApprovalTtlUpdatedEvent`
+    /// - `ProtocolApprovalScheduledEvent` (Issue #847) - announces the
+    ///   resulting expiry ledger and renewal deadline so operators can renew
+    ///   the approval before it lapses. Emitting it is side-effect free: no
+    ///   approval is extended or renewed by the event.
     ///
     /// # Errors
     ///
@@ -6178,6 +6239,12 @@ impl NeuroWealthVault {
                 new_ttl: ttl,
             },
         );
+
+        // Issue #847 - announce the expiry ledger of every approval granted
+        // with this TTL. The emitted `expiry_ledger` is computed from the same
+        // `ledger().sequence() + ttl` expression the approve paths use, so it
+        // matches the persisted approval state exactly.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("both"), ttl);
     }
 
     /// Returns the shared protocol approval TTL in ledgers.
@@ -7142,6 +7209,8 @@ impl NeuroWealthVault {
     /// - [`ApprovalTtlUpdatedEvent`] (same topic as `set_approval_ttl`, since
     ///   both mutate the shared [`DataKey::ApprovalTtl`]), so indexers can
     ///   watch a single topic for every approval-TTL change.
+    /// - [`ProtocolApprovalScheduledEvent`] (Issue #847) carrying the expiry
+    ///   ledger, usable window and renewal deadline for the shared TTL.
     pub fn set_blend_approval_ttl(env: Env, owner: Address, blend_approval_ttl: u32) {
         Self::require_initialized(&env);
         owner.require_auth();
@@ -7161,6 +7230,10 @@ impl NeuroWealthVault {
                 new_ttl: blend_approval_ttl,
             },
         );
+
+        // Issue #847 - same expiry announcement as `set_approval_ttl`, scoped
+        // to the Blend approval that this legacy setter is named for.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("blend"), blend_approval_ttl);
     }
 
     // ==========================================================================
@@ -10307,6 +10380,38 @@ impl NeuroWealthVault {
             .get(&DataKey::ApprovalTtl)
             .or_else(|| env.storage().instance().get(&DataKey::BlendApprovalTtl))
             .unwrap_or(DEFAULT_APPROVAL_TTL)
+    }
+
+    /// Announces the approval window that the just-persisted TTL creates
+    /// (Issue #847).
+    ///
+    /// The payload mirrors the arithmetic used by the Blend and DEX approve
+    /// paths (`ledger().sequence() + ttl`), so `expiry_ledger` always equals the
+    /// ledger the next approval will expire at. `lead_time` is capped at the
+    /// configured window: a TTL shorter than
+    /// [`APPROVAL_RENEWAL_LEAD_LEDGERS`] reports the full window as lead time
+    /// and a `renewal_deadline_ledger` equal to the current ledger, which tells
+    /// consumers to renew immediately.
+    ///
+    /// This function only publishes an event - it never extends or renews an
+    /// approval.
+    fn emit_approval_ttl_schedule(env: &Env, protocol: Symbol, ttl: u32) {
+        let current_ledger = env.ledger().sequence();
+        let expiry_ledger = current_ledger.saturating_add(ttl);
+        let lead_time = APPROVAL_RENEWAL_LEAD_LEDGERS.min(ttl);
+
+        env.events().publish(
+            (TOPIC_APPROVAL_TTL_SCHEDULED,),
+            ProtocolApprovalScheduledEvent {
+                protocol,
+                current_ledger,
+                approval_ttl: ttl,
+                expiry_ledger,
+                available_window: expiry_ledger.saturating_sub(current_ledger),
+                lead_time,
+                renewal_deadline_ledger: expiry_ledger.saturating_sub(lead_time),
+            },
+        );
     }
 
     /// Validates that a deposit is within the user's cap.
