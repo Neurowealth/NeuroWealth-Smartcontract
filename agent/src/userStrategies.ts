@@ -80,6 +80,8 @@ export async function getCurrentAllocation(pool: Queryable): Promise<CurrentAllo
 export interface RebalanceCycleResult {
   usersEvaluated: number;
   decisions: Map<Strategy, RebalanceDecision>;
+  currentAllocation: CurrentAllocation;
+  strategySnapshot: Array<{ userId: string; strategy: Strategy }>;
 }
 
 /**
@@ -107,5 +109,10 @@ export async function runRebalanceCycle(
     }
   }
 
-  return { usersEvaluated: users.length, decisions };
+  return {
+    usersEvaluated: users.length,
+    decisions,
+    currentAllocation: current,
+    strategySnapshot: users.map(({ userId, strategy }) => ({ userId, strategy })),
+  };
 }

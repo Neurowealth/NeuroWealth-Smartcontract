@@ -4500,6 +4500,10 @@
       "code": 82,
       "description": "The requested protocol is not on the owner-managed whitelist (#656)."
     },
+    "VaultError::UnsupportedAsset": {
+      "code": 83,
+      "description": "The token is not configured for the requested vault asset operation."
+    },
     "ValidationError": {
       "code": 100,
       "description": "General validation error"

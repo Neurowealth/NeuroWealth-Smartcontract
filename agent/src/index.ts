@@ -7,7 +7,8 @@ import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
 import { submitAutoCompoundTx, submitRebalanceTx } from './sorobanTx';
-import { getCurrentAllocation } from './userStrategies';
+import { createDecisionId } from './rebalanceOperations';
+import { resolveExecutionMode } from './executionMode';
 import { RollupScheduler } from './dataRollup';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
@@ -34,7 +35,7 @@ const rollupScheduler = new RollupScheduler(pool);
  * @param minOut - Minimum amount of yield that must be compounded; reverts if
  *                 the available yield is below this threshold.
  */
-async function autoCompound(minOut: number = 0): Promise<void> {
+async function autoCompound(minOut: number = 0, mode: 'live' | 'dry-run'): Promise<void> {
   const vaultAddress = process.env.VAULT_ADDRESS || process.env.VAULT_CONTRACT_ID;
   if (!vaultAddress) {
     throw new Error("VAULT_ADDRESS environment variable is not set");
@@ -42,10 +43,10 @@ async function autoCompound(minOut: number = 0): Promise<void> {
 
   console.log(`Auto-compounding yield on vault ${vaultAddress} with min_out=${minOut}`);
 
-  await submitAutoCompoundTx(minOut);
+  await submitAutoCompoundTx(minOut, mode);
 }
 
-function startDecisionLoop() {
+function startDecisionLoop(executionMode: 'live' | 'dry-run') {
   logger.info('Initializing hourly decision loop');
 
   decisionInterval = setInterval(async () => {
@@ -58,8 +59,19 @@ function startDecisionLoop() {
 
       // Each user's strategy comes from users.strategy_preference and the
       // current position from the latest rebalances row (#749).
-      const { usersEvaluated, decisions } = await runRebalanceCycle(pool, evaluateYield);
+      const cycle = await runRebalanceCycle(pool, evaluateYield);
+      const { usersEvaluated, decisions } = cycle;
       const rebalanceNeeded = [...decisions.values()].some((d) => d.shouldRebalance);
+      const cycleSnapshot = {
+        currentAllocation: cycle.currentAllocation,
+        strategySnapshot: cycle.strategySnapshot,
+        decisions: [...decisions.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      };
+      const decisionId = createDecisionId(
+        'hourly-rebalance',
+        new Date().toISOString().slice(0, 13),
+        cycleSnapshot,
+      );
       logger.info(
         { usersEvaluated, strategies: Object.fromEntries(decisions) },
         'Hourly yield evaluation complete',
@@ -68,10 +80,10 @@ function startDecisionLoop() {
       if (usersEvaluated > 0 && !rebalanceNeeded) {
         console.log(`Hourly check: Yield is optimal. No action needed.`);
         // Yield is already in the best protocol; compound it for maximum growth
-        await autoCompound(0);
+        await autoCompound(0, executionMode);
       } else if (usersEvaluated > 0 && rebalanceNeeded) {
         console.log(`Hourly check: Rebalance needed.`);
-        const currentAllocation = await getCurrentAllocation(pool);
+        const currentAllocation = cycle.currentAllocation;
         
         // Batch rebalances: iterate through decisions and trigger rebalance for target protocols.
         // Since it's a single vault, we just pick the first valid target protocol to rebalance to.
@@ -79,7 +91,11 @@ function startDecisionLoop() {
         
         if (decisionToRebalance?.targetProtocol) {
           logger.info({ targetProtocol: decisionToRebalance.targetProtocol }, 'Submitting batch rebalance transaction');
-          await submitRebalanceTx(decisionToRebalance.targetProtocol, currentAllocation.apy);
+          await submitRebalanceTx(decisionToRebalance.targetProtocol, currentAllocation.apy, {
+            mode: executionMode,
+            decisionId,
+            snapshot: cycleSnapshot,
+          });
         }
       }
     } catch (error) {
@@ -89,11 +105,12 @@ function startDecisionLoop() {
 }
 
 async function main() {
+  const executionMode = resolveExecutionMode();
   logger.info('Starting NeuroWealth AI Agent');
 
   configureHealthChecks(pool, server);
   await startEventListener();
-  startDecisionLoop();
+  startDecisionLoop(executionMode);
 
   if (process.env.DATABASE_URL) {
     rollupScheduler.start();

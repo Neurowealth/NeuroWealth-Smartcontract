@@ -9,6 +9,7 @@ import { createLedgerCursorStore, EventPosition, initialPosition, isStalePositio
 import { decodeVaultTransfer, vaultEventType } from './vaultEventPayload';
 import { DEFAULT_STRATEGY, getCurrentAllocation, getUserStrategy } from './userStrategies';
 import { submitRebalanceTx } from './sorobanTx';
+import { createDecisionId } from './rebalanceOperations';
 
 import { EventCircuitBreaker, CircuitBreakerStatus } from './eventCircuitBreaker';
 
@@ -208,7 +209,17 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
       if (decision.shouldRebalance && decision.targetProtocol) {
         logger.info({ targetProtocol: decision.targetProtocol, userStrategy }, 'Rebalance needed');
         const expectedApy = currentApy; // use current evaluated APY or fetch it
-        await submitRebalanceTx(decision.targetProtocol, expectedApy);
+        const snapshot = {
+          eventId: event.id,
+          strategy: userStrategy,
+          currentProtocol,
+          currentApy,
+          decision,
+        };
+        await submitRebalanceTx(decision.targetProtocol, expectedApy, {
+          decisionId: createDecisionId('deposit-event', event.id, snapshot),
+          snapshot,
+        });
       }
     } catch (error) {
       logger.error({ error: error instanceof Error ? error.message : error, userStrategy }, 'Yield evaluation failed for deposit');

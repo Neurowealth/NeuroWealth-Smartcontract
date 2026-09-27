@@ -242,6 +242,18 @@ it measures the actual token balance delta around every fund-moving call
 immediately if they ever diverge, so a regression (or a misconfigured test
 token in a future integration) is caught before it reaches a real deployment.
 
+### 7. Supported Asset Boundaries (Issue #842)
+
+Legacy deposits, withdrawals, and Blend/DEX protocol movements use only the
+vault's configured `UsdcToken`. `batch_deposit` rejects every other token with
+the typed `UnsupportedAsset` error before transfers or rate-limit writes.
+Asset-aware `deposit_asset` and `withdraw_asset` accept only symbols registered
+by the owner and resolve each symbol to its configured token address; unknown
+symbols return the same typed error. Owner-registered non-USDC assets remain
+idle and are not supplied to or redeemed from the USDC-only Blend/DEX
+integrations. Protocol clients independently enforce the configured token
+before querying token balances or calling a pool.
+
 ## Centralization-Risk Register
 
 This register documents every owner-only and agent-only capability, the blast radius if the corresponding key is compromised, and the existing mitigation status.

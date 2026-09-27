@@ -329,6 +329,8 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 81,
     /// The requested protocol is not on the owner-managed whitelist (#656).
     ProtocolNotWhitelisted = 82,
+    /// The token is not configured for the requested vault asset operation.
+    UnsupportedAsset = 83,
 
 }
 
@@ -1986,6 +1988,18 @@ pub struct QueueConfigUpdatedEvent {
 /// See `docs/BLEND_INTEGRATION_RESEARCH.md` and
 /// https://docs.blend.capital/tech-docs/core-contracts/lending-pool/fund-management
 struct BlendPoolClient;
+fn require_configured_vault_asset(env: &Env, asset: &Address) {
+    let configured_asset: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::UsdcToken)
+        .unwrap_or_else(|| panic_with_error!(env, VaultError::UnsupportedAsset));
+    if asset != &configured_asset {
+        panic_with_error!(env, VaultError::UnsupportedAsset);
+    }
+}
+
+struct BlendPoolClient;
 
 #[derive(Clone)]
 #[contracttype]
@@ -2166,6 +2180,8 @@ impl BlendPoolClient {
     ) -> i128 {
         use soroban_sdk::{vec, IntoVal, Symbol};
 
+        require_configured_vault_asset(env, asset);
+
         // Track vault balance before to calculate actual supplied amount
         let token_client = token::Client::new(env, asset);
         let vault_address = env.current_contract_address();
@@ -2212,6 +2228,8 @@ impl BlendPoolClient {
         to: &Address,
     ) -> i128 {
         use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
 
         // Track vault balance before to calculate actual withdrawn amount
         let token_client = token::Client::new(env, asset);
@@ -2292,6 +2310,8 @@ impl DexPoolClient {
     ) -> i128 {
         use soroban_sdk::{vec, IntoVal, Symbol};
 
+        require_configured_vault_asset(env, asset);
+
         let token_client = token::Client::new(env, asset);
         let vault_address = env.current_contract_address();
         let balance_before = token_client.balance(&vault_address);
@@ -2321,6 +2341,8 @@ impl DexPoolClient {
         to: &Address,
     ) -> i128 {
         use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
 
         let token_client = token::Client::new(env, asset);
         let vault_address = env.current_contract_address();
@@ -2745,11 +2767,6 @@ impl NeuroWealthVault {
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         let total_entries = entries.len();
         Self::require_batch_size(&env, total_entries);
-        // A batch is one deposit operation for the per-user deposit bucket and
-        // one operation for the separate batch bucket. This closes the bypass
-        // where a caller could avoid the single-deposit limit by batching.
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
 
         // First pass: validate every entry before any transfer (fail-fast).
         let mut total_amount: i128 = 0;
@@ -2757,10 +2774,7 @@ impl NeuroWealthVault {
             let (token, amount) = entries.get(i).unwrap();
             // Until multi-asset is enabled, require all entries to use USDC.
             if token != usdc_token {
-                panic!(
-                    "batch_deposit: token {:?} is not supported; only USDC is accepted",
-                    token
-                );
+                panic_with_error!(&env, VaultError::UnsupportedAsset);
             }
             Self::require_positive_amount(&env, amount);
             total_amount = total_amount
@@ -2775,6 +2789,11 @@ impl NeuroWealthVault {
             Self::require_within_deposit_cap(&env, &user, total_amount);
             Self::require_within_tvl_cap(&env, total_amount);
         }
+
+        // Consume rate limits only after all supplied assets and amounts pass.
+        // This keeps rejected asset calls free of preceding state writes.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
 
         // Second pass: execute transfers.
         let token_client = token::Client::new(&env, &usdc_token);
@@ -3279,13 +3298,7 @@ impl NeuroWealthVault {
         user.require_auth();
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
-        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
-
-        let config: AssetConfig = env
-            .storage()
-            .instance()
-            .get(&MultiAssetKey::Config(asset.clone()))
-            .expect("deposit_asset: asset not supported");
+        let config = Self::require_asset_config(&env, &asset);
 
         if config.min_deposit > 0 {
             Self::require(&env, amount >= config.min_deposit, VaultError::BelowMinimumDeposit);
@@ -3293,6 +3306,7 @@ impl NeuroWealthVault {
         if config.deposit_limit > 0 {
             Self::require(&env, amount <= config.deposit_limit, VaultError::MaximumDepositExceeded);
         }
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
 
         // Read all accounting state BEFORE the token transfer so a malicious
         // token contract cannot reenter and observe an inconsistent snapshot
@@ -3373,13 +3387,8 @@ impl NeuroWealthVault {
         user.require_auth();
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
+        let config = Self::require_asset_config(&env, &asset);
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
-
-        let config: AssetConfig = env
-            .storage()
-            .instance()
-            .get(&MultiAssetKey::Config(asset.clone()))
-            .expect("withdraw_asset: asset not supported");
 
         let user_shares: i128 = env
             .storage()
@@ -3419,7 +3428,10 @@ impl NeuroWealthVault {
         let token_client = token::Client::new(&env, &config.token_address);
         let mut actual_to_return = assets_to_return;
 
-        if current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex") {
+        let configured_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        if config.token_address == configured_token
+            && (current_protocol == symbol_short!("blend") || current_protocol == symbol_short!("dex"))
+        {
             let vault_balance = token_client.balance(&env.current_contract_address());
             if vault_balance < assets_to_return {
                 let needed = assets_to_return
@@ -9729,6 +9741,15 @@ impl NeuroWealthVault {
         env.storage().instance().has(&MultiAssetKey::Config(asset.clone()))
     }
 
+    /// Loads an owner-registered asset configuration or returns a typed error.
+    #[inline]
+    fn require_asset_config(env: &Env, asset: &Symbol) -> AssetConfig {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::UnsupportedAsset))
+    }
+
     /// Converts shares to assets given pre-loaded pool totals (no re-read).
     #[inline]
     fn convert_to_asset_assets_internal_from_totals(
@@ -10545,6 +10566,7 @@ impl NeuroWealthVault {
             });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
         let vault_address = env.current_contract_address();
         let approval_ledger = env
             .ledger()
@@ -10669,6 +10691,7 @@ impl NeuroWealthVault {
             });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
         let vault_address = env.current_contract_address();
 
         // Withdraw from Blend pool
@@ -10751,6 +10774,7 @@ impl NeuroWealthVault {
             });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
         let vault_address = env.current_contract_address();
         let approval_ledger = env
             .ledger()
@@ -10872,6 +10896,7 @@ impl NeuroWealthVault {
             });
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
         let vault_address = env.current_contract_address();
 
         // If amount is 0, withdraw the full deployed position.
