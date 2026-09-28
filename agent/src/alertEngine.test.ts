@@ -32,4 +32,19 @@ describe('alert event schema', () => {
     assert.strictEqual(warning.mock.callCount(), 1);
     warning.mock.restore();
   });
+
+  it('supports configurable alert thresholds via environment (#758)', async () => {
+    // Override threshold via env
+    process.env.ALERT_LARGE_WITHDRAWAL_THRESHOLD = '50000';
+    process.env.ALERT_TVL_DROP_PERCENTAGE = '10';
+
+    try {
+      // 60,000 is above 50,000 threshold (triggers LARGE_WITHDRAWAL)
+      const triggered = await processEventForAlerts({ type: 'withdraw', amount: 60_000, user: null, ledger: 20 });
+      assert.ok(triggered.includes('LARGE_WITHDRAWAL'));
+    } finally {
+      delete process.env.ALERT_LARGE_WITHDRAWAL_THRESHOLD;
+      delete process.env.ALERT_TVL_DROP_PERCENTAGE;
+    }
+  });
 });

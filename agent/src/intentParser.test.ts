@@ -47,7 +47,7 @@ for (const ext of ['.ts', '.js', '']) {
 }
 
 // Now safe to require intentParser – it will pick up our stub above
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { parseIntent } = require('./intentParser') as {
   parseIntent: (msg: string) => Promise<ParsedIntent>;
 };

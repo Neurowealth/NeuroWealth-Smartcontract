@@ -12,20 +12,40 @@ interface VaultAlertState {
     totalAssets: number;
 }
 
+export interface MonitoringAlertThresholds {
+    tvlDropPercentage: number;
+    largeWithdrawalThreshold: number;
+}
+
+export function getAlertThresholds(env: Record<string, string | undefined> = process.env): MonitoringAlertThresholds {
+    const rawTvl = env.ALERT_TVL_DROP_PERCENTAGE ?? env.TVL_DROP_PERCENTAGE;
+    const rawLarge = env.ALERT_LARGE_WITHDRAWAL_THRESHOLD ?? env.LARGE_WITHDRAWAL_THRESHOLD;
+
+    const parsedTvl = rawTvl !== undefined && rawTvl !== '' ? Number(rawTvl) : NaN;
+    const parsedLarge = rawLarge !== undefined && rawLarge !== '' ? Number(rawLarge) : NaN;
+
+    return {
+        tvlDropPercentage: Number.isFinite(parsedTvl) && parsedTvl > 0 ? parsedTvl : 20,
+        largeWithdrawalThreshold: Number.isFinite(parsedLarge) && parsedLarge > 0 ? parsedLarge : 100_000,
+    };
+}
+
 export const alertRules: AlertRule[] = [
     {
         name: 'TVL_ANOMALY',
         description: 'Sudden drop in TVL detected.',
         check: (event, state) => {
-            return event.type === 'withdraw' && event.amount > state.totalAssets * 0.2;
+            const thresholds = getAlertThresholds();
+            return event.type === 'withdraw' && event.amount > state.totalAssets * (thresholds.tvlDropPercentage / 100);
         },
         severity: 'CRITICAL',
     },
     {
         name: 'LARGE_WITHDRAWAL',
         description: 'Large withdrawal detected.',
-        check: (event, state) => {
-            return event.type === 'withdraw' && event.amount > 100000;
+        check: (event, _state) => {
+            const thresholds = getAlertThresholds();
+            return event.type === 'withdraw' && event.amount > thresholds.largeWithdrawalThreshold;
         },
         severity: 'HIGH',
     },

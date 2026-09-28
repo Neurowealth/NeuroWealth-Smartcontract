@@ -668,6 +668,7 @@ calls in their body.
 | `schedule_upgrade`               | ✅         | `UpgradeScheduledEvent` (`upg_sched`)                                  |
 | `execute_upgrade`                | ✅         | `UpgradedEvent` (`upgraded`)                                           |
 | `cancel_upgrade`                 | ✅         | `UpgradeCancelledEvent` (`upg_cncl`)                                   |
+| `set_queue_config`               | ✅         | `QueueConfigUpdatedEvent` (`wq_cfg`)                                   |
 
 Two gaps were found and closed in #591 (marked **new** above):
 `set_max_consecutive_failures` and `set_blend_approval_ttl` mutated
@@ -897,4 +898,105 @@ pub struct RateLimitExceededEvent {
 Correlate the event with the failed transaction's contract error because the
 over-limit operation is reverted and event visibility for a failed transaction
 depends on the ledger/RPC surface.
+
+## Withdrawal Queue Events (#757)
+
+These events cover the lifecycle of asynchronous withdrawal queue requests, queue configuration, and request processing.
+
+### `WithdrawalQueuedEvent` (`wq_add`)
+
+**Topic:** `"wq_add"` (`TOPIC_WITHDRAWAL_QUEUED`)
+
+Emitted when a user submits an asynchronous withdrawal request via `queue_withdrawal`.
+
+```rust
+#[contracttype]
+pub struct WithdrawalQueuedEvent {
+    pub request_id: u32,   // Auto-incrementing request ID
+    pub user: Address,      // User who queued the withdrawal
+    pub amount: i128,       // Amount requested in USDC raw units (7 decimals)
+    pub timestamp: u64,     // Unix timestamp when the request was queued
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `request_id` | `u32` | Sequential request ID assigned to this withdrawal request |
+| `user` | `Address` | Address of the account requesting the withdrawal |
+| `amount` | `i128` | Amount requested in base USDC units (7 decimals) |
+| `timestamp` | `u64` | Ledger timestamp when the request was recorded |
+
+**Usage:**
+- Off-chain AI agent monitors `wq_add` events to prioritize pool exits and schedule queue fulfillments.
+- Frontend tracks pending queued withdrawals for user dashboard display.
+- Indexers update queue length and pending redemption metrics.
+
+### `WithdrawalCancelledEvent` (`wq_cancel`)
+
+**Topic:** `"wq_cancel"` (`TOPIC_WITHDRAWAL_CANCELLED`)
+
+Emitted when a user cancels their pending withdrawal request before fulfillment via `cancel_withdrawal_request`.
+
+```rust
+#[contracttype]
+pub struct WithdrawalCancelledEvent {
+    pub request_id: u32,   // The cancelled request ID
+    pub user: Address,      // User who cancelled the request
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `request_id` | `u32` | The ID of the request that was cancelled |
+| `user` | `Address` | Address of the user who initiated and cancelled the request |
+
+**Usage:**
+- Frontend removes the request from the pending queue view.
+- AI agent adjusts pending liquidity requirements.
+
+### `WithdrawalFulfilledEvent` (`wq_done`)
+
+**Topic:** `"wq_done"` (`TOPIC_WITHDRAWAL_FULFILLED`)
+
+Emitted for each request fulfilled during `process_withdrawal_queue`, after underlying USDC has been transferred and vault shares burned.
+
+```rust
+#[contracttype]
+pub struct WithdrawalFulfilledEvent {
+    pub request_id: u32,   // The fulfilled request ID
+    pub user: Address,      // User whose request was fulfilled
+    pub amount: i128,       // Amount actually withdrawn in USDC raw units (7 decimals)
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `request_id` | `u32` | Request ID that has been fulfilled and removed from queue |
+| `user` | `Address` | Recipient user address |
+| `amount` | `i128` | Actual USDC amount delivered to the user |
+
+**Usage:**
+- Real-time notification services notify users that their queued withdrawal is complete.
+- Off-chain accounting synchronizes processed requests.
+
+### `QueueConfigUpdatedEvent` (`wq_cfg`)
+
+**Topic:** `"wq_cfg"` (`TOPIC_QUEUE_CONFIG_UPDATED`)
+
+Emitted when the contract owner updates the withdrawal queue capacity and request TTL via `set_queue_config`.
+
+```rust
+#[contracttype]
+pub struct QueueConfigUpdatedEvent {
+    pub new_max_size: u32,  // New max queue size
+    pub new_ttl: u64,       // New TTL in seconds
+    pub owner: Address,     // Owner who made the change
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `new_max_size` | `u32` | Maximum number of pending requests the queue can hold |
+| `new_ttl` | `u64` | Expiration time-to-live in seconds before an unfulfilled request expires |
+| `owner` | `Address` | Address of the admin who applied the new configuration |
 

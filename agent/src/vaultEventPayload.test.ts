@@ -22,6 +22,25 @@ describe('Vault event payload decoding (#748)', () => {
     assert.strictEqual(vaultEventType([nativeToScVal('pause', { type: 'symbol' })]), null);
   });
 
+  it('rejects topic substring collisions (#746)', () => {
+    // Substring matches must not trigger event classification
+    assert.strictEqual(vaultEventType([nativeToScVal('emergency_withdraw', { type: 'symbol' })]), null);
+    assert.strictEqual(vaultEventType([nativeToScVal('deposit_batch', { type: 'symbol' })]), null);
+    assert.strictEqual(vaultEventType([nativeToScVal('auto_deposit', { type: 'symbol' })]), null);
+    assert.strictEqual(vaultEventType([nativeToScVal('withdraw_queued', { type: 'symbol' })]), null);
+    assert.strictEqual(vaultEventType(['emergency_withdraw']), null);
+    assert.strictEqual(vaultEventType(['deposit_tokens']), null);
+
+    // Secondary topic containing deposit/withdraw must not trigger classification
+    assert.strictEqual(
+      vaultEventType([
+        nativeToScVal('custom_event', { type: 'symbol' }),
+        nativeToScVal('deposit', { type: 'symbol' }),
+      ]),
+      null,
+    );
+  });
+
   it('uses the real on-chain amount instead of a placeholder', () => {
     const payload = decodeVaultTransfer(transferEvent('withdraw', BigInt('2500000000')));
     assert.ok(payload);

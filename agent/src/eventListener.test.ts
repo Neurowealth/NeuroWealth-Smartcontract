@@ -8,7 +8,7 @@
  * and `pool` objects before each test.
  */
 
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 
 // ---------------------------------------------------------------------------
