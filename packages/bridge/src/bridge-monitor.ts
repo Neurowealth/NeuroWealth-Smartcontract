@@ -23,6 +23,11 @@ export class BridgeMonitor {
   async start(): Promise<void> {
     this.logger.info("Starting bridge monitor");
 
+    // #848 - Rebuild the in-memory view from durable state first: after a
+    // restart the manager only knows about transfers it can read back from
+    // the store, otherwise the first polling pass would see nothing to do.
+    await this.bridgeManager.loadDurableState();
+
     // Poll every minute
     this.monitoringInterval = setInterval(() => {
       this.checkPendingTransfers().catch((error) => {

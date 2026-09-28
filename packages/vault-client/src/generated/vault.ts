@@ -298,6 +298,24 @@ export interface ApprovalTtlUpdatedEvent {
   new_ttl: number;
 }
 
+/** Emitted alongside ApprovalTtlUpdatedEvent whenever the shared protocol approval TTL is persisted, so operators can schedule a renewal before the approval window closes (Issue #847). Publishing the event never extends or renews an approval. */
+export interface ProtocolApprovalScheduledEvent {
+  /** Protocol whose approval window is described: SymbolShort("blend") for the legacy Blend-only setter, SymbolShort("dex") for a DEX-only window, or SymbolShort("both") when the shared TTL covers every protocol approval the vault can issue. */
+  protocol: string;
+  /** Ledger in which the emitting call was executed */
+  current_ledger: number;
+  /** Persisted approval TTL in ledgers, equal to get_approval_ttl() */
+  approval_ttl: number;
+  /** Ledger at which the approval granted with this TTL expires */
+  expiry_ledger: number;
+  /** Ledgers of usable window between now and expiry (expiry_ledger - current_ledger) */
+  available_window: number;
+  /** Ledgers of lead time reserved for the renewal transaction */
+  lead_time: number;
+  /** Ledger by which a renewal should be submitted so the approval never lapses (expiry_ledger - lead_time) */
+  renewal_deadline_ledger: number;
+}
+
 /** Emitted by the contract. */
 export interface MaxConsecutiveFailuresUpdatedEvent {
   /** Effective threshold before the change (the default if never configured) */
@@ -2352,6 +2370,23 @@ export class VaultClient {
   async get_withdrawal_request(request_id: number, sourcePublicKey: string): Promise<unknown> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(request_id, { type: 'u32' })];
     return this.simulate<unknown>('get_withdrawal_request', args, sourcePublicKey);
+  }
+
+  /**
+   * Returns a read-only snapshot of vault health and operational state (#838)
+   */
+  async get_vault_health_snapshot(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_vault_health_snapshot', args, sourcePublicKey);
+  }
+
+  /**
+   * Returns the next withdrawal eligibility for a user (#846)
+   * @param user
+   */
+  async get_withdrawal_eligibility(user: string, sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
+    return this.simulate<unknown>('get_withdrawal_eligibility', args, sourcePublicKey);
   }
 
   /**

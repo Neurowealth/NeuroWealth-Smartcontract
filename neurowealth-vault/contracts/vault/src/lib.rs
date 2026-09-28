@@ -1147,6 +1147,56 @@ pub struct ApprovalTtlUpdatedEvent {
     pub new_ttl: u32,
 }
 
+/// Emitted alongside [`ApprovalTtlUpdatedEvent`] whenever the shared protocol
+/// approval TTL is persisted, so operators can schedule a renewal *before* the
+/// approval window closes instead of discovering the lapse through a failed
+/// rebalance (Issue #847).
+///
+/// The event is purely informational: emitting it never extends, renews, or
+/// otherwise mutates an on-chain approval. The only write performed by the
+/// emitting call is the `DataKey::ApprovalTtl` update itself.
+///
+/// # Renewal lead time
+///
+/// Consumers compute the renewal schedule directly from the payload:
+///
+/// ```text
+/// expiry_ledger          = current_ledger + approval_ttl   (already in the payload)
+/// available_window       = expiry_ledger - current_ledger
+/// renewal_deadline_ledger = expiry_ledger - lead_time      (already in the payload)
+/// ```
+///
+/// Scheduling a renewal transaction for `renewal_deadline_ledger` leaves
+/// `lead_time` ledgers (~7 h at ~5 s per ledger) of slack for the renewal
+/// transaction to land before the approval expires. When the configured TTL is
+/// shorter than the lead time the contract reports the full window as lead time
+/// and `renewal_deadline_ledger == current_ledger`, i.e. renew immediately.
+///
+/// # Topics
+/// - `SymbolShort("ttl_sch")` (`TOPIC_APPROVAL_TTL_SCHEDULED`) - Event identifier
+#[contracttype]
+pub struct ProtocolApprovalScheduledEvent {
+    /// Protocol whose approval window is described: `SymbolShort("blend")` for
+    /// the legacy Blend-only setter, `SymbolShort("dex")` for a DEX-only
+    /// window, or `SymbolShort("both")` when the shared TTL covers every
+    /// protocol approval the vault can issue.
+    pub protocol: Symbol,
+    /// Ledger in which the emitting call was executed
+    pub current_ledger: u32,
+    /// Persisted approval TTL in ledgers, equal to `get_approval_ttl()`
+    pub approval_ttl: u32,
+    /// Ledger at which the approval granted with this TTL expires
+    pub expiry_ledger: u32,
+    /// Ledgers of usable window between now and expiry (`expiry_ledger -
+    /// current_ledger`)
+    pub available_window: u32,
+    /// Ledgers of lead time reserved for the renewal transaction
+    pub lead_time: u32,
+    /// Ledger by which a renewal should be submitted so the approval never
+    /// lapses (`expiry_ledger - lead_time`)
+    pub renewal_deadline_ledger: u32,
+}
+
 /// Emitted when the owner changes the circuit-breaker threshold via
 /// `set_max_consecutive_failures`.
 ///
@@ -1633,6 +1683,60 @@ pub struct UserInfo {
     pub shares: i128,
 }
 
+/// Read-only snapshot of vault health and operational state (#838).
+///
+/// Returned by [`NeuroWealthVault::get_vault_health_snapshot`]. This snapshot
+/// consolidates multiple health indicators into a single atomic read to avoid
+/// cross-ledger inconsistencies when monitoring vault status.
+///
+/// This is a return type, not an event: it is never published to the event log.
+#[contracttype]
+pub struct VaultHealthSnapshot {
+    /// Whether the vault has been initialized.
+    pub initialized: bool,
+    /// Emergency pause state.
+    pub paused: bool,
+    /// Maximum total value locked (USDC in 7-decimal units).
+    pub tvl_cap: i128,
+    /// Total managed assets (principal + yield) in USDC 7-decimal units.
+    pub total_assets: i128,
+    /// Total vault shares in circulation.
+    pub total_shares: i128,
+    /// Idle USDC balance (funds not deployed to protocols).
+    pub idle_assets: i128,
+    /// USDC deployed to external yield protocols.
+    pub deployed_assets: i128,
+    /// Active protocol summary ("blend", "dex", "multi", "none").
+    pub current_protocol: Symbol,
+    /// Count of consecutive failed rebalances (circuit-breaker state).
+    pub active_failure_count: u32,
+    /// Whether an agent rotation is pending (timelock in progress).
+    pub pending_agent_update: bool,
+    /// Whether a contract upgrade is pending (timelock in progress).
+    pub pending_upgrade: bool,
+    /// Whether an ownership transfer is pending.
+    pub pending_ownership_transfer: bool,
+}
+
+/// Withdrawal eligibility information for a user (#846).
+///
+/// Returned by [`NeuroWealthVault::get_withdrawal_eligibility`]. This indicates
+/// when a user can next withdraw based on queue state, cooldowns, and pause status.
+///
+/// This is a return type, not an event: it is never published to the event log.
+#[contracttype]
+pub struct WithdrawalEligibility {
+    /// The ledger at which the user can next withdraw.
+    /// If `eligible_now` is true, this is the current ledger.
+    /// If `eligible_now` is false, this is the future ledger when eligibility resumes.
+    pub eligible_ledger: u32,
+    /// Whether the user can withdraw immediately.
+    pub eligible_now: bool,
+    /// Reason for ineligibility (empty if eligible).
+    /// Possible values: "paused", "cooldown", "queue", "insufficient_shares".
+    pub reason: Symbol,
+}
+
 /// Emitted when a user migrates their shares to a new vault (#637).
 ///
 /// # Topics
@@ -2042,9 +2146,16 @@ const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
 /// `current_ledger_sequence + ApprovalTtl`.
 const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 
+/// Ledgers of head-room reserved for renewing a protocol approval before it
+/// expires (Issue #847). At ~5 s per ledger this is roughly 7 hours. Consumers
+/// of [`ProtocolApprovalScheduledEvent`] submit their renewal transaction at or
+/// before `expiry_ledger - APPROVAL_RENEWAL_LEAD_LEDGERS`.
+pub const APPROVAL_RENEWAL_LEAD_LEDGERS: u32 = 5_000;
+
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
-    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_UPDATED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_SCHEDULED,
+    TOPIC_APPROVAL_TTL_UPDATED,
     TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
     TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
     TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
@@ -6077,6 +6188,10 @@ impl NeuroWealthVault {
     ///
     /// Emits:
     /// - `ApprovalTtlUpdatedEvent`
+    /// - `ProtocolApprovalScheduledEvent` (Issue #847) - announces the
+    ///   resulting expiry ledger and renewal deadline so operators can renew
+    ///   the approval before it lapses. Emitting it is side-effect free: no
+    ///   approval is extended or renewed by the event.
     ///
     /// # Errors
     ///
@@ -6124,6 +6239,12 @@ impl NeuroWealthVault {
                 new_ttl: ttl,
             },
         );
+
+        // Issue #847 - announce the expiry ledger of every approval granted
+        // with this TTL. The emitted `expiry_ledger` is computed from the same
+        // `ledger().sequence() + ttl` expression the approve paths use, so it
+        // matches the persisted approval state exactly.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("both"), ttl);
     }
 
     /// Returns the shared protocol approval TTL in ledgers.
@@ -7088,6 +7209,8 @@ impl NeuroWealthVault {
     /// - [`ApprovalTtlUpdatedEvent`] (same topic as `set_approval_ttl`, since
     ///   both mutate the shared [`DataKey::ApprovalTtl`]), so indexers can
     ///   watch a single topic for every approval-TTL change.
+    /// - [`ProtocolApprovalScheduledEvent`] (Issue #847) carrying the expiry
+    ///   ledger, usable window and renewal deadline for the shared TTL.
     pub fn set_blend_approval_ttl(env: Env, owner: Address, blend_approval_ttl: u32) {
         Self::require_initialized(&env);
         owner.require_auth();
@@ -7107,6 +7230,10 @@ impl NeuroWealthVault {
                 new_ttl: blend_approval_ttl,
             },
         );
+
+        // Issue #847 - same expiry announcement as `set_approval_ttl`, scoped
+        // to the Blend approval that this legacy setter is named for.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("blend"), blend_approval_ttl);
     }
 
     // ==========================================================================
@@ -8622,6 +8749,135 @@ impl NeuroWealthVault {
             .unwrap_or(false)
     }
 
+    /// Returns a read-only snapshot of vault health and operational state (#838).
+    ///
+    /// This function consolidates multiple health indicators into a single atomic
+    /// read to avoid cross-ledger inconsistencies when monitoring vault status.
+    /// It performs no storage mutations, emits no events, and has no authorization
+    /// side effects.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// A `VaultHealthSnapshot` containing:
+    /// - `initialized`: Whether the vault has been initialized
+    /// - `paused`: Emergency pause state
+    /// - `tvl_cap`: Maximum total value locked
+    /// - `total_assets`: Total managed assets (principal + yield)
+    /// - `total_shares`: Total vault shares in circulation
+    /// - `idle_assets`: Idle USDC balance (not deployed to protocols)
+    /// - `deployed_assets`: USDC deployed to external yield protocols
+    /// - `current_protocol`: Active protocol summary
+    /// - `active_failure_count`: Consecutive failed rebalances
+    /// - `pending_agent_update`: Whether agent rotation is pending
+    /// - `pending_upgrade`: Whether contract upgrade is pending
+    /// - `pending_ownership_transfer`: Whether ownership transfer is pending
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let snapshot = vault_client.get_vault_health_snapshot();
+    /// if !snapshot.paused && snapshot.active_failure_count < 3 {
+    ///     // Vault is healthy and operational
+    /// }
+    /// ```
+    pub fn get_vault_health_snapshot(env: Env) -> VaultHealthSnapshot {
+        // Check initialization without requiring it - return false if not initialized
+        let initialized = env.storage().instance().has(&DataKey::TotalAssets);
+
+        if !initialized {
+            return VaultHealthSnapshot {
+                initialized: false,
+                paused: false,
+                tvl_cap: 0,
+                total_assets: 0,
+                total_shares: 0,
+                idle_assets: 0,
+                deployed_assets: 0,
+                current_protocol: symbol_short!("none"),
+                active_failure_count: 0,
+                pending_agent_update: false,
+                pending_upgrade: false,
+                pending_ownership_transfer: false,
+            };
+        }
+
+        let paused = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        let tvl_cap = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(DEFAULT_TVL_CAP);
+
+        let total_assets = Self::get_total_assets_internal(&env);
+        let total_shares = Self::get_total_shares_internal(&env);
+
+        let idle_assets = {
+            let usdc: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+            token::Client::new(&env, &usdc).balance(&env.current_contract_address())
+        };
+
+        let deployed_assets = {
+            let protocol: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            Self::get_protocol_balance(&env, &protocol)
+        };
+
+        let current_protocol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        let active_failure_count = env
+            .storage()
+            .instance()
+            .get(&DataKey::ConsecutiveFailures)
+            .unwrap_or(0);
+
+        let pending_agent_update = env.storage().instance().has(&DataKey::PendingAgent);
+        let pending_upgrade = env.storage().instance().has(&DataKey::PendingUpgradeHash);
+        let pending_ownership_transfer = env.storage().instance().has(&DataKey::PendingOwner);
+
+        VaultHealthSnapshot {
+            initialized: true,
+            paused,
+            tvl_cap,
+            total_assets,
+            total_shares,
+            idle_assets,
+            deployed_assets,
+            current_protocol,
+            active_failure_count,
+            pending_agent_update,
+            pending_upgrade,
+            pending_ownership_transfer,
+        }
+    }
+
     /// Returns the contract version.
     ///
     /// Used to track upgrades and ensure compatibility with external systems.
@@ -9234,6 +9490,161 @@ impl NeuroWealthVault {
                 user,
             },
         );
+    }
+
+    /// Returns the next withdrawal eligibility for a user (#846).
+    ///
+    /// This function provides a deterministic read value for when a queued or
+    /// cooldown-constrained withdrawal can next progress. It checks pause state,
+    /// minimum holding period, queue position, and share balance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - Address of the user to check.
+    ///
+    /// # Returns
+    ///
+    /// A `WithdrawalEligibility` containing:
+    /// - `eligible_ledger`: The ledger at which the user can next withdraw
+    /// - `eligible_now`: Whether the user can withdraw immediately
+    /// - `reason`: Reason for ineligibility (empty if eligible)
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let eligibility = vault_client.get_withdrawal_eligibility(&user);
+    /// if eligibility.eligible_now {
+    ///     vault_client.withdraw(&user, &amount);
+    /// } else {
+    ///     println!("Can withdraw at ledger {}", eligibility.eligible_ledger);
+    /// }
+    /// ```
+    pub fn get_withdrawal_eligibility(env: Env, user: Address) -> WithdrawalEligibility {
+        // Check initialization without requiring it
+        let initialized = env.storage().instance().has(&DataKey::TotalAssets);
+
+        if !initialized {
+            return WithdrawalEligibility {
+                eligible_ledger: 0,
+                eligible_now: false,
+                reason: symbol_short!("not_initialized"),
+            };
+        }
+
+        let current_ledger = env.ledger().sequence();
+
+        // Check pause state
+        let paused = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        if paused {
+            return WithdrawalEligibility {
+                eligible_ledger: 0, // Unknown when pause will be lifted
+                eligible_now: false,
+                reason: symbol_short!("paused"),
+            };
+        }
+
+        // Check if user has shares
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+
+        if user_shares == 0 {
+            return WithdrawalEligibility {
+                eligible_ledger: 0,
+                eligible_now: false,
+                reason: symbol_short!("insufficient_shares"),
+            };
+        }
+
+        // Check minimum holding period
+        let min_holding_period: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinHoldingPeriod)
+            .unwrap_or(0);
+
+        if min_holding_period > 0 {
+            let last_deposit_ledger: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LastDepositLedger(user.clone()))
+                .unwrap_or(0);
+
+            if last_deposit_ledger > 0 {
+                let holding_elapsed = current_ledger.saturating_sub(last_deposit_ledger);
+                if holding_elapsed < min_holding_period {
+                    let eligible_ledger = last_deposit_ledger + min_holding_period;
+                    return WithdrawalEligibility {
+                        eligible_ledger,
+                        eligible_now: false,
+                        reason: symbol_short!("cooldown"),
+                    };
+                }
+            }
+        }
+
+        // Check if user has a pending withdrawal request in the queue
+        let order: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::QueueOrder)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut user_position_in_queue: Option<u32> = None;
+        for (index, request_id) in order.iter().enumerate() {
+            if let Some(request) = env
+                .storage()
+                .instance()
+                .get(&DataKey::WithdrawalRequest(*request_id))
+            {
+                if request.user == user && !request.fulfilled && !request.cancelled {
+                    user_position_in_queue = Some(index as u32);
+                    break;
+                }
+            }
+        }
+
+        if let Some(position) = user_position_in_queue {
+            // User is in queue - estimate processing time based on position
+            // Assume batch processing of MAX_WITHDRAWAL_PROCESS_BATCH per call
+            const BATCH_SIZE: u32 = 10;
+            let estimated_batches = (position / BATCH_SIZE) + 1;
+            // Assume one batch per ledger (conservative estimate)
+            let eligible_ledger = current_ledger + estimated_batches;
+
+            return WithdrawalEligibility {
+                eligible_ledger,
+                eligible_now: false,
+                reason: symbol_short!("queue"),
+            };
+        }
+
+        // User is eligible to withdraw immediately
+        WithdrawalEligibility {
+            eligible_ledger: current_ledger,
+            eligible_now: true,
+            reason: symbol_short!(""),
+        }
     }
 
     /// Processes pending withdrawal requests in FIFO order. Any authenticated
@@ -9969,6 +10380,38 @@ impl NeuroWealthVault {
             .get(&DataKey::ApprovalTtl)
             .or_else(|| env.storage().instance().get(&DataKey::BlendApprovalTtl))
             .unwrap_or(DEFAULT_APPROVAL_TTL)
+    }
+
+    /// Announces the approval window that the just-persisted TTL creates
+    /// (Issue #847).
+    ///
+    /// The payload mirrors the arithmetic used by the Blend and DEX approve
+    /// paths (`ledger().sequence() + ttl`), so `expiry_ledger` always equals the
+    /// ledger the next approval will expire at. `lead_time` is capped at the
+    /// configured window: a TTL shorter than
+    /// [`APPROVAL_RENEWAL_LEAD_LEDGERS`] reports the full window as lead time
+    /// and a `renewal_deadline_ledger` equal to the current ledger, which tells
+    /// consumers to renew immediately.
+    ///
+    /// This function only publishes an event - it never extends or renews an
+    /// approval.
+    fn emit_approval_ttl_schedule(env: &Env, protocol: Symbol, ttl: u32) {
+        let current_ledger = env.ledger().sequence();
+        let expiry_ledger = current_ledger.saturating_add(ttl);
+        let lead_time = APPROVAL_RENEWAL_LEAD_LEDGERS.min(ttl);
+
+        env.events().publish(
+            (TOPIC_APPROVAL_TTL_SCHEDULED,),
+            ProtocolApprovalScheduledEvent {
+                protocol,
+                current_ledger,
+                approval_ttl: ttl,
+                expiry_ledger,
+                available_window: expiry_ledger.saturating_sub(current_ledger),
+                lead_time,
+                renewal_deadline_ledger: expiry_ledger.saturating_sub(lead_time),
+            },
+        );
     }
 
     /// Validates that a deposit is within the user's cap.

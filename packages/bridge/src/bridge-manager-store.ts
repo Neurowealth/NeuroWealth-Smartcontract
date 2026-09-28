@@ -13,6 +13,8 @@ import {
   BridgeQuote,
   BridgeStatus,
   StoredBridgeTransfer,
+  BridgeChain,
+  INITIAL_STAGE,
 } from "./types";
 
 /**
@@ -42,6 +44,52 @@ export class BridgeManager {
   constructor(private config: BridgeConfig) {
     this.stellarServer = new StellarSdk.SorobanRpc.Server(config.stellarRpcUrl);
     this.ethersProvider = new ethers.JsonRpcProvider(config.ethereumRpcUrl);
+
+    // #851 - Validate confirmation depth configuration
+    this.validateConfirmationDepths();
+  }
+
+  /**
+   * #851 - Validate confirmation depth configuration at startup
+   */
+  private validateConfirmationDepths(): void {
+    const requiredChains: BridgeChain[] = ["stellar", "ethereum"];
+
+    for (const chain of requiredChains) {
+      const depth = this.config.confirmationDepths?.[chain];
+      if (depth === undefined || depth === null) {
+        throw new Error(
+          `Confirmation depth not configured for chain: ${chain}. Please set confirmationDepths.${chain} in config.`,
+        );
+      }
+      if (depth < 0) {
+        throw new Error(
+          `Confirmation depth must be non-negative for chain: ${chain}. Got: ${depth}`,
+        );
+      }
+      if (depth === 0) {
+        this.logger.warn(
+          { chain, depth },
+          "Confirmation depth set to 0 - transfers will be confirmed immediately without waiting for confirmations",
+        );
+      }
+    }
+
+    this.logger.info(
+      { confirmationDepths: this.config.confirmationDepths },
+      "Confirmation depth configuration validated",
+    );
+  }
+
+  /**
+   * #851 - Get the required confirmation depth for a destination chain
+   */
+  private getConfirmationDepth(chain: BridgeChain): number {
+    const depth = this.config.confirmationDepths?.[chain];
+    if (depth === undefined) {
+      throw new Error(`No confirmation depth configured for chain: ${chain}`);
+    }
+    return depth;
   }
 
   /**
@@ -51,12 +99,14 @@ export class BridgeManager {
     ethereumUserAddress: string,
     usdcAmount: bigint,
     destinationStellarAddress: string,
+    idempotencyKey?: string, // #849 - Optional idempotency key for safe retries
   ): Promise<BridgeTransfer> {
     this.logger.info(
       {
         ethereumUserAddress,
         usdcAmount: usdcAmount.toString(),
         destinationStellarAddress,
+        idempotencyKey,
       },
       "Initiating Ethereum → Stellar deposit",
     );
@@ -71,6 +121,37 @@ export class BridgeManager {
       throw new Error(
         `Amount above maximum: ${this.config.maxBridgeAmount.toString()}`,
       );
+    }
+
+    // #849 - Check for existing transfer with same idempotency key
+    if (idempotencyKey) {
+      const existingTransfer = Array.from(this.bridgeTransfers.values()).find(
+        (t) => t.idempotencyKey === idempotencyKey,
+      );
+
+      if (existingTransfer) {
+        // Verify that the payload matches the original request
+        if (
+          existingTransfer.user !== destinationStellarAddress ||
+          existingTransfer.amount !== usdcAmount ||
+          existingTransfer.sourceChain !== "ethereum" ||
+          existingTransfer.destinationChain !== "stellar"
+        ) {
+          throw new Error(
+            "Idempotency key already used with different parameters. Use a new key.",
+          );
+        }
+
+        // Return the existing transfer for safe retry
+        this.logger.info(
+          { transferId: existingTransfer.id, idempotencyKey },
+          "Returning existing transfer for idempotent retry",
+        );
+        return {
+          ...existingTransfer,
+          status: existingTransfer.status,
+        };
+      }
     }
 
     // Calculate bridge fee
@@ -91,16 +172,20 @@ export class BridgeManager {
       netAmount,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      idempotencyKey, // #849 - Store the idempotency key
+      requiredConfirmationDepth: this.getConfirmationDepth("stellar"), // #851 - Store required depth
     };
 
     // Store transfer
     this.bridgeTransfers.set(transfer.id, {
       ...transfer,
       retriesRemaining: 3,
+      stage: INITIAL_STAGE,
+      attemptCount: 0,
     });
 
     this.logger.info(
-      { transferId: transfer.id, status: transfer.status },
+      { transferId: transfer.id, status: transfer.status, idempotencyKey },
       "Bridge transfer initiated",
     );
 
@@ -114,12 +199,14 @@ export class BridgeManager {
     stellarUserAddress: string,
     usdcAmount: bigint,
     destinationEthereumAddress: string,
+    idempotencyKey?: string, // #849 - Optional idempotency key for safe retries
   ): Promise<BridgeTransfer> {
     this.logger.info(
       {
         stellarUserAddress,
         usdcAmount: usdcAmount.toString(),
         destinationEthereumAddress,
+        idempotencyKey,
       },
       "Initiating Stellar → Ethereum withdrawal",
     );
@@ -134,6 +221,37 @@ export class BridgeManager {
       throw new Error(
         `Amount above maximum: ${this.config.maxBridgeAmount.toString()}`,
       );
+    }
+
+    // #849 - Check for existing transfer with same idempotency key
+    if (idempotencyKey) {
+      const existingTransfer = Array.from(this.bridgeTransfers.values()).find(
+        (t) => t.idempotencyKey === idempotencyKey,
+      );
+
+      if (existingTransfer) {
+        // Verify that the payload matches the original request
+        if (
+          existingTransfer.user !== stellarUserAddress ||
+          existingTransfer.amount !== usdcAmount ||
+          existingTransfer.sourceChain !== "stellar" ||
+          existingTransfer.destinationChain !== "ethereum"
+        ) {
+          throw new Error(
+            "Idempotency key already used with different parameters. Use a new key.",
+          );
+        }
+
+        // Return the existing transfer for safe retry
+        this.logger.info(
+          { transferId: existingTransfer.id, idempotencyKey },
+          "Returning existing transfer for idempotent retry",
+        );
+        return {
+          ...existingTransfer,
+          status: existingTransfer.status,
+        };
+      }
     }
 
     // Calculate bridge fee
@@ -155,15 +273,19 @@ export class BridgeManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       estimatedArrivalTime: Date.now() + 15 * 60 * 1000, // ~15 min
+      idempotencyKey, // #849 - Store the idempotency key
+      requiredConfirmationDepth: this.getConfirmationDepth("ethereum"), // #851 - Store required depth
     };
 
     this.bridgeTransfers.set(transfer.id, {
       ...transfer,
       retriesRemaining: 3,
+      stage: INITIAL_STAGE,
+      attemptCount: 0,
     });
 
     this.logger.info(
-      { transferId: transfer.id, status: transfer.status },
+      { transferId: transfer.id, status: transfer.status, idempotencyKey },
       "Bridge transfer initiated",
     );
 
@@ -274,11 +396,38 @@ export class BridgeManager {
       );
 
       const axelarStatus = response.data.status;
+      const currentDepth = response.data.confirmationDepth || 0;
+      const requiredDepth = this.getConfirmationDepth(transfer.destinationChain);
 
-      // Map Axelar status to our status
+      this.logger.debug(
+        {
+          transferId,
+          axelarStatus,
+          currentDepth,
+          requiredDepth,
+          destinationChain: transfer.destinationChain,
+        },
+        "Checking transfer confirmation depth",
+      );
+
+      // #851 - Only mark as confirmed when required depth is reached
       if (axelarStatus === "executed") {
-        this.setStatus(transfer, "confirmed");
-        transfer.destinationTxHash = response.data.destinationTxHash;
+        // Update current confirmation depth for monitoring
+        transfer.currentConfirmationDepth = currentDepth;
+
+        if (currentDepth >= requiredDepth) {
+          this.setStatus(transfer, "confirmed");
+          transfer.destinationTxHash = response.data.destinationTxHash;
+          this.logger.info(
+            { transferId, currentDepth, requiredDepth },
+            "Transfer confirmed with sufficient depth",
+          );
+        } else {
+          this.logger.info(
+            { transferId, currentDepth, requiredDepth },
+            "Transfer executed but waiting for required confirmation depth",
+          );
+        }
       } else if (axelarStatus === "failed") {
         this.setStatus(transfer, "failed");
       }

@@ -166,6 +166,25 @@ expired and removed).
 refreshes TTL as part of normal writes. Routine user activity keeps share data
 alive without calling `touch_user_ttl`.
 
+### TTL-bearing storage entries
+
+Every entry that costs rent, the parameters used to bump it, and who has to act
+when a bump cannot be funded (#844). Tests for the failure paths live in
+`contracts/vault/src/tests/test_ttl_extension_failures.rs`.
+
+| Entry | Storage | Extended by | Bump parameters | On unfunded bump |
+| --- | --- | --- | --- | --- |
+| `Shares(user)` | Persistent | `deposit`, `withdraw`, `withdraw_all` (implicit, on write); `touch_user_ttl` (explicit) | threshold 100 ledgers → extend-to 100 ledgers | Entry is clamped to the network window; if it has already lapsed `touch_user_ttl` returns `false` and the user must deposit again to restore the entry. Shares and balances are never altered by a failed bump. |
+| `UserStrategy(user)` | Persistent | `set_user_strategy`, `deposit` (default write) | refreshed on write | Strategy preference reads as unset; the agent falls back to the default strategy. No asset impact. |
+| Protocol token approvals (Blend/DEX) | Token contract | `rebalance`, `deposit`/`withdraw` to a protocol | `sequence + ApprovalTtl` (owner-configurable, 1,000–500,000 ledgers) | The approval simply lapses; the next protocol operation re-approves. `set_approval_ttl` publishes `ProtocolApprovalScheduledEvent` (`ttl_sch`) with the expiry ledger and renewal deadline so operators renew in time instead of discovering a failed transaction. |
+| All other keys (`TotalAssets`, `TotalShares`, `Owner`, …) | Instance | any state-changing call | instance TTL is bumped by the host on write | Instance state does not expire on its own; a vault whose instance entry lapses must be restored by the operator, which is why vault accounting is never written to persistent storage. |
+
+**Operator recovery.** The only entry whose loss is user-visible is
+`Shares(user)`. Because `deposit` recreates it, recovery is a normal deposit -
+no bump, however well funded, can restore an entry that has already expired.
+`touch_user_ttl` therefore reports `false` rather than failing the caller's
+transaction, and a partially funded bump is clamped rather than rejected.
+
 ## DataKey Structure
 
 ```rust

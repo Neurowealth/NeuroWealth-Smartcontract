@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import twilio from 'twilio';
 import pino from 'pino';
 import { hashPhoneNumber } from './cryptoUtils';
+import { runExclusive } from './commandLock';
 
 const logger = pino({ name: 'whatsapp-webhook' });
 
@@ -18,8 +19,6 @@ const MessagingResponse = twilio.twiml.MessagingResponse;
  * Main Webhook Handler for WhatsApp Messages (Twilio HTTP POST)
  */
 export async function handleWhatsAppWebhook(req: Request, res: Response): Promise<void> {
-  const twiml = new MessagingResponse();
-
   const fromNumber = req.body.From || ''; // E.164 format: whatsapp:+1234567890
   const messageBody = req.body.Body || '';
 
@@ -28,17 +27,27 @@ export async function handleWhatsAppWebhook(req: Request, res: Response): Promis
     return;
   }
 
-  // 1. Hash PII (phone number) at rest
+  // Hash PII (phone number) at rest
   const phoneHash = hashPhoneNumber(fromNumber);
 
-  // 2. Enforce per-phone rate limiting
+  // Every command below reads and mutates this user's shared session, OTP,
+  // strategy, and transaction state. Serialize per phone number so
+  // concurrent messages from the same user apply in arrival order instead
+  // of racing; messages from different users still process in parallel.
+  await runExclusive(phoneHash, () => processWhatsAppMessage(phoneHash, messageBody, res));
+}
+
+async function processWhatsAppMessage(phoneHash: string, messageBody: string, res: Response): Promise<void> {
+  const twiml = new MessagingResponse();
+
+  // Enforce per-phone rate limiting
   if (!checkRateLimit(phoneHash)) {
     twiml.message('⚠️ Rate limit exceeded. Please wait a minute before sending another message.');
     res.type('text/xml').send(twiml.toString());
     return;
   }
 
-  // 3. Get or restore user session
+  // Get or restore user session
   const session = getSession(phoneHash);
   const intent = parseIntent(messageBody);
 

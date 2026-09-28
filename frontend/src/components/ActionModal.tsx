@@ -2,20 +2,33 @@
 
 import React, { useState } from 'react';
 import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
-import { signWithFreighter } from '@/lib/freighter';
+import { signWithFreighter, WalletSigningError, type WalletErrorKind } from '@/lib/freighter';
 import {
-  Server,
+  rpc,
   Contract,
   Address,
   nativeToScVal,
   TransactionBuilder,
-  Networks,
   BASE_FEE,
 } from '@stellar/stellar-sdk';
 
 const RPC_URL = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const NETWORK_PASSPHRASE = process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
 const VAULT_CONTRACT_ID = process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID || 'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
+
+type TxErrorKind = WalletErrorKind | 'submission_failed';
+
+interface TxError {
+  kind: TxErrorKind;
+  message: string;
+}
+
+const TX_ERROR_COPY: Record<TxErrorKind, string> = {
+  wrong_network: 'Wrong network. Switch Freighter to the required Stellar network, then try again.',
+  wallet_disconnected: 'Wallet not connected. Reconnect Freighter and grant this app access, then try again.',
+  submission_failed: 'Transaction failed. Please try again.',
+  unknown: 'Transaction failed. Please try again.',
+};
 
 interface ActionModalProps {
   isOpen: boolean;
@@ -38,7 +51,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string>('');
-  const [txError, setTxError] = useState<string>('');
+  const [txError, setTxError] = useState<TxError | null>(null);
 
   if (!isOpen) return null;
 
@@ -51,61 +64,69 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
     setLoading(true);
     setTxSuccess(false);
-    setTxError('');
+    setTxError(null);
 
     try {
-      let xdr = 'AAAAAgAAAAD...SorobanVaultTx...';
-      if (process.env.NODE_ENV !== 'test') {
-        const server = new Server(RPC_URL);
-        const account = await server.loadAccount(userPublicKey);
-        const contract = new Contract(VAULT_CONTRACT_ID);
-        const amountInBaseUnits = BigInt(Math.round(numAmount * 1e7));
+      const server = new rpc.Server(RPC_URL);
+      const account = await server.getAccount(userPublicKey);
+      const contract = new Contract(VAULT_CONTRACT_ID);
+      const amountInBaseUnits = BigInt(Math.round(numAmount * 1e7));
 
-        const txBuilder = new TransactionBuilder(account, {
-          fee: BASE_FEE,
-          networkPassphrase: NETWORK_PASSPHRASE,
-        });
+      const txBuilder = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      });
 
-        const operation = contract.call(
-          type === 'deposit' ? 'deposit' : 'withdraw',
-          new Address(userPublicKey).toScVal(),
-          nativeToScVal(amountInBaseUnits, { type: 'i128' }),
-        );
+      const operation = contract.call(
+        type === 'deposit' ? 'deposit' : 'withdraw',
+        new Address(userPublicKey).toScVal(),
+        nativeToScVal(amountInBaseUnits, { type: 'i128' }),
+      );
 
-        const transaction = txBuilder
-          .addOperation(operation)
-          .setTimeout(300)
-          .build();
+      const transaction = txBuilder
+        .addOperation(operation)
+        .setTimeout(300)
+        .build();
 
-        const preparedTx = await server.prepareTransaction(transaction);
-        xdr = preparedTx.toXDR();
-      }
+      const preparedTx = await server.prepareTransaction(transaction);
+      const xdr = preparedTx.toXDR();
 
-      const signedXdr = process.env.NODE_ENV === 'test'
-        ? await signWithFreighter(xdr)
-        : await signWithFreighter(xdr, NETWORK_PASSPHRASE);
-      if (!signedXdr) {
-        setTxError('Transaction was not signed.');
+      let signedXdr: string;
+      try {
+        signedXdr = await signWithFreighter(xdr, NETWORK_PASSPHRASE);
+      } catch (err) {
+        if (err instanceof WalletSigningError && err.kind === 'user_rejected') {
+          // A cancelled signature is a normal, recoverable state: reset quietly
+          // and never fabricate a failure transaction hash for it.
+          return;
+        }
+        const kind: WalletErrorKind = err instanceof WalletSigningError ? err.kind : 'unknown';
+        setTxError({ kind, message: TX_ERROR_COPY[kind] });
         return;
       }
 
-      if (process.env.NODE_ENV !== 'test') {
-        const server = new Server(RPC_URL);
-        const result = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE));
-        if (result.status === 'SUCCESS') {
-          setTxHash(result.hash);
-          setTxSuccess(true);
-        } else {
-          setTxError(`Transaction failed: ${result.status}`);
-        }
-      } else {
-        const hash = `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`;
-        setTxHash(hash);
-        setTxSuccess(true);
+      const sendResult = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE));
+
+      if (sendResult.status === 'ERROR' || sendResult.status === 'TRY_AGAIN_LATER') {
+        setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
+        return;
       }
-    } catch (err: any) {
+
+      // The network has now observed this transaction - the hash is real and must
+      // be preserved even while confirmation is still pending, so a later polling
+      // step can't relabel a genuine submission as a failure.
+      setTxHash(sendResult.hash);
+
+      const confirmation = await server.pollTransaction(sendResult.hash, { attempts: 10 });
+
+      if (confirmation.status === 'SUCCESS') {
+        setTxSuccess(true);
+      } else {
+        setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
+      }
+    } catch (err) {
       console.error('Transaction execution failed:', err);
-      setTxError('Transaction failed. Please try again.');
+      setTxError({ kind: 'unknown', message: TX_ERROR_COPY.unknown });
     } finally {
       setLoading(false);
     }
@@ -115,7 +136,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     setAmount('');
     setTxSuccess(false);
     setTxHash('');
-    setTxError('');
+    setTxError(null);
 
     onClose();
   };
@@ -216,9 +237,19 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             </div>
 
             {txError && (
-              <div role="alert" className="mb-4 flex items-start gap-2 text-xs text-red-400 bg-red-500/10 p-3 rounded-xl border border-red-500/20">
-                <ShieldAlert size={16} className="mt-0.5 shrink-0" />
-                <span>{txError}</span>
+              <div
+                role="alert"
+                className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl p-3 mb-4"
+              >
+                <ShieldAlert size={16} className="shrink-0 mt-0.5" />
+                <div>
+                  <p>{txError.message}</p>
+                  {txHash && (
+                    <p className="mt-1 font-mono text-rose-400/80">
+                      Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 
