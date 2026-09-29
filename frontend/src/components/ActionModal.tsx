@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { signWithFreighter, WalletSigningError, type WalletErrorKind } from '@/lib/freighter';
 import {
@@ -16,12 +16,22 @@ const RPC_URL = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-test
 const NETWORK_PASSPHRASE = process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
 const VAULT_CONTRACT_ID = process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID || 'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
 
-type TxErrorKind = WalletErrorKind | 'submission_failed';
+type TxErrorKind = Exclude<WalletErrorKind, 'user_rejected'> | 'submission_failed';
 
 interface TxError {
   kind: TxErrorKind;
   message: string;
 }
+
+type ActionType = 'deposit' | 'withdraw';
+type SubmissionPhase = 'idle' | 'preparing' | 'signing' | 'confirming';
+
+interface ActionSubmission {
+  phase: SubmissionPhase;
+  requestId: string | null;
+}
+
+type ActionSubmissions = Record<ActionType, ActionSubmission>;
 
 const TX_ERROR_COPY: Record<TxErrorKind, string> = {
   wrong_network: 'Wrong network. Switch Freighter to the required Stellar network, then try again.',
@@ -33,7 +43,7 @@ const TX_ERROR_COPY: Record<TxErrorKind, string> = {
 interface ActionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  type: 'deposit' | 'withdraw';
+  type: ActionType;
   userPublicKey: string | null;
   balance: number;
   exchangeRate: number;
@@ -48,23 +58,38 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   exchangeRate
 }) => {
   const [amount, setAmount] = useState<string>('');
-  const [loading, setLoading] = useState<boolean>(false);
+  const activeSubmissions = useRef<Record<ActionType, string | null>>({ deposit: null, withdraw: null });
+  const [submissions, setSubmissions] = useState<ActionSubmissions>({
+    deposit: { phase: 'idle', requestId: null },
+    withdraw: { phase: 'idle', requestId: null },
+  });
   const [txSuccess, setTxSuccess] = useState<boolean>(false);
   const [txHash, setTxHash] = useState<string>('');
   const [txError, setTxError] = useState<TxError | null>(null);
 
   if (!isOpen) return null;
 
+  const submission = submissions[type];
+  const loading = submission.phase !== 'idle';
   const numAmount = parseFloat(amount) || 0;
   const estimatedShares = (numAmount / exchangeRate).toFixed(4);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userPublicKey || numAmount <= 0) return;
+    if (!userPublicKey || numAmount <= 0 || activeSubmissions.current[type]) return;
 
-    setLoading(true);
+    const actionType = type;
+    const requestId = crypto.randomUUID();
+    activeSubmissions.current[actionType] = requestId;
+    setSubmissions((current) => ({
+      ...current,
+      [actionType]: { phase: 'preparing', requestId },
+    }));
+
     setTxSuccess(false);
     setTxError(null);
+    let canRetry = false;
+    let submissionStarted = false;
 
     try {
       const server = new rpc.Server(RPC_URL);
@@ -91,6 +116,11 @@ export const ActionModal: React.FC<ActionModalProps> = ({
       const preparedTx = await server.prepareTransaction(transaction);
       const xdr = preparedTx.toXDR();
 
+      setSubmissions((current) => ({
+        ...current,
+        [actionType]: { phase: 'signing', requestId },
+      }));
+
       let signedXdr: string;
       try {
         signedXdr = await signWithFreighter(xdr, NETWORK_PASSPHRASE);
@@ -98,17 +128,25 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         if (err instanceof WalletSigningError && err.kind === 'user_rejected') {
           // A cancelled signature is a normal, recoverable state: reset quietly
           // and never fabricate a failure transaction hash for it.
+          canRetry = true;
           return;
         }
-        const kind: WalletErrorKind = err instanceof WalletSigningError ? err.kind : 'unknown';
+        const kind = err instanceof WalletSigningError && err.kind !== 'user_rejected' ? err.kind : 'unknown';
         setTxError({ kind, message: TX_ERROR_COPY[kind] });
+        canRetry = true;
         return;
       }
 
+      setSubmissions((current) => ({
+        ...current,
+        [actionType]: { phase: 'confirming', requestId },
+      }));
+      submissionStarted = true;
       const sendResult = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE));
 
       if (sendResult.status === 'ERROR' || sendResult.status === 'TRY_AGAIN_LATER') {
         setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
+        canRetry = true;
         return;
       }
 
@@ -121,22 +159,33 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
       if (confirmation.status === 'SUCCESS') {
         setTxSuccess(true);
-      } else {
+        canRetry = true;
+      } else if (confirmation.status === 'FAILED') {
         setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
+        canRetry = true;
       }
     } catch (err) {
       console.error('Transaction execution failed:', err);
       setTxError({ kind: 'unknown', message: TX_ERROR_COPY.unknown });
+      canRetry = !submissionStarted;
     } finally {
-      setLoading(false);
+      if (canRetry && activeSubmissions.current[actionType] === requestId) {
+        activeSubmissions.current[actionType] = null;
+        setSubmissions((current) => ({
+          ...current,
+          [actionType]: { phase: 'idle', requestId: null },
+        }));
+      }
     }
   };
 
   const handleResetAndClose = () => {
-    setAmount('');
-    setTxSuccess(false);
-    setTxHash('');
-    setTxError(null);
+    if (!loading) {
+      setAmount('');
+      setTxSuccess(false);
+      setTxHash('');
+      setTxError(null);
+    }
 
     onClose();
   };
@@ -253,15 +302,29 @@ export const ActionModal: React.FC<ActionModalProps> = ({
               </div>
             )}
 
+            {loading && submission.phase === 'confirming' && txHash && (
+              <div role="status" className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-4">
+                <p>Transaction submitted; confirmation is still pending.</p>
+                <p className="mt-1 font-mono text-amber-200/80">
+                  Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+                </p>
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={loading || numAmount <= 0}
+              data-client-request-id={submission.requestId ?? undefined}
               className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
                 <>
                   <Loader2 className="animate-spin" size={18} />
-                  <span>Signing with Freighter...</span>
+                  <span>
+                    {submission.phase === 'preparing' && 'Preparing transaction...'}
+                    {submission.phase === 'signing' && 'Signing with Freighter...'}
+                    {submission.phase === 'confirming' && 'Confirming transaction...'}
+                  </span>
                 </>
               ) : (
                 <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
