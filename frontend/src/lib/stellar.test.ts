@@ -1,6 +1,23 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fetchVaultState, shortenAddress, server } from './stellar';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Keypair, nativeToScVal } from '@stellar/stellar-sdk';
+
+/** stellar.ts reads NEXT_PUBLIC_VAULT_CONTRACT_ID at module load and throws if
+ * unset, so the env must be stubbed and the module freshly imported per test. */
+async function importStellar() {
+  vi.resetModules();
+  return import('./stellar');
+}
+
+describe('stellar module env validation', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('throws at import time when NEXT_PUBLIC_VAULT_CONTRACT_ID is unset', async () => {
+    vi.stubEnv('NEXT_PUBLIC_VAULT_CONTRACT_ID', '');
+    await expect(importStellar()).rejects.toThrow(/NEXT_PUBLIC_VAULT_CONTRACT_ID must be set/);
+  });
+});
 
 describe('stellar lib fetchVaultState (#753)', () => {
   const dummyUser = Keypair.random().publicKey();
@@ -10,6 +27,7 @@ describe('stellar lib fetchVaultState (#753)', () => {
   });
 
   it('returns default zero state when userAddress is not supplied', async () => {
+    const { fetchVaultState, server } = await importStellar();
     const simulateSpy = vi.spyOn(server, 'simulateTransaction');
     const state = await fetchVaultState();
 
@@ -23,6 +41,7 @@ describe('stellar lib fetchVaultState (#753)', () => {
   });
 
   it('fetches and returns live on-chain values when userAddress is supplied', async () => {
+    const { fetchVaultState, server } = await importStellar();
     vi.spyOn(server, 'simulateTransaction').mockImplementation(async (tx: any) => {
       const op = tx.operations[0];
       const fnName = typeof op.func?._value?.functionName === 'function'
@@ -57,6 +76,7 @@ describe('stellar lib fetchVaultState (#753)', () => {
   });
 
   it('maps conservative and balanced strategies correctly', async () => {
+    const { fetchVaultState, server } = await importStellar();
     vi.spyOn(server, 'simulateTransaction').mockImplementation(async (tx: any) => {
       const op = tx.operations[0];
       const fnName = typeof op.func?._value?.functionName === 'function'
@@ -89,6 +109,7 @@ describe('stellar lib fetchVaultState (#753)', () => {
   });
 
   it('falls back to safe defaults when RPC throws or simulation fails', async () => {
+    const { fetchVaultState, server } = await importStellar();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(server, 'simulateTransaction').mockRejectedValue(new Error('RPC connection failed'));
 
@@ -102,10 +123,24 @@ describe('stellar lib fetchVaultState (#753)', () => {
     });
     warnSpy.mockRestore();
   });
+});
 
-  it('shortenAddress shortens long public keys', () => {
-    const shortened = shortenAddress(dummyUser);
-    expect(shortened).toBe(`${dummyUser.substring(0, 6)}...${dummyUser.substring(dummyUser.length - 4)}`);
+describe('shortenAddress', () => {
+  const USER_ADDRESS = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';
+
+  it('shortens long public keys', async () => {
+    const { shortenAddress } = await importStellar();
+    const shortened = shortenAddress(USER_ADDRESS);
+    expect(shortened).toBe(`${USER_ADDRESS.substring(0, 6)}...${USER_ADDRESS.substring(USER_ADDRESS.length - 4)}`);
+  });
+
+  it('respects a custom character count', async () => {
+    const { shortenAddress } = await importStellar();
+    expect(shortenAddress(USER_ADDRESS, 6)).toBe('GABCDEFG...567890');
+  });
+
+  it('returns an empty string for an empty address', async () => {
+    const { shortenAddress } = await importStellar();
     expect(shortenAddress('')).toBe('');
   });
 });

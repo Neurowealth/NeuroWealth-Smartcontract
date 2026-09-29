@@ -1,19 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getEarningsSummary, getPortfolioValueHistory, getRecentTransactions } from './database';
-import { supabase } from './supabase';
-import { server } from './stellar';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }));
 
 vi.mock('./supabase', () => ({
-  supabase: {
-    from: vi.fn(() => ({
-      select: vi.fn().mockReturnThis(),
-      eq: vi.fn().mockReturnThis(),
-      single: vi.fn(),
-      order: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-      gte: vi.fn().mockReturnThis(),
-    })),
-  },
+  supabase: { from: fromMock },
 }));
 
 vi.mock('./stellar', () => ({
@@ -23,65 +13,185 @@ vi.mock('./stellar', () => ({
   },
 }));
 
-describe('database', () => {
-  const originalEnv = process.env;
+import { getEarningsSummary, getPortfolioValueHistory, getRecentTransactions } from './database';
+import { server } from './stellar';
 
+/** Builds a thenable chainable query mock: any method returns itself, `single()`
+ * and awaiting the chain both resolve to `result`. */
+function chainable(result: { data: unknown }) {
+  const chain: any = {
+    select: vi.fn(() => chain),
+    eq: vi.fn(() => chain),
+    gte: vi.fn(() => chain),
+    order: vi.fn(() => chain),
+    limit: vi.fn(() => chain),
+    single: vi.fn(() => Promise.resolve(result)),
+    then: (resolve: (value: unknown) => unknown) => resolve(result),
+  };
+  return chain;
+}
+
+const USER_ADDRESS = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890';
+
+describe('getEarningsSummary', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    process.env = { ...originalEnv };
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co');
   });
 
-  describe('getEarningsSummary', () => {
-    it('returns zeros if no userAddress provided', async () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://localhost';
-      const result = await getEarningsSummary();
-      expect(result).toEqual({ today: 0, week: 0, month: 0 });
-    });
-
-    it('returns zeros if supabaseUrl is missing', async () => {
-      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const result = await getEarningsSummary('address');
-      expect(result).toEqual({ today: 0, week: 0, month: 0 });
-    });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fromMock.mockReset();
   });
 
-  describe('getRecentTransactions', () => {
-    it('uses fallback RPC when supabaseUrl is missing', async () => {
-      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-      process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID = 'contract_id';
-      
-      vi.mocked(server.getLatestLedger).mockResolvedValue({ sequence: 100000 } as any);
-      vi.mocked(server.getEvents).mockResolvedValue({ events: [] } as any);
+  it('returns zeros when no user address is given', async () => {
+    await expect(getEarningsSummary(undefined)).resolves.toEqual({ today: 0, week: 0, month: 0 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
 
-      const result = await getRecentTransactions('address');
-      expect(result).toEqual([]);
-      expect(server.getEvents).toHaveBeenCalled();
-    });
+  it('returns zeros when supabase is not configured', async () => {
+    vi.unstubAllEnvs();
+    await expect(getEarningsSummary(USER_ADDRESS)).resolves.toEqual({ today: 0, week: 0, month: 0 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
 
-    it('uses supabase when configured', async () => {
-      process.env.NEXT_PUBLIC_SUPABASE_URL = 'http://localhost';
-      
-      const mockSingle = vi.fn().mockResolvedValue({ data: { id: 'user_id' } });
-      const mockEq = vi.fn().mockReturnValue({ single: mockSingle });
-      const mockSelect = vi.fn().mockReturnValue({ eq: mockEq });
-      
-      (supabase.from as any).mockReturnValueOnce({ select: mockSelect });
+  it('returns zeros when the user is not found', async () => {
+    fromMock.mockReturnValueOnce(chainable({ data: null }));
 
-      // Mock for deposits/withdrawals
-      (supabase.from as any).mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          eq: vi.fn().mockReturnValue({
-            order: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue({ data: [] }),
-            })
-          })
-        })
-      });
+    await expect(getEarningsSummary(USER_ADDRESS)).resolves.toEqual({ today: 0, week: 0, month: 0 });
+  });
 
-      const result = await getRecentTransactions('address');
-      expect(result).toEqual([]);
-      expect(supabase.from).toHaveBeenCalledWith('users');
-      expect(server.getEvents).not.toHaveBeenCalled();
-    });
+  it('returns zeros when there is no earnings history', async () => {
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))
+      .mockReturnValueOnce(chainable({ data: [] }));
+
+    await expect(getEarningsSummary(USER_ADDRESS)).resolves.toEqual({ today: 0, week: 0, month: 0 });
+  });
+
+  it('aggregates today/week/month totals from earnings history', async () => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const earlierThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))
+      .mockReturnValueOnce(
+        chainable({
+          data: [
+            { daily_earnings: '10.5', date: today.toISOString() },
+            { daily_earnings: '5.25', date: earlierThisMonth.toISOString() },
+          ],
+        }),
+      );
+
+    const result = await getEarningsSummary(USER_ADDRESS);
+
+    expect(result.month).toBe(15.75);
+    expect(result.today).toBeGreaterThanOrEqual(10.5);
+  });
+});
+
+describe('getPortfolioValueHistory', () => {
+  beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fromMock.mockReset();
+  });
+
+  it('returns an empty array when no user address is given', async () => {
+    await expect(getPortfolioValueHistory(undefined)).resolves.toEqual([]);
+  });
+
+  it('returns an empty array when the user is not found', async () => {
+    fromMock.mockReturnValueOnce(chainable({ data: null }));
+
+    await expect(getPortfolioValueHistory(USER_ADDRESS)).resolves.toEqual([]);
+  });
+
+  it('returns an empty array when there are no snapshots', async () => {
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))
+      .mockReturnValueOnce(chainable({ data: [] }));
+
+    await expect(getPortfolioValueHistory(USER_ADDRESS)).resolves.toEqual([]);
+  });
+
+  it('maps snapshots into chart points with a computed yield delta', async () => {
+    fromMock.mockReturnValueOnce(chainable({ data: { id: 'user-1' } })).mockReturnValueOnce(
+      chainable({
+        data: [
+          { total_assets: '100', timestamp: '2026-01-01T00:00:00Z' },
+          { total_assets: '110.5', timestamp: '2026-01-02T00:00:00Z' },
+        ],
+      }),
+    );
+
+    const result = await getPortfolioValueHistory(USER_ADDRESS);
+
+    expect(result).toEqual([
+      { date: 'Jan 1', value: 100, yield: 100 },
+      { date: 'Jan 2', value: 110.5, yield: 10.5 },
+    ]);
+  });
+});
+
+describe('getRecentTransactions', () => {
+  beforeEach(() => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://example.supabase.co');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fromMock.mockReset();
+  });
+
+  it('returns an empty array when no user address is given', async () => {
+    await expect(getRecentTransactions(undefined)).resolves.toEqual([]);
+  });
+
+  it('returns an empty array when the user is not found', async () => {
+    fromMock.mockReturnValueOnce(chainable({ data: null }));
+
+    await expect(getRecentTransactions(USER_ADDRESS)).resolves.toEqual([]);
+  });
+
+  it('falls back to Soroban RPC when supabase is not configured', async () => {
+    vi.unstubAllEnvs();
+    vi.mocked(server.getLatestLedger).mockResolvedValue({ sequence: 100000 } as any);
+    vi.mocked(server.getEvents).mockResolvedValue({ events: [] } as any);
+
+    const result = await getRecentTransactions(USER_ADDRESS);
+
+    expect(result).toEqual([]);
+    expect(server.getEvents).toHaveBeenCalled();
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('merges deposits and withdrawals sorted by timestamp descending, capped at 10', async () => {
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))
+      .mockReturnValueOnce(
+        chainable({
+          data: [
+            { id: 'd1', amount: '50', tx_hash: 'txd1', timestamp: '2026-01-01T00:00:00Z' },
+          ],
+        }),
+      )
+      .mockReturnValueOnce(
+        chainable({
+          data: [
+            { id: 'w1', amount: '20', tx_hash: 'txw1', timestamp: '2026-01-02T00:00:00Z' },
+          ],
+        }),
+      );
+
+    const result = await getRecentTransactions(USER_ADDRESS);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ id: 'w1', type: 'withdrawal', amount: 20, status: 'confirmed' });
+    expect(result[1]).toMatchObject({ id: 'd1', type: 'deposit', amount: 50, status: 'confirmed' });
   });
 });
