@@ -3197,6 +3197,37 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
+        // Flash-loan protection: enforce minimum holding period (#659, #894).
+        // If the owner has configured a non-zero MinHoldingPeriod, reject any
+        // withdrawal attempted before `last_deposit_ledger + min_holding_period`.
+        let min_holding: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinHoldingPeriod)
+            .unwrap_or(0_u32);
+        if min_holding > 0 {
+            if let Some(last_deposit_ledger) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, u32>(&DataKey::LastDepositLedger(user.clone()))
+            {
+                let current_ledger = env.ledger().sequence();
+                let elapsed = current_ledger.saturating_sub(last_deposit_ledger);
+                if elapsed < min_holding {
+                    env.events().publish(
+                        (symbol_short!("fl_block"), user.clone()),
+                        FlashLoanProtectionTriggeredEvent {
+                            user: user.clone(),
+                            last_deposit_ledger,
+                            current_ledger,
+                            min_holding_period: min_holding,
+                        },
+                    );
+                    panic_with_error!(&env, VaultError::HoldingPeriodNotElapsed);
+                }
+            }
+        }
+
         // Check if user has locked shares (#636)
         let locked_shares: i128 = env
             .storage()
