@@ -296,3 +296,38 @@ fn test_withdraw_emits_event() {
         "Event amount should match withdrawal"
     );
 }
+
+
+#[test]
+fn test_withdraw_all_enforces_min_holding_period() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // Set minimum holding period to 10 ledgers
+    let min_holding = 10_u32;
+    client.set_min_holding_period(&min_holding);
+    assert_eq!(client.get_min_holding_period(), min_holding);
+
+    let user = Address::generate(&env);
+    let deposit_amount = 5_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+
+    // Attempting withdraw_all in the same ledger must fail with HoldingPeriodNotElapsed (error 75)
+    let res = client.try_withdraw_all(&user);
+    assert!(res.is_err(), "withdraw_all must fail when min holding period has not elapsed");
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        VaultError::HoldingPeriodNotElapsed.into()
+    );
+
+    // Advance ledger sequence by 10 ledgers
+    env.ledger().set_sequence_number(env.ledger().sequence() + min_holding);
+
+    // Now withdraw_all must succeed
+    let withdrawn = client.withdraw_all(&user);
+    assert!(withdrawn > 0, "withdraw_all should succeed after holding period has elapsed");
+    assert_eq!(client.get_shares(&user), 0, "All shares should be burned");
+}
