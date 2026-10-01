@@ -15,7 +15,7 @@ use crate::{
     AssetConfig, AssetDepositEvent, AssetWithdrawEvent, SupportedAssetsUpdatedEvent,
     TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW, TOPIC_SUPPORTED_ASSETS_UPDATED,
 };
-use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, TryFromVal};
+use soroban_sdk::{testutils::Address as _, vec, Address, Env, Symbol, TryFromVal};
 
 const USDC: &str = "USDC";
 const USDT: &str = "USDT";
@@ -91,6 +91,7 @@ fn test_add_supported_asset_duplicate_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #83)")]
 fn test_deposit_asset_unsupported_panics() {
     let env = Env::default();
     env.mock_all_auths();
@@ -103,11 +104,79 @@ fn test_deposit_asset_unsupported_panics() {
     let usdt_client = TestTokenClient::new(&env, &usdt_token);
     usdt_client.mint(&user, &100_000_000);
 
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.deposit_asset(&user, &asset(&env, USDT), &100_000_000);
-    }));
-    assert!(res.is_err(), "deposit into an unsupported asset must panic");
-}#[test]
+    client.deposit_asset(&user, &asset(&env, USDT), &100_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_batch_deposit_rejects_unconfigured_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    let unsupported_token = env.register_contract(None, TestToken);
+
+    client.batch_deposit(&user, &vec![&env, (unsupported_token, 100_000_000_i128)]);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_blend_supply_rejects_unconfigured_token_before_external_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let unsupported_token = env.register_contract(None, TestToken);
+    let pool = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        crate::BlendPoolClient::supply(&env, &pool, &unsupported_token, 1, &contract_id)
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_blend_redemption_rejects_unconfigured_token_before_external_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let unsupported_token = env.register_contract(None, TestToken);
+    let pool = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        crate::BlendPoolClient::withdraw(&env, &pool, &unsupported_token, 1, &contract_id)
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_dex_supply_rejects_unconfigured_token_before_external_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let unsupported_token = env.register_contract(None, TestToken);
+    let pool = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        crate::DexPoolClient::supply(&env, &pool, &unsupported_token, 1, 0, &contract_id)
+    });
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #83)")]
+fn test_dex_redemption_rejects_unconfigured_token_before_external_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let unsupported_token = env.register_contract(None, TestToken);
+    let pool = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        crate::DexPoolClient::withdraw(&env, &pool, &unsupported_token, 1, 0, &contract_id)
+    });
+}
+
+#[test]
 fn test_deposit_asset_mints_independent_shares() {
     let env = Env::default();
     env.mock_all_auths();

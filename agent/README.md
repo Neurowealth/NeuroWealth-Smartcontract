@@ -28,7 +28,15 @@ Key environment variables include:
 - `SOROBAN_RPC_URL` / `SOROBAN_NETWORK_PASSPHRASE` / `VAULT_CONTRACT_ID` — Stellar & Soroban RPC endpoint and vault address.
 - `DATABASE_URL` — PostgreSQL connection string for user strategies, rebalances, and ledger cursor.
 - `SOROBAN_SECRET_KEY` — Stellar secret key for signing automated rebalance and compounding transactions.
+- `SOROBAN_PUBLIC_KEY` — optional source account for dry-run simulations when no signing key is configured.
+- `AGENT_EXECUTION_MODE` — required explicit `dry-run` or `live`; dry-run simulates proposed contract calls and never submits them.
 - `PORT` / `METRICS_PORT` — Agent API and metrics server ports.
+
+The agent rejects legacy `DRY_RUN` and `LIVE_MODE` flags to avoid mixed-mode
+configuration. Live rebalance submission is idempotent by decision snapshot;
+ambiguous RPC timeouts stay in reconciliation until the transaction hash is
+found finalized or a rejection is confirmed. A rejected decision can only be
+retried with an explicit reason, which is recorded with the new attempt.
 
 ---
 
