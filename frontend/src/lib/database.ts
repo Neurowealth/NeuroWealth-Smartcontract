@@ -175,7 +175,7 @@ async function getRecentTransactionsFromRpc(userAddress: string): Promise<Transa
     const latestLedger = await server.getLatestLedger();
     const startLedger = Math.max(1, latestLedger.sequence - 10000); // look back ~10000 ledgers
 
-    const request: rpc.Api.GetEventsRequest = {
+    const request: Parameters<typeof server.getEvents>[0] = {
       startLedger,
       filters: [{ type: 'contract', contractIds: [contractId] }],
       limit: 100,

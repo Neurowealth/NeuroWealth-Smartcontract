@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from 'react';
 import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { ErrorBoundary } from './ErrorBoundary';
 import { signWithFreighter, WalletSigningError, type WalletErrorKind } from '@/lib/freighter';
 import {
   rpc,
@@ -34,6 +35,7 @@ interface ActionSubmission {
 type ActionSubmissions = Record<ActionType, ActionSubmission>;
 
 const TX_ERROR_COPY: Record<TxErrorKind, string> = {
+  user_rejected: 'Transaction signing was cancelled in Freighter.',
   wrong_network: 'Wrong network. Switch Freighter to the required Stellar network, then try again.',
   wallet_disconnected: 'Wallet not connected. Reconnect Freighter and grant this app access, then try again.',
   submission_failed: 'Transaction failed. Please try again.',
@@ -200,6 +202,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
           <X size={20} />
         </button>
 
+        <ErrorBoundary surfaceName="transaction-modal" onReset={() => setTxError(null)}>
         {txSuccess ? (
           <div className="text-center py-6">
             <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
@@ -332,6 +335,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             </button>
           </form>
         )}
+        </ErrorBoundary>
       </div>
     </div>
   );

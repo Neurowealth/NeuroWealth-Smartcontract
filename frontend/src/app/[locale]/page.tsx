@@ -8,6 +8,7 @@ import { StrategyBadge } from '@/components/StrategyBadge';
 import { PortfolioChart } from '@/components/PortfolioChart';
 import { TransactionHistory } from '@/components/TransactionHistory';
 import { ActionModal } from '@/components/ActionModal';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { MessageSquare, Bot, ArrowRight, ShieldCheck, Zap, Layers, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
@@ -137,56 +138,62 @@ export default function DashboardPage() {
             </div>
           )}
 
-          <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {loading ? (
-              <>
-                <SkeletonCard />
-                <SkeletonCard />
-                <SkeletonCard />
-              </>
-            ) : (
-              <>
-                <BalanceCard
-                  balance={vaultState.balance}
-                  usdEquivalent={vaultState.balance * 1.0}
-                  exchangeRate={vaultState.exchangeRate}
-                  onOpenDeposit={() => openModal('deposit')}
-                  onOpenWithdraw={() => openModal('withdraw')}
-                  isConnected={!!publicKey}
-                />
-                <EarningsCard earnings={earnings} isConnected={!!publicKey} />
-                <StrategyBadge
-                  strategy={vaultState.strategy}
-                  apy={vaultState.apy}
-                  onSelectStrategy={(newSt) => setVaultState((prev) => ({ ...prev, strategy: newSt }))}
-                />
-              </>
-            )}
-          </section>
-
-          <section id="strategies">
-            {loading ? (
-              <div className="glass-panel rounded-2xl p-6 h-64 flex items-center justify-center">
-                <Loader2 className="animate-spin text-emerald-400" size={24} />
-              </div>
-            ) : (
-              <PortfolioChart data={chartData.length > 0 ? chartData : [
-                { date: 'Jul 21', value: 1000, yield: 0 },
-                { date: 'Jul 24', value: 1200, yield: 15 },
-                { date: 'Jul 28', value: 1450, yield: 45 }
-              ]} />
-            )}
-          </section>
-
-          <section id="history" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
+          <ErrorBoundary surfaceName="portfolio" onReset={loadData}>
+            <section id="dashboard" className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {loading ? (
-                <div className="glass-panel rounded-2xl p-6 h-48 flex items-center justify-center">
+                <>
+                  <SkeletonCard />
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </>
+              ) : (
+                <>
+                  <BalanceCard
+                    balance={vaultState.balance}
+                    usdEquivalent={vaultState.balance * 1.0}
+                    exchangeRate={vaultState.exchangeRate}
+                    onOpenDeposit={() => openModal('deposit')}
+                    onOpenWithdraw={() => openModal('withdraw')}
+                    isConnected={!!publicKey}
+                  />
+                  <EarningsCard earnings={earnings} isConnected={!!publicKey} />
+                  <StrategyBadge
+                    strategy={vaultState.strategy}
+                    apy={vaultState.apy}
+                    onSelectStrategy={(newSt) => setVaultState((prev) => ({ ...prev, strategy: newSt }))}
+                  />
+                </>
+              )}
+            </section>
+          </ErrorBoundary>
+
+          <ErrorBoundary surfaceName="strategies" onReset={loadData}>
+            <section id="strategies">
+              {loading ? (
+                <div className="glass-panel rounded-2xl p-6 h-64 flex items-center justify-center">
                   <Loader2 className="animate-spin text-emerald-400" size={24} />
                 </div>
               ) : (
-                <TransactionHistory transactions={transactions} />
+                <PortfolioChart data={chartData.length > 0 ? chartData : [
+                  { date: 'Jul 21', value: 1000, yield: 0 },
+                  { date: 'Jul 24', value: 1200, yield: 15 },
+                  { date: 'Jul 28', value: 1450, yield: 45 }
+                ]} />
               )}
+            </section>
+          </ErrorBoundary>
+
+          <section id="history" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <ErrorBoundary surfaceName="transactions" onReset={loadData}>
+                {loading ? (
+                  <div className="glass-panel rounded-2xl p-6 h-48 flex items-center justify-center">
+                    <Loader2 className="animate-spin text-emerald-400" size={24} />
+                  </div>
+                ) : (
+                  <TransactionHistory transactions={transactions} />
+                )}
+              </ErrorBoundary>
             </div>
 
             <div id="whatsapp" className="glass-panel-interactive rounded-2xl p-6 relative overflow-hidden flex flex-col justify-between border border-emerald-500/20">
