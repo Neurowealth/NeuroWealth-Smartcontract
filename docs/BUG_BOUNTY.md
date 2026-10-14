@@ -168,14 +168,17 @@ practical exploitability.
 
 ## Reporting Channel
 
-**Primary:** Email `security@neurowealth.io` with subject line:
-```
-[BUG BOUNTY] <one-line summary>
-```
+**Primary:** Use [GitHub Private Vulnerability Reporting](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
+via the **"Report a vulnerability"** button on the repository's Security tab.
+This channel is encrypted end-to-end and keeps all details private until a
+coordinated disclosure date is agreed.
 
-**Alternative (for program status / questions only):** Open a
-[GitHub Security Advisory](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
-via the "Report a vulnerability" button on the repo's Security tab.
+> **Note (Issue #897):** The previous primary contact address
+> (`security@neurowealth.io`) is currently unreachable — the domain does not
+> resolve in DNS and all email to that address bounces. GitHub Private
+> Vulnerability Reporting is the **only** active private channel until a new
+> security email address is restored. This note will be removed once a working
+> email address is published.
 
 **Do NOT** open a public GitHub issue for a security vulnerability. Doing so
 will disqualify the report from bounty eligibility.
@@ -288,7 +291,7 @@ receive a reduced or no bounty, at our discretion.
 ---
 
 *This policy is subject to change. Material changes will be announced via the
-repository changelog and the `security@neurowealth.io` mailing list.*
+repository changelog and a repository announcement.*
 
 *See also: [`SECURITY.md`](../SECURITY.md) for the full trust model, threat
 analysis, and owner-compromise runbook.*
