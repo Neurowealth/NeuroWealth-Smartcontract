@@ -31,6 +31,7 @@ export default function DashboardPage() {
     exchangeRate: 1.042,
     apy: 8.4
   });
+  const [optimisticBalanceDelta, setOptimisticBalanceDelta] = useState(0);
   const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
@@ -50,6 +51,7 @@ export default function DashboardPage() {
   const handleDisconnect = () => {
     setPublicKey(null);
     setError(null);
+    setOptimisticBalanceDelta(0);
   };
 
   const loadData = useCallback(async () => {
@@ -67,6 +69,7 @@ export default function DashboardPage() {
       ]);
 
       setVaultState(state);
+      setOptimisticBalanceDelta(0);
       setEarnings(earnData);
       setChartData(chart);
       setTransactions(txs);
@@ -83,6 +86,7 @@ export default function DashboardPage() {
       loadData();
     } else {
       setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+      setOptimisticBalanceDelta(0);
       setEarnings({ today: 0, week: 0, month: 0 });
       setChartData([]);
       setTransactions([]);
@@ -94,6 +98,7 @@ export default function DashboardPage() {
     setModalType(type);
     setIsModalOpen(true);
   };
+  const displayedBalance = Math.max(0, vaultState.balance + optimisticBalanceDelta);
 
   return (
     <div className="min-h-screen bg-[#080b11] text-slate-100 flex flex-col justify-between">
@@ -149,8 +154,8 @@ export default function DashboardPage() {
               ) : (
                 <>
                   <BalanceCard
-                    balance={vaultState.balance}
-                    usdEquivalent={vaultState.balance * 1.0}
+                    balance={displayedBalance}
+                    usdEquivalent={displayedBalance * 1.0}
                     exchangeRate={vaultState.exchangeRate}
                     onOpenDeposit={() => openModal('deposit')}
                     onOpenWithdraw={() => openModal('withdraw')}
@@ -233,8 +238,10 @@ export default function DashboardPage() {
         onClose={() => setIsModalOpen(false)}
         type={modalType}
         userPublicKey={publicKey}
-        balance={vaultState.balance}
+        balance={displayedBalance}
         exchangeRate={vaultState.exchangeRate}
+        onOptimisticBalanceChange={(delta) => setOptimisticBalanceDelta((current) => current + delta)}
+        onTransactionConfirmed={loadData}
       />
 
       <footer className="border-t border-slate-800/80 bg-[#06080e] py-6 mt-12 text-center text-xs text-slate-400">

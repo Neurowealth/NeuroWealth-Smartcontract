@@ -848,6 +848,23 @@ in the composite yield calculation.
 | `protocol` | `Symbol` | `"blend"` or `"dex"` |
 | `apy_bps` | `u32` | Reported APY in basis points |
 
+### `ApyPredictionSubmittedEvent`
+
+Topic: `apy_pred` (`TOPIC_APY_PREDICTION`)
+
+Published when the authorized agent stores a validated APY forecast. Consumers
+can index the full prediction payload without polling contract storage.
+
+| Field | Type | Description |
+|---|---|---|
+| `protocol` | `Symbol` | Forecast protocol (`blend` or `dex`) |
+| `predicted_apy_bps` | `i128` | Predicted APY, from 0 to 10,000 bps |
+| `apy_1h_bps` | `i128` | One-hour forecast, from 0 to 10,000 bps |
+| `apy_6h_bps` | `i128` | Six-hour forecast, from 0 to 10,000 bps |
+| `apy_24h_bps` | `i128` | 24-hour forecast, from 0 to 10,000 bps |
+| `confidence_bps` | `u32` | Model confidence, from 0 to 10,000 bps |
+| `submitted_at_ledger` | `u32` | Submission ledger |
+
 ## Rate-limit events
 
 ### `RateLimitConfigUpdatedEvent` (`rate_cfg`)

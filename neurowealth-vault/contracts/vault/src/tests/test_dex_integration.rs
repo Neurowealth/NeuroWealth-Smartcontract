@@ -8,8 +8,10 @@
 //! enforcement, protocol switching, and user withdrawals that pull from the DEX.
 
 use super::utils::*;
+use crate::RebalanceEvent;
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, vec, Address, Env, IntoVal, String, Symbol, Val, Vec,
+    symbol_short, testutils::Address as _, vec, Address, Env, IntoVal, String, Symbol, TryFromVal,
+    Val, Vec,
 };
 
 #[test]
@@ -79,6 +81,17 @@ fn test_dex_integration_withdraw_via_rebalance() {
     let events = env.events().all();
     let dex_wd_events = find_events_by_topic(events, &env, Symbol::new(&env, "dex_wd"));
     assert_eq!(dex_wd_events.len(), 1);
+
+    let rebalance_events = find_events_by_topic(env.events().all(), &env, symbol_short!("rebalance"));
+    let none_event = rebalance_events
+        .iter()
+        .filter_map(|(_, _, data)| RebalanceEvent::try_from_val(&env, data).ok())
+        .find(|event| event.protocol == symbol_short!("none"))
+        .expect("none transition should emit a RebalanceEvent");
+    assert_eq!(none_event.amount_attempted, amount);
+    assert_eq!(none_event.amount_moved, amount);
+    assert_eq!(none_event.amount_supplied, 0);
+    assert_eq!(none_event.amount_withdrawn, amount);
 }
 
 #[test]
