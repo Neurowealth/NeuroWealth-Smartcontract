@@ -1861,6 +1861,28 @@ pub struct ApyPrediction {
     pub submitted_at_ledger: u32,
 }
 
+/// Emitted when the agent stores an APY prediction for an allowlisted protocol.
+///
+/// # Topics
+/// - `SymbolShort("apy_pred")` (`TOPIC_APY_PREDICTION`)
+#[contracttype]
+pub struct ApyPredictionSubmittedEvent {
+    /// Protocol this prediction applies to (`"blend"` or `"dex"`).
+    pub protocol: Symbol,
+    /// Predicted APY in basis points.
+    pub predicted_apy_bps: i128,
+    /// 1-hour-ahead APY forecast in basis points.
+    pub apy_1h_bps: i128,
+    /// 6-hour-ahead APY forecast in basis points.
+    pub apy_6h_bps: i128,
+    /// 24-hour-ahead APY forecast in basis points.
+    pub apy_24h_bps: i128,
+    /// Model confidence in basis points.
+    pub confidence_bps: u32,
+    /// Ledger at which this prediction was submitted.
+    pub submitted_at_ledger: u32,
+}
+
 /// Emitted when the off-chain agent reports suspected MEV extraction on a
 /// rebalance transaction (#658).
 ///
@@ -2075,6 +2097,7 @@ const MAX_DEPOSIT_CEILING: i128 = 100_000_000_000_i128;
 pub(crate) const DEFAULT_APPROVAL_TTL: u32 = 100_000;
 const MIN_APPROVAL_TTL: u32 = 1_000;
 const MAX_APPROVAL_TTL: u32 = 500_000;
+const APY_PREDICTION_TTL_EXTEND_TO: u32 = DEFAULT_APPROVAL_TTL;
 
 /// Default circuit-breaker threshold (#439): the number of consecutive failed
 /// rebalances that trips an automatic emergency pause when the owner has not
@@ -2168,7 +2191,8 @@ pub const APPROVAL_RENEWAL_LEAD_LEDGERS: u32 = 5_000;
 
 use topics::{
     TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
-    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APPROVAL_TTL_SCHEDULED,
+    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APY_PREDICTION,
+    TOPIC_APPROVAL_TTL_SCHEDULED,
     TOPIC_APPROVAL_TTL_UPDATED,
     TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
     TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
@@ -4328,34 +4352,14 @@ impl NeuroWealthVault {
             // counter, auto-pausing the vault if the threshold is reached (#439).
             Self::record_rebalance_outcome(&env, &status);
         } else if protocol == symbol_short!("none") {
-            let mut status = symbol_short!("success");
-
-            if current_protocol != symbol_short!("none") {
-                let expected_withdrawal = Self::get_protocol_balance(&env, &current_protocol);
-                amount_attempted = amount_attempted.saturating_add(expected_withdrawal);
-
-                let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
-                amount_withdrawn = amount_withdrawn.saturating_add(withdrawn);
-                amount_moved = amount_moved.saturating_add(withdrawn);
-
-                if expected_withdrawal > 0 {
-                    let remaining_balance = Self::get_protocol_balance(&env, &current_protocol);
-                    if remaining_balance > 0 {
-                        // Protocol exit incomplete — abort gracefully (Issue #145).
-                        env.events().publish(
-                            (TOPIC_REBALANCE_FAILED,),
-                            RebalanceFailedEvent {
-                                from_protocol: current_protocol,
-                                reason: symbol_short!("exit_fail"),
-                            },
-                        );
-                        return;
-                    }
-                }
+            let status = if current_protocol != symbol_short!("none") {
+                // The shared protocol-switch block above already completed and
+                // accounted for the exit. Only finalize the protocol state here.
                 Self::set_current_protocol(&env, symbol_short!("none"));
-            } else if amount_moved == 0 {
-                status = symbol_short!("noop");
-            }
+                symbol_short!("success")
+            } else {
+                symbol_short!("noop")
+            };
 
             env.events().publish(
                 (TOPIC_REBALANCE,),
@@ -6063,12 +6067,45 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_agent(&env);
 
+        Self::require(
+            &env,
+            prediction.protocol == symbol_short!("blend")
+                || prediction.protocol == symbol_short!("dex"),
+            VaultError::UnsupportedProtocol,
+        );
+        Self::require(
+            &env,
+            (0..=10_000).contains(&prediction.predicted_apy_bps)
+                && (0..=10_000).contains(&prediction.apy_1h_bps)
+                && (0..=10_000).contains(&prediction.apy_6h_bps)
+                && (0..=10_000).contains(&prediction.apy_24h_bps)
+                && prediction.confidence_bps <= 10_000,
+            VaultError::InvalidStrategy,
+        );
+
         let key = DataKey::ApyPrediction(prediction.protocol.clone());
         let record = ApyPrediction {
             submitted_at_ledger: env.ledger().sequence(),
             ..prediction
         };
         env.storage().persistent().set(&key, &record);
+        env.storage().persistent().extend_ttl(
+            &key,
+            APY_PREDICTION_TTL_EXTEND_TO,
+            APY_PREDICTION_TTL_EXTEND_TO,
+        );
+        env.events().publish(
+            (TOPIC_APY_PREDICTION,),
+            ApyPredictionSubmittedEvent {
+                protocol: record.protocol,
+                predicted_apy_bps: record.predicted_apy_bps,
+                apy_1h_bps: record.apy_1h_bps,
+                apy_6h_bps: record.apy_6h_bps,
+                apy_24h_bps: record.apy_24h_bps,
+                confidence_bps: record.confidence_bps,
+                submitted_at_ledger: record.submitted_at_ledger,
+            },
+        );
     }
 
     /// Returns the most recent ML model APY prediction for a given protocol,

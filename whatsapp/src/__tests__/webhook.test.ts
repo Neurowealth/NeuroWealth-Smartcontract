@@ -20,6 +20,7 @@ process.env.VAULT_CONTRACT_ID = 'CTEST_VAULT';
 import path from 'node:path';
 
 const capturedMessages: string[] = [];
+const deliveredCodes = new Map<string, string>();
 
 class FakeMessagingResponse {
   message(text: string) {
@@ -36,6 +37,21 @@ const twilioStub = {
   },
   twiml: { MessagingResponse: FakeMessagingResponse },
 };
+
+const otpDeliveryModulePath = require.resolve('../otpDelivery');
+require.cache[otpDeliveryModulePath] = {
+  id: otpDeliveryModulePath,
+  filename: otpDeliveryModulePath,
+  loaded: true,
+  exports: {
+    deliverOTP: async (phoneNumber: string, code: string) => {
+      deliveredCodes.set(phoneNumber, code);
+    },
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as any;
 
 // Inject under both CJS keys twilio uses
 for (const key of [
@@ -90,11 +106,11 @@ function nextPhone(): string {
  * verifies it. Returns the phone number for follow-up calls.
  */
 async function fullVerify(phone: string): Promise<void> {
-  // Step 1: greeting → get OTP
+  // Step 1: greeting → receive OTP through the mocked SMS channel
   await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-  const otpMatch = lastBody.match(/(\d{6})/);
-  assert.ok(otpMatch, 'OTP should be present in the welcome message body');
-  const otp = otpMatch[1];
+  const otp = deliveredCodes.get(phone);
+  assert.ok(otp, 'OTP should be delivered out of band');
+  assert.doesNotMatch(lastBody, new RegExp(otp));
 
   // Step 2: submit OTP
   await handleWhatsAppWebhook(makeReq(phone, otp), makeRes());
@@ -131,8 +147,10 @@ describe('webhook – UNVERIFIED state', () => {
   test('greeting triggers OTP and transitions to AWAITING_OTP', async () => {
     const phone = nextPhone();
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-    assert.match(lastBody, /otp/i);
-    assert.match(lastBody, /\d{6}/); // OTP is embedded in response
+    const otp = deliveredCodes.get(phone);
+    assert.ok(otp, 'OTP should be delivered by SMS');
+    assert.match(lastBody, /sent by sms/i);
+    assert.doesNotMatch(lastBody, new RegExp(otp), 'WhatsApp reply must not contain the OTP');
   });
 
   test('non-greeting in UNVERIFIED state asks user to send "hi"', async () => {
@@ -154,7 +172,7 @@ describe('webhook – AWAITING_OTP state', () => {
     const phone = nextPhone();
     // Get OTP
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-    const otp = lastBody.match(/(\d{6})/)![1];
+    const otp = deliveredCodes.get(phone)!;
     // Submit OTP
     await handleWhatsAppWebhook(makeReq(phone, otp), makeRes());
     assert.match(lastBody, /verified/i);

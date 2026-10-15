@@ -7,7 +7,8 @@ import { runExclusive } from './commandLock';
 const logger = pino({ name: 'whatsapp-webhook' });
 
 import { getSession, updateState, checkRateLimit, UserState } from './stateManager';
-import { generateOTP, verifyOTP } from './otpService';
+import { clearOTP, generateOTP, verifyOTP } from './otpService';
+import { deliverOTP } from './otpDelivery';
 import { createCustodialWallet, getWallet } from './walletService';
 import { parseIntent } from './intentParser';
 import { validateIntent } from './contractLimits';
@@ -34,10 +35,15 @@ export async function handleWhatsAppWebhook(req: Request, res: Response): Promis
   // strategy, and transaction state. Serialize per phone number so
   // concurrent messages from the same user apply in arrival order instead
   // of racing; messages from different users still process in parallel.
-  await runExclusive(phoneHash, () => processWhatsAppMessage(phoneHash, messageBody, res));
+  await runExclusive(phoneHash, () => processWhatsAppMessage(phoneHash, fromNumber, messageBody, res));
 }
 
-async function processWhatsAppMessage(phoneHash: string, messageBody: string, res: Response): Promise<void> {
+async function processWhatsAppMessage(
+  phoneHash: string,
+  fromNumber: string,
+  messageBody: string,
+  res: Response,
+): Promise<void> {
   const twiml = new MessagingResponse();
 
   // Enforce per-phone rate limiting
@@ -57,13 +63,15 @@ async function processWhatsAppMessage(phoneHash: string, messageBody: string, re
     if (session.state === UserState.UNVERIFIED) {
       if (intent.type === 'GREETING' || intent.type === 'UNKNOWN') {
         const otpCode = generateOTP(phoneHash);
-        updateState(phoneHash, UserState.AWAITING_OTP);
-
-        // In production, Twilio SMS/WhatsApp sends this OTP code.
-        // For testing/mocking, we include instructions in response.
-        twiml.message(
-          `👋 Welcome to NeuroWealth AI!\n\nTo secure your wallet, please enter your 6-digit OTP verification code.\n\n🔑 Your OTP code is: ${otpCode}\n(Code expires in 5 minutes)`
-        );
+        try {
+          await deliverOTP(fromNumber.replace(/^whatsapp:/i, ''), otpCode);
+          updateState(phoneHash, UserState.AWAITING_OTP);
+          twiml.message('Your verification code was sent by SMS. Enter it here to continue. It expires in 5 minutes.');
+        } catch {
+          clearOTP(phoneHash);
+          logger.error('OTP SMS delivery failed');
+          twiml.message('We could not send your verification code. Please try again shortly.');
+        }
       } else {
         twiml.message('Welcome to NeuroWealth! Send "hi" to begin account verification.');
       }
