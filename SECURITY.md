@@ -281,6 +281,8 @@ This register documents every owner-only and agent-only capability, the blast ra
 | update_agent | yes | - | - | - |
 | confirm_agent_update | yes | - | - | - |
 | cancel_agent_update | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
 | update_total_assets | - | yes | - | - |
 | deposit | - | - | yes | - |
 | withdraw | - | - | yes | - |
@@ -290,6 +292,7 @@ This register documents every owner-only and agent-only capability, the blast ra
 | pause | yes | - | - | - |
 | emergency_pause | yes | - | - | - |
 | unpause | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
 | set_caps | yes | - | - | - |
 | set_tvl_cap | yes | - | - | - |
 | set_user_deposit_cap | yes | - | - | - |
@@ -303,6 +306,10 @@ This register documents every owner-only and agent-only capability, the blast ra
 | cancel_upgrade | yes | - | - | - |
 | set_blend_pool | yes | - | - | - |
 | set_dex_pool | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| cancel_migration_target | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
@@ -310,6 +317,9 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |
+| set_rate_limit, set_rate_limit_config | yes | - | - | - |
+| set_queue_config | yes | - | - | - |
+| process_withdrawal_queue | - | - | - | anyone (authenticated) |
 | submit_mev_report | - | yes | - | - |
 | get_mev_stats | - | - | - | anyone |
 | set_max_acceptable_mev_loss | yes | - | - | - |
@@ -317,6 +327,46 @@ This register documents every owner-only and agent-only capability, the blast ra
 | get_apy_prediction | - | - | - | anyone |
 | get_vault_health_snapshot | - | - | - | anyone |
 | get_withdrawal_eligibility | - | - | - | anyone |
+
+### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)
+
+The table above names the caller for every privileged function, but not
+whether that call is delayed by a timelock or still reachable while the
+vault is paused. Both properties matter for an incident responder deciding
+whether a given function can be used to make the situation worse (or
+better) right now. The table below covers the functions added since the
+table above was last extended; `update_agent` and `switch_to_standby_agent`
+are included for contrast, since together they are the timelock gap this
+issue asks to be noted explicitly.
+
+| Function | Caller | Timelocked? | Allowed while paused? |
+|----------|--------|-------------|------------------------|
+| `update_agent` | Owner | **Yes** (`AGENT_TIMELOCK_LEDGERS`, step 1 of `update_agent`/`confirm_agent_update`) | Yes (no pause check) |
+| `update_standby_agent` | Owner | No | Yes (no pause check) |
+| `switch_to_standby_agent` | Owner | **No** — instant, by design (see function doc: "no timelock, no 24-hour wait") | Yes (no pause check) |
+| `schedule_migration_target` | Owner | Yes (`MIGRATION_TARGET_TIMELOCK_LEDGERS`, step 1 of 2) | Yes (no pause check) |
+| `execute_migration_target` | Owner | Yes (must wait for the scheduled delay to elapse) | Yes (no pause check) |
+| `cancel_migration_target` | Owner | No (cancels a pending timelock; not itself delayed) | Yes (no pause check) |
+| `set_migration_paused` | Owner | No | Yes (no pause check) |
+| `reset_circuit_breaker` | Owner | No | **Yes, deliberately** — its entire purpose is to clear `Paused` |
+| `process_withdrawal_queue` | Anyone (authenticated; the `agent` parameter is accepted but never checked against the stored agent address — see function doc, "kept for ABI compatibility") | No | Yes (no pause check) |
+| `set_min_holding_period` | Owner | No | Yes (no pause check) |
+| `set_rate_limit`, `set_rate_limit_config` | Owner | No | Yes (no pause check) |
+| `set_queue_config` | Owner | No | Yes (no pause check) |
+
+**The standby-agent timelock gap (tracked in #954, open).** `update_agent`
+(primary agent rotation) is timelocked specifically so a compromised owner
+key cannot instantly hand agent authority to an attacker-controlled address
+— the delay gives the real owner a window to notice and react via
+`cancel_agent_update`. `update_standby_agent` and `switch_to_standby_agent`
+provide no equivalent delay: an owner (or an attacker who has compromised
+the owner key) can set an arbitrary address as standby and instantly
+promote it to primary agent in two calls, with no timelock and no cooldown
+between them, which defeats the timelock users rely on to react to a
+malicious agent change. Until #954 is resolved, treat standby-agent
+rotation as carrying the same trust assumptions as an instant, undelayed
+owner action, not the delayed-and-cancellable guarantee `update_agent`
+provides.
 
 ### Emergency Harvest Fallback (Issue #506)
 

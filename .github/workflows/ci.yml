@@ -94,6 +94,15 @@ jobs:
           - name: "WhatsApp Typecheck & Tests"
             step: "whatsapp-check"
             working_directory: "whatsapp"
+          - name: "Bridge Typecheck & Tests"
+            step: "bridge-check"
+            working_directory: "packages/bridge"
+          - name: "Monitoring Typecheck & Tests"
+            step: "monitoring-check"
+            working_directory: "packages/monitoring"
+          - name: "Admin Panel Lint & Build"
+            step: "admin-panel-check"
+            working_directory: "packages/admin-panel"
           - name: "Build WASM"
             step: "build-wasm"
             working_directory: "neurowealth-vault"
@@ -195,6 +204,28 @@ jobs:
             whatsapp-check)
               npm ci
               npm test
+              ;;
+            bridge-check)
+              # Depends on @neurowealth/vault-client via a file: reference
+              # (#998), so its dist/ must exist before `npm ci` here can
+              # resolve real type declarations rather than failing module
+              # resolution.
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            monitoring-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            admin-panel-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run lint
+              npm run build
               ;;
             build-wasm)
               RUSTFLAGS="-C target-cpu=mvp" cargo build \

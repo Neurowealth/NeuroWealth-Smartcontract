@@ -72,8 +72,13 @@ describe("MetricsCollector", () => {
     };
 
     collector = new MetricsCollector(mockConfig);
+    // A jest.fn() constructor mock records the `this`-populated instance in
+    // mock.instances, not mock.results[0].value: a constructor with no
+    // explicit `return` implicitly returns undefined, which is what
+    // mock.results records. Reading .value here always yielded undefined,
+    // so every test below silently never exercised the mocked VaultClient.
     mockVaultClient = (require("@neurowealth/vault-client").VaultClient as jest.Mock)
-      .mock.results[0].value;
+      .mock.instances[0];
   });
 
   describe("collectMetrics", () => {

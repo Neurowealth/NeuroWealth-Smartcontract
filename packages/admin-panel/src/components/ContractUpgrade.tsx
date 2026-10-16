@@ -101,6 +101,9 @@ export function ContractUpgrade({
         signer.publicKey(),
         hashBytes as any,
       );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setShowScheduleConfirm(false);
 
@@ -127,6 +130,9 @@ export function ContractUpgrade({
 
     try {
       const result = await client.execute_upgrade(signer, signer.publicKey());
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
 
       // Poll for confirmation
@@ -159,6 +165,9 @@ export function ContractUpgrade({
 
     try {
       const result = await client.cancel_upgrade(signer, signer.publicKey());
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
 
       // Poll for confirmation

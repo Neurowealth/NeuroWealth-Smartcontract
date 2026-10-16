@@ -68,11 +68,10 @@ export function AgentManagement({
     setTxHash(null);
 
     try {
-      const result = await client.update_agent(
-        signer,
-        signer.publicKey(),
-        newAgent,
-      );
+      const result = await client.update_agent(signer, newAgent);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setShowUpdateConfirm(false);
 
@@ -95,10 +94,10 @@ export function AgentManagement({
     setTxHash(null);
 
     try {
-      const result = await client.confirm_agent_update(
-        signer,
-        signer.publicKey(),
-      );
+      const result = await client.confirm_agent_update(signer);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
 
       // Poll for confirmation
@@ -130,10 +129,10 @@ export function AgentManagement({
     setTxHash(null);
 
     try {
-      const result = await client.cancel_agent_update(
-        signer,
-        signer.publicKey(),
-      );
+      const result = await client.cancel_agent_update(signer);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
 
       // Poll for confirmation

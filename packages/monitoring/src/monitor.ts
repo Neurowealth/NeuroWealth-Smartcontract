@@ -2,7 +2,7 @@ import pino from "pino";
 import { MetricsCollector } from "./metrics-collector";
 import { AlertEngine } from "./alert-engine";
 import { AlertDispatcher } from "./alert-dispatcher";
-import { MonitoringConfig, MonitoringState, Alert } from "./types";
+import { MonitoringConfig, MonitoringState, Alert, HealthMetrics } from "./types";
 
 export class VaultMonitor {
   private logger = pino();
@@ -10,7 +10,7 @@ export class VaultMonitor {
   private alertEngine: AlertEngine;
   private alertDispatcher: AlertDispatcher;
   private state: MonitoringState;
-  private monitoringInterval: NodeJS.Timer | null = null;
+  private monitoringInterval: NodeJS.Timeout | null = null;
   private lastInsuranceAlertAt: number = 0;
 
   constructor(private config: MonitoringConfig) {
@@ -104,8 +104,8 @@ export class VaultMonitor {
     }
   }
 
-  private async checkInsuranceFund(metrics: any): Promise<void> {
-    const insuranceConfig = (this.config as any).insurance;
+  private async checkInsuranceFund(metrics: HealthMetrics): Promise<void> {
+    const insuranceConfig = this.config.insurance;
     if (!insuranceConfig || metrics.insuranceFundBalance === undefined) {
       return; // Insurance not configured or not available in metrics
     }
@@ -121,9 +121,9 @@ export class VaultMonitor {
       await this.alertDispatcher.dispatch({
         id: `insurance_low_${now}`,
         type: "insurance_fund_level",
-        severity: "${balance < minLevel * 0.5 ? "critical" : "warning"}",
+        severity: balance < minLevel * 0.5 ? "critical" : "warning",
         title: "Insurance Fund Low",
-        message: `Insurance fund balance is $balance, below threshold $minLevel`.
+        message: `Insurance fund balance is ${balance}, below threshold ${minLevel}`,
         timestamp: now,
       });
     }

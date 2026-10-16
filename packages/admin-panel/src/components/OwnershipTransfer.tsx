@@ -55,11 +55,10 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
     setTxHash(null);
 
     try {
-      const result = await client.transfer_ownership(
-        signer,
-        signer.publicKey(),
-        newOwner,
-      );
+      const result = await client.transfer_ownership(signer, newOwner);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setPendingOwner(newOwner);
       setShowInitiateConfirm(false);
@@ -94,10 +93,10 @@ export function OwnershipTransfer({ client, signer }: OwnershipTransferProps) {
     setTxHash(null);
 
     try {
-      const result = await client.cancel_ownership_transfer(
-        signer,
-        signer.publicKey(),
-      );
+      const result = await client.cancel_ownership_transfer(signer);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setPendingOwner(null);
 

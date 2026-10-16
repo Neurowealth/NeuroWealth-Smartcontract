@@ -64,11 +64,10 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
 
     try {
       const capInBaseUnits = BigInt(newTvlCap) * BigInt(10 ** DECIMAL_PLACES);
-      const result = await client.set_tvl_cap(
-        signer,
-        signer.publicKey(),
-        capInBaseUnits,
-      );
+      const result = await client.set_tvl_cap(signer, capInBaseUnits);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setTvlCap(capInBaseUnits);
 
@@ -97,11 +96,10 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
 
     try {
       const capInBaseUnits = BigInt(newUserCap) * BigInt(10 ** DECIMAL_PLACES);
-      const result = await client.set_user_deposit_cap(
-        signer,
-        signer.publicKey(),
-        capInBaseUnits,
-      );
+      const result = await client.set_user_deposit_cap(signer, capInBaseUnits);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setUserDepositCap(capInBaseUnits);
 
@@ -134,12 +132,10 @@ export function CapsConfiguration({ client, signer }: CapsConfigurationProps) {
       const maxInBaseUnits =
         BigInt(newMaxDeposit) * BigInt(10 ** DECIMAL_PLACES);
 
-      const result = await client.set_deposit_limits(
-        signer,
-        signer.publicKey(),
-        minInBaseUnits,
-        maxInBaseUnits,
-      );
+      const result = await client.set_deposit_limits(signer, minInBaseUnits, maxInBaseUnits);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setMinDeposit(minInBaseUnits);
       setMaxDeposit(maxInBaseUnits);

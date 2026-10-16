@@ -105,7 +105,7 @@ describe("AlertEngine", () => {
 
   describe("Share Price Decrease Detection", () => {
     it("should detect share price decrease", () => {
-      currentMetrics.sharePrice = 1.98; // Less than 99% of previous
+      currentMetrics.sharePrice = 1.97; // Less than 99% of previous (1.98 is exactly 99%, not less)
       previousMetrics.sharePrice = 2.0;
 
       const alerts = engine.detectAnomalies(currentMetrics, previousMetrics, mockState);
@@ -273,7 +273,7 @@ describe("AlertEngine", () => {
     it("should detect multiple anomalies simultaneously", () => {
       // Trigger multiple alerts
       currentMetrics.tvl = 75000000000n; // 25% TVL drop
-      currentMetrics.sharePrice = 1.98; // Share price drop
+      currentMetrics.sharePrice = 1.97; // Share price drop (below 99% of previous)
       currentMetrics.isPaused = true; // Vault paused
       previousMetrics.tvl = 100000000000n;
       previousMetrics.sharePrice = 2.0;

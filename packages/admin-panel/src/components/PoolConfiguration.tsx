@@ -62,6 +62,9 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
         signer.publicKey(),
         newBlendPool,
       );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setBlendPool(newBlendPool);
 
@@ -99,6 +102,9 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
         signer.publicKey(),
         newDexPool,
       );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setDexPool(newDexPool);
 

@@ -49,11 +49,10 @@ export function ApprovalTTL({ client, signer }: ApprovalTTLProps) {
     setTxHash(null);
 
     try {
-      const result = await client.set_approval_ttl(
-        signer,
-        signer.publicKey(),
-        value,
-      );
+      const result = await client.set_approval_ttl(signer, value);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setTtl(value);
 

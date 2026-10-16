@@ -9,21 +9,21 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@neurowealth/vault-client": "workspace:*",
+    "@neurowealth/vault-client": "file:../vault-client",
     "@stellar/stellar-sdk": "^12.3.0",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^4.4.0",
-    "framer-motion": "^10.16.0",
-    "lucide-react": "^0.263.1",
+    "framer-motion": "^14.3.0",
+    "lucide-react": "^1.57.0",
     "clsx": "^2.0.0",
     "date-fns": "^2.30.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "typescript": "^5.0.0",
     "tailwindcss": "^3.3.0",
     "postcss": "^8.4.0",
