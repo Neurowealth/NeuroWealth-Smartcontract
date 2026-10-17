@@ -20,7 +20,8 @@ from typing import Dict, List, Any, Optional
 
 FALLBACK_TOPICS = {
     "PauseEvent": "pause_event",
-    "InitFailedEvent": "init_failed"
+    "InitFailedEvent": "init_failed",
+    "WithdrawEvent": "withdraw",
 }
 
 FUNCTION_METADATA = {
@@ -700,6 +701,248 @@ FUNCTION_METADATA = {
         "requires_auth": False,
         "state_changing": False,
         "query_only": True
+    },
+    "harvest": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Agent cycles protocol position to compound accrued yield",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True,
+        "events": ["HarvestEvent"]
+    },
+    "emergency_harvest": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Owner fallback to compound yield during agent rotation or outage",
+        "requires_auth": True,
+        "authorized_caller": "owner",
+        "state_changing": True,
+        "events": ["EmergencyHarvestEvent"]
+    },
+    "set_min_holding_period": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Set minimum ledgers a user must hold deposit before withdrawal",
+        "requires_auth": True,
+        "state_changing": True
+    },
+    "set_max_acceptable_mev_loss": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Set maximum acceptable MEV loss in stroops",
+        "requires_auth": True,
+        "state_changing": True
+    },
+    "submit_mev_report": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Submit MEV loss report after swap or rebalance",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True
+    },
+    "submit_apy_prediction": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Submit ML model APY prediction on-chain for a protocol",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True
+    },
+    "add_supported_asset": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Add a supported deposit asset and configure its limits",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["SupportedAssetsUpdatedEvent"]
+    },
+    "update_asset_limits": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Update limits for an already-supported deposit asset",
+        "requires_auth": True,
+        "state_changing": True
+    },
+    "remove_supported_asset": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Remove a supported deposit asset when its pool is empty",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["SupportedAssetsUpdatedEvent"]
+    },
+    "deposit_asset": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Deposit a supported non-USDC asset and mint proportional asset shares",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["AssetDepositEvent"]
+    },
+    "withdraw_asset": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Withdraw a supported non-USDC asset by burning asset shares",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["AssetWithdrawEvent"]
+    },
+    "lock_shares": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Lock vault shares for a specified duration in days",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["SharesLockedEvent"]
+    },
+    "unlock_shares": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Unlock vault shares after lock duration expires",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["SharesUnlockedEvent"]
+    },
+    "migrate_shares": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Migrate vault shares to the scheduled migration target",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["SharesMigratedEvent"]
+    },
+    "emergency_withdraw": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Emergency withdrawal available only while the vault is paused",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["EmergencyWithdrawalEvent"]
+    },
+    "queue_withdrawal": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Queue a withdrawal request when immediate liquidity is unavailable",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["WithdrawalQueuedEvent"]
+    },
+    "cancel_withdrawal_request": {
+        "category": "liquidity",
+        "access": "public",
+        "description": "Cancel a pending unfulfilled withdrawal request",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["WithdrawalCancelledEvent"]
+    },
+    "process_withdrawal_queue": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Process batched withdrawal requests from the queue",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True,
+        "events": ["WithdrawalFulfilledEvent"]
+    },
+    "enable_multi_protocol": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Enable or disable multi-protocol allocation mode",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MultiProtocolModeChangedEvent"]
+    },
+    "rebalance_multi": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Rebalance funds across multiple protocols according to target allocations",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True,
+        "events": ["RebalanceEvent"]
+    },
+    "set_protocol_apy": {
+        "category": "management",
+        "access": "agent-only",
+        "description": "Set reported APY for an individual protocol",
+        "requires_auth": True,
+        "authorized_caller": "agent",
+        "state_changing": True,
+        "events": ["ProtocolApyUpdatedEvent"]
+    },
+    "reset_circuit_breaker": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Reset consecutive failure counter and unpause vault",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["CircuitBreakerResetEvent"]
+    },
+    "set_max_consecutive_failures": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Set failure count threshold before circuit breaker pauses vault",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MaxConsecutiveFailuresUpdatedEvent"]
+    },
+    "set_migration_paused": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Pause or unpause contract share migration",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MigrationPausedEvent"]
+    },
+    "schedule_migration_target": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Propose a new contract address for vault migration behind a timelock",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MigrationTargetScheduledEvent"]
+    },
+    "execute_migration_target": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Execute a scheduled migration target after the timelock window expires",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MigrationTargetUpdatedEvent"]
+    },
+    "cancel_migration_target": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Cancel a pending migration target proposal during the timelock window",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["MigrationTargetCancelledEvent"]
+    },
+    "set_queue_config": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Configure withdrawal queue capacity and request TTL",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["QueueConfigUpdatedEvent"]
+    },
+    "update_standby_agent": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Set or replace the standby AI agent address",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["StandbyAgentUpdatedEvent"]
+    },
+    "switch_to_standby_agent": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Promote standby AI agent to active agent key",
+        "requires_auth": True,
+        "state_changing": True,
+        "events": ["AgentKeyRotatedEvent"]
     }
 }
 
@@ -741,16 +984,18 @@ class ContractSpecGenerator:
         topic_const_to_symbol = {}
         for match in re.finditer(r"pub\s+const\s+(\w+):\s*Symbol\s*=\s*symbol_short!\(\"([^\"]+)\"\);", self.topics_source):
             topic_const_to_symbol[match.group(1)] = match.group(2)
-            
+        if "TOPIC_WITHRAW" in topic_const_to_symbol:
+            topic_const_to_symbol["TOPIC_WITHDRAW"] = topic_const_to_symbol["TOPIC_WITHRAW"]
+
         # 2. Parse lib.rs to map event name to topic constant name
         # e.g., env.events().publish((TOPIC_INIT,), VaultInitializedEvent { ...
         event_to_symbol = {}
-        for match in re.finditer(r"env\.events\(\)\.publish\(\s*\(\s*(\w+)\s*,\s*\)\s*,\s*(\w+Event)", self.source):
+        for match in re.finditer(r"env\.events\(\)\s*\.publish\s*\(\s*\(\s*(\w+).*?,\s*(\w+Event)", self.source, re.DOTALL):
             const_name = match.group(1)
             event_name = match.group(2)
             if const_name in topic_const_to_symbol:
                 event_to_symbol[event_name] = topic_const_to_symbol[const_name]
-                
+
         return event_to_symbol
 
     def _get_functions(self) -> List[Dict[str, Any]]:

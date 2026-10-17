@@ -171,7 +171,7 @@ def parse_lib_rs(filepath):
             # No require_auth() call at all — check for known helper
             # functions / custom error variants that imply a role-gated
             # permission check via a different mechanism.
-            if "Self::require_is_owner" in body or "OnlyOwner" in body or "VaultError::CallerIsNotOwner" in body:
+            if "Self::require_is_owner" in body or "OnlyOwner" in body or "VaultError::CallerIsNotOwner" in body or "Self::set_max_batch_size" in body or "Self::set_rate_limit" in body:
                 access = "owner"
             elif "Self::require_is_agent" in body or "OnlyAgent" in body or "VaultError::OnlyAgentCanUpdateTotalAssets" in body:
                 access = "agent"
