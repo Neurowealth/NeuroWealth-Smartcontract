@@ -112,7 +112,7 @@ export interface RebalanceEvent {
 export interface HarvestEvent {
   /** The protocol harvested from ("blend", "dex", or "multi") */
   protocol: string;
-  /** Amount actually resupplied; not a yield amount */
+  /** Amount actually resupplied; this is a compounding-cycle amount, not yield. */
   amount_cycled: bigint;
 }
 
@@ -298,21 +298,21 @@ export interface ApprovalTtlUpdatedEvent {
   new_ttl: number;
 }
 
-/** Emitted alongside ApprovalTtlUpdatedEvent whenever the shared protocol approval TTL is persisted, so operators can schedule a renewal before the approval window closes (Issue #847). Publishing the event never extends or renews an approval. */
+/** Emitted by the contract. */
 export interface ProtocolApprovalScheduledEvent {
-  /** Protocol whose approval window is described: SymbolShort("blend") for the legacy Blend-only setter, SymbolShort("dex") for a DEX-only window, or SymbolShort("both") when the shared TTL covers every protocol approval the vault can issue. */
+  /** Protocol whose approval window is described: `SymbolShort("blend")` for the legacy Blend-only setter, `SymbolShort("dex")` for a DEX-only window, or `SymbolShort("both")` when the shared TTL covers every protocol approval the vault can issue. */
   protocol: string;
   /** Ledger in which the emitting call was executed */
   current_ledger: number;
-  /** Persisted approval TTL in ledgers, equal to get_approval_ttl() */
+  /** Persisted approval TTL in ledgers, equal to `get_approval_ttl()` */
   approval_ttl: number;
   /** Ledger at which the approval granted with this TTL expires */
   expiry_ledger: number;
-  /** Ledgers of usable window between now and expiry (expiry_ledger - current_ledger) */
+  /** Ledgers of usable window between now and expiry (`expiry_ledger - current_ledger`) */
   available_window: number;
   /** Ledgers of lead time reserved for the renewal transaction */
   lead_time: number;
-  /** Ledger by which a renewal should be submitted so the approval never lapses (expiry_ledger - lead_time) */
+  /** Ledger by which a renewal should be submitted so the approval never lapses (`expiry_ledger - lead_time`) */
   renewal_deadline_ledger: number;
 }
 
@@ -637,6 +637,24 @@ export interface MigrationTargetUpdatedEvent {
 }
 
 /** Emitted by the contract. */
+export interface MigrationTargetScheduledEvent {
+  /** Address that will become the migration target once executed */
+  new_target: string;
+  /** Ledger at which `execute_migration_target()` becomes callable */
+  effective_ledger: number;
+  /** Owner who scheduled the change */
+  owner: string;
+}
+
+/** Emitted by the contract. */
+export interface MigrationTargetCancelledEvent {
+  /** Address whose pending change was cancelled */
+  cancelled_target: string;
+  /** Owner who cancelled the change */
+  owner: string;
+}
+
+/** Emitted by the contract. */
 export interface MigrationPausedEvent {
   /** `true` if migration is now paused, `false` if unpaused */
   paused: boolean;
@@ -652,8 +670,6 @@ export interface SharesLockedEvent {
   shares_locked: bigint;
   /** Lock duration in days */
   lock_duration_days: number;
-  /** Boost multiplier applied (e.g., 1.1x, 1.25x, 1.5x) */
-  boost_multiplier: number;
   /** Ledger when lock expires */
   expiry_ledger: number;
 }
@@ -1241,10 +1257,11 @@ export class VaultClient {
   }
 
   /**
-   * Function deposit_asset
+   * Deposit a supported non-USDC asset and mint proportional asset shares
    * @param user
    * @param asset
    * @param amount
+   * @fires AssetDepositEvent
    */
   async deposit_asset(signer: StellarSdk.Keypair, user: string, asset: string, amount: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' }), nativeToScVal(amount, { type: 'i128' })];
@@ -1252,10 +1269,11 @@ export class VaultClient {
   }
 
   /**
-   * Function withdraw_asset
+   * Withdraw a supported non-USDC asset by burning asset shares
    * @param user
    * @param asset
    * @param amount
+   * @fires AssetWithdrawEvent
    */
   async withdraw_asset(signer: StellarSdk.Keypair, user: string, asset: string, amount: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' }), nativeToScVal(amount, { type: 'i128' })];
@@ -1282,8 +1300,9 @@ export class VaultClient {
   }
 
   /**
-   * Function migrate_shares
+   * Migrate vault shares to the scheduled migration target
    * @param user
+   * @fires SharesMigratedEvent
    */
   async migrate_shares(signer: StellarSdk.Keypair, user: string): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
@@ -1291,10 +1310,11 @@ export class VaultClient {
   }
 
   /**
-   * Function lock_shares
+   * Lock vault shares for a specified duration in days
    * @param user
    * @param shares
    * @param lock_duration_days
+   * @fires SharesLockedEvent
    */
   async lock_shares(signer: StellarSdk.Keypair, user: string, shares: bigint, lock_duration_days: number): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(shares, { type: 'i128' }), nativeToScVal(lock_duration_days, { type: 'u32' })];
@@ -1302,8 +1322,9 @@ export class VaultClient {
   }
 
   /**
-   * Function unlock_shares
+   * Unlock vault shares after lock duration expires
    * @param user
+   * @fires SharesUnlockedEvent
    */
   async unlock_shares(signer: StellarSdk.Keypair, user: string): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
@@ -1320,9 +1341,10 @@ export class VaultClient {
   }
 
   /**
-   * Function emergency_withdraw
+   * Emergency withdrawal available only while the vault is paused
    * @param user
    * @param amount
+   * @fires EmergencyWithdrawalEvent
    */
   async emergency_withdraw(signer: StellarSdk.Keypair, user: string, amount: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(amount, { type: 'i128' })];
@@ -1342,8 +1364,9 @@ export class VaultClient {
   }
 
   /**
-   * Function enable_multi_protocol
+   * Enable or disable multi-protocol allocation mode
    * @param enabled
+   * @fires MultiProtocolModeChangedEvent
    */
   async enable_multi_protocol(signer: StellarSdk.Keypair, enabled: boolean): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(enabled, { type: 'bool' })];
@@ -1391,9 +1414,10 @@ export class VaultClient {
   }
 
   /**
-   * Function set_protocol_apy
+   * Set reported APY for an individual protocol
    * @param protocol
    * @param apy_bps
+   * @fires ProtocolApyUpdatedEvent
    */
   async set_protocol_apy(signer: StellarSdk.Keypair, protocol: string, apy_bps: number): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(apy_bps, { type: 'u32' })];
@@ -1418,10 +1442,11 @@ export class VaultClient {
   }
 
   /**
-   * Function rebalance_multi
+   * Rebalance funds across multiple protocols according to target allocations
    * @param blend_bps
    * @param dex_bps
    * @param min_out
+   * @fires RebalanceEvent
    */
   async rebalance_multi(signer: StellarSdk.Keypair, blend_bps: number, dex_bps: number, min_out: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(blend_bps, { type: 'u32' }), nativeToScVal(dex_bps, { type: 'u32' }), nativeToScVal(min_out, { type: 'i128' })];
@@ -1429,8 +1454,9 @@ export class VaultClient {
   }
 
   /**
-   * Function harvest
+   * Agent cycles protocol position to compound accrued yield
    * @param min_out
+   * @fires HarvestEvent
    */
   async harvest(signer: StellarSdk.Keypair, min_out: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(min_out, { type: 'i128' })];
@@ -1468,8 +1494,9 @@ export class VaultClient {
   }
 
   /**
-   * Function reset_circuit_breaker
+   * Reset consecutive failure counter and unpause vault
    * @param owner
+   * @fires CircuitBreakerResetEvent
    */
   async reset_circuit_breaker(signer: StellarSdk.Keypair, owner: string): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal()];
@@ -1477,8 +1504,9 @@ export class VaultClient {
   }
 
   /**
-   * Function emergency_harvest
+   * Owner fallback to compound yield during agent rotation or outage
    * @param min_out
+   * @fires EmergencyHarvestEvent
    */
   async emergency_harvest(signer: StellarSdk.Keypair, min_out: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(min_out, { type: 'i128' })];
@@ -1486,17 +1514,48 @@ export class VaultClient {
   }
 
   /**
-   * Function set_migration_target
+   * Propose a new contract address for vault migration behind a timelock
+   * @param owner
    * @param target
+   * @fires MigrationTargetScheduledEvent
    */
-  async set_migration_target(signer: StellarSdk.Keypair, target: string): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(target).toScVal()];
-    return this.invoke<void>('set_migration_target', args, signer);
+  async schedule_migration_target(signer: StellarSdk.Keypair, owner: string, target: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal(), new StellarSdk.Address(target).toScVal()];
+    return this.invoke<void>('schedule_migration_target', args, signer);
   }
 
   /**
-   * Function set_migration_paused
+   * Execute a scheduled migration target after the timelock window expires
+   * @param owner
+   * @fires MigrationTargetUpdatedEvent
+   */
+  async execute_migration_target(signer: StellarSdk.Keypair, owner: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal()];
+    return this.invoke<void>('execute_migration_target', args, signer);
+  }
+
+  /**
+   * Cancel a pending migration target proposal during the timelock window
+   * @param owner
+   * @fires MigrationTargetCancelledEvent
+   */
+  async cancel_migration_target(signer: StellarSdk.Keypair, owner: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal()];
+    return this.invoke<void>('cancel_migration_target', args, signer);
+  }
+
+  /**
+   * Function get_pending_migration_target
+   */
+  async get_pending_migration_target(sourcePublicKey: string): Promise<unknown | null> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown | null>('get_pending_migration_target', args, sourcePublicKey);
+  }
+
+  /**
+   * Pause or unpause contract share migration
    * @param paused
+   * @fires MigrationPausedEvent
    */
   async set_migration_paused(signer: StellarSdk.Keypair, paused: boolean): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(paused, { type: 'bool' })];
@@ -1676,7 +1735,7 @@ export class VaultClient {
   }
 
   /**
-   * Function set_min_holding_period
+   * Set minimum ledgers a user must hold deposit before withdrawal
    * @param ledgers
    */
   async set_min_holding_period(signer: StellarSdk.Keypair, ledgers: number): Promise<TxResult<void>> {
@@ -1693,7 +1752,7 @@ export class VaultClient {
   }
 
   /**
-   * Function submit_mev_report
+   * Submit MEV loss report after swap or rebalance
    * @param protocol
    * @param estimated_loss_stroops
    * @param min_out_used
@@ -1712,7 +1771,7 @@ export class VaultClient {
   }
 
   /**
-   * Function set_max_acceptable_mev_loss
+   * Set maximum acceptable MEV loss in stroops
    * @param max_loss_stroops
    */
   async set_max_acceptable_mev_loss(signer: StellarSdk.Keypair, max_loss_stroops: bigint): Promise<TxResult<void>> {
@@ -1721,7 +1780,7 @@ export class VaultClient {
   }
 
   /**
-   * Function submit_apy_prediction
+   * Submit ML model APY prediction on-chain for a protocol
    * @param prediction
    */
   async submit_apy_prediction(signer: StellarSdk.Keypair, prediction: unknown): Promise<TxResult<void>> {
@@ -1747,8 +1806,9 @@ export class VaultClient {
   }
 
   /**
-   * Function set_max_consecutive_failures
+   * Set failure count threshold before circuit breaker pauses vault
    * @param threshold
+   * @fires MaxConsecutiveFailuresUpdatedEvent
    */
   async set_max_consecutive_failures(signer: StellarSdk.Keypair, threshold: number): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(threshold, { type: 'u32' })];
@@ -1885,8 +1945,9 @@ export class VaultClient {
   }
 
   /**
-   * Function update_standby_agent
+   * Set or replace the standby AI agent address
    * @param new_standby
+   * @fires StandbyAgentUpdatedEvent
    */
   async update_standby_agent(signer: StellarSdk.Keypair, new_standby: string): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(new_standby).toScVal()];
@@ -1894,7 +1955,8 @@ export class VaultClient {
   }
 
   /**
-   * Function switch_to_standby_agent
+   * Promote standby AI agent to active agent key
+   * @fires AgentKeyRotatedEvent
    */
   async switch_to_standby_agent(signer: StellarSdk.Keypair): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [];
@@ -1902,12 +1964,13 @@ export class VaultClient {
   }
 
   /**
-   * Function add_supported_asset
+   * Add a supported deposit asset and configure its limits
    * @param asset
    * @param token_address
    * @param min_deposit
    * @param deposit_limit
    * @param tvl_cap
+   * @fires SupportedAssetsUpdatedEvent
    */
   async add_supported_asset(signer: StellarSdk.Keypair, asset: string, token_address: string, min_deposit: bigint, deposit_limit: bigint, tvl_cap: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' }), new StellarSdk.Address(token_address).toScVal(), nativeToScVal(min_deposit, { type: 'i128' }), nativeToScVal(deposit_limit, { type: 'i128' }), nativeToScVal(tvl_cap, { type: 'i128' })];
@@ -1915,7 +1978,7 @@ export class VaultClient {
   }
 
   /**
-   * Function update_asset_limits
+   * Update limits for an already-supported deposit asset
    * @param asset
    * @param min_deposit
    * @param deposit_limit
@@ -1927,8 +1990,9 @@ export class VaultClient {
   }
 
   /**
-   * Function remove_supported_asset
+   * Remove a supported deposit asset when its pool is empty
    * @param asset
+   * @fires SupportedAssetsUpdatedEvent
    */
   async remove_supported_asset(signer: StellarSdk.Keypair, asset: string): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(asset, { type: 'symbol' })];
@@ -2258,6 +2322,14 @@ export class VaultClient {
   }
 
   /**
+   * Function get_vault_health_snapshot
+   */
+  async get_vault_health_snapshot(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_vault_health_snapshot', args, sourcePublicKey);
+  }
+
+  /**
    * Get contract version for upgrade tracking
    */
   async get_version(sourcePublicKey: string): Promise<number> {
@@ -2338,9 +2410,10 @@ export class VaultClient {
   }
 
   /**
-   * Function set_queue_config
+   * Configure withdrawal queue capacity and request TTL
    * @param max_size
    * @param ttl
+   * @fires QueueConfigUpdatedEvent
    */
   async set_queue_config(signer: StellarSdk.Keypair, max_size: number, ttl: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(max_size, { type: 'u32' }), nativeToScVal(ttl, { type: 'u64' })];
@@ -2356,9 +2429,10 @@ export class VaultClient {
   }
 
   /**
-   * Function queue_withdrawal
+   * Queue a withdrawal request when immediate liquidity is unavailable
    * @param user
    * @param amount
+   * @fires WithdrawalQueuedEvent
    */
   async queue_withdrawal(signer: StellarSdk.Keypair, user: string, amount: bigint): Promise<TxResult<number>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(amount, { type: 'i128' })];
@@ -2375,15 +2449,18 @@ export class VaultClient {
   }
 
   /**
-   * Returns a read-only snapshot of vault health and operational state (#838)
+   * Cancel a pending unfulfilled withdrawal request
+   * @param user
+   * @param request_id
+   * @fires WithdrawalCancelledEvent
    */
-  async get_vault_health_snapshot(sourcePublicKey: string): Promise<unknown> {
-    const args: StellarSdk.xdr.ScVal[] = [];
-    return this.simulate<unknown>('get_vault_health_snapshot', args, sourcePublicKey);
+  async cancel_withdrawal_request(signer: StellarSdk.Keypair, user: string, request_id: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(request_id, { type: 'u32' })];
+    return this.invoke<void>('cancel_withdrawal_request', args, signer);
   }
 
   /**
-   * Returns the next withdrawal eligibility for a user (#846)
+   * Function get_withdrawal_eligibility
    * @param user
    */
   async get_withdrawal_eligibility(user: string, sourcePublicKey: string): Promise<unknown> {
@@ -2392,19 +2469,10 @@ export class VaultClient {
   }
 
   /**
-   * Function cancel_withdrawal_request
-   * @param user
-   * @param request_id
-   */
-  async cancel_withdrawal_request(signer: StellarSdk.Keypair, user: string, request_id: number): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(request_id, { type: 'u32' })];
-    return this.invoke<void>('cancel_withdrawal_request', args, signer);
-  }
-
-  /**
-   * Function process_withdrawal_queue
+   * Process batched withdrawal requests from the queue
    * @param agent
    * @param batch_size
+   * @fires WithdrawalFulfilledEvent
    */
   async process_withdrawal_queue(signer: StellarSdk.Keypair, agent: string, batch_size: number): Promise<TxResult<number>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(batch_size, { type: 'u32' })];
