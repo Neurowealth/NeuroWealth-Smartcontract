@@ -40,7 +40,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["VaultInitializedEvent"],
+      "events": [
+        "VaultInitializedEvent"
+      ],
       "notes": [
         "Requires valid signature from deployer to prevent front-running",
         "Can only be called once - subsequent calls will panic"
@@ -77,9 +79,41 @@
         "vault must not be paused",
         "shares_to_mint > 0 (non-zero mint guard)"
       ],
-      "events": ["DepositEvent"],
+      "events": [
+        "DepositEvent"
+      ],
       "formula": "shares_to_mint = floor(amount * total_shares / total_assets)",
       "security": "Protects against inflation attacks with minimum deposit and non-zero mint guard"
+    },
+    {
+      "name": "receive_migration",
+      "category": "liquidity",
+      "access": "anyone",
+      "description": "Credits a migrated position on the receiving side of a cross-vault migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MigrationReceivedEvent"
+      ]
     },
     {
       "name": "batch_deposit",
@@ -108,7 +142,9 @@
         "all entries must use the configured USDC token",
         "batch consumes both deposit and batch-deposit rate-limit buckets"
       ],
-      "events": ["DepositEvent"]
+      "events": [
+        "DepositEvent"
+      ]
     },
     {
       "name": "withdraw",
@@ -137,7 +173,9 @@
         "amount > 0",
         "vault must not be paused"
       ],
-      "events": ["WithdrawEvent"],
+      "events": [
+        "WithdrawEvent"
+      ],
       "formula": "shares_to_burn = ceil(amount * total_shares / total_assets)"
     },
     {
@@ -158,13 +196,15 @@
       "returns": "i128",
       "requires_auth": true,
       "state_changing": true,
-      "events": ["WithdrawEvent"]
+      "events": [
+        "WithdrawEvent"
+      ]
     },
     {
       "name": "deposit_asset",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function deposit_asset",
+      "description": "Deposit a supported non-USDC asset and mint proportional asset shares",
       "parameters": [
         {
           "name": "env",
@@ -184,14 +224,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "AssetDepositEvent"
+      ]
     },
     {
       "name": "withdraw_asset",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function withdraw_asset",
+      "description": "Withdraw a supported non-USDC asset by burning asset shares",
       "parameters": [
         {
           "name": "env",
@@ -211,8 +254,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "AssetWithdrawEvent"
+      ]
     },
     {
       "name": "get_balance_asset",
@@ -258,9 +304,9 @@
     },
     {
       "name": "migrate_shares",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function migrate_shares",
+      "description": "Migrate vault shares to the scheduled migration target",
       "parameters": [
         {
           "name": "env",
@@ -272,14 +318,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "SharesMigratedEvent"
+      ]
     },
     {
       "name": "lock_shares",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function lock_shares",
+      "description": "Lock vault shares for a specified duration in days",
       "parameters": [
         {
           "name": "env",
@@ -299,14 +348,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "SharesLockedEvent"
+      ]
     },
     {
       "name": "unlock_shares",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function unlock_shares",
+      "description": "Unlock vault shares after lock duration expires",
       "parameters": [
         {
           "name": "env",
@@ -318,8 +370,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "SharesUnlockedEvent"
+      ]
     },
     {
       "name": "get_locked_shares",
@@ -342,9 +397,9 @@
     },
     {
       "name": "emergency_withdraw",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function emergency_withdraw",
+      "description": "Emergency withdrawal available only while the vault is paused",
       "parameters": [
         {
           "name": "env",
@@ -360,8 +415,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "EmergencyWithdrawalEvent"
+      ]
     },
     {
       "name": "rebalance",
@@ -372,6 +430,10 @@
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "protocol",
@@ -389,17 +451,24 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["RebalanceEvent"],
+      "events": [
+        "RebalanceEvent"
+      ],
       "security": "Only authorized agent keypair can call this function",
-      "supported_protocols": ["blend", "none"],
+      "supported_protocols": [
+        "blend",
+        "none"
+      ],
       "authorized_caller": "agent",
-      "notes": ["Performs slippage check against min_out parameter"]
+      "notes": [
+        "Performs slippage check against min_out parameter"
+      ]
     },
     {
       "name": "enable_multi_protocol",
-      "category": "management",
-      "access": "public",
-      "description": "Function enable_multi_protocol",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Enable or disable multi-protocol allocation mode",
       "parameters": [
         {
           "name": "env",
@@ -411,8 +480,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MultiProtocolModeChangedEvent"
+      ]
     },
     {
       "name": "is_multi_protocol_enabled",
@@ -492,12 +564,16 @@
     {
       "name": "set_protocol_apy",
       "category": "management",
-      "access": "public",
-      "description": "Function set_protocol_apy",
+      "access": "agent-only",
+      "description": "Set reported APY for an individual protocol",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "protocol",
@@ -509,8 +585,12 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "ProtocolApyUpdatedEvent"
+      ],
+      "authorized_caller": "agent"
     },
     {
       "name": "get_protocol_apy",
@@ -549,12 +629,16 @@
     {
       "name": "rebalance_multi",
       "category": "management",
-      "access": "public",
-      "description": "Function rebalance_multi",
+      "access": "agent-only",
+      "description": "Rebalance funds across multiple protocols according to target allocations",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "blend_bps",
@@ -570,18 +654,26 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "RebalanceEvent"
+      ],
+      "authorized_caller": "agent"
     },
     {
       "name": "harvest",
       "category": "management",
-      "access": "public",
-      "description": "Function harvest",
+      "access": "agent-only",
+      "description": "Agent cycles protocol position to compound accrued yield",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "min_out",
@@ -589,8 +681,12 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "HarvestEvent"
+      ],
+      "authorized_caller": "agent"
     },
     {
       "name": "pause",
@@ -610,7 +706,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["VaultPausedEvent"]
+      "events": [
+        "VaultPausedEvent"
+      ]
     },
     {
       "name": "unpause",
@@ -630,7 +728,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["VaultUnpausedEvent"]
+      "events": [
+        "VaultUnpausedEvent"
+      ]
     },
     {
       "name": "emergency_pause",
@@ -650,13 +750,15 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["EmergencyPausedEvent"]
+      "events": [
+        "EmergencyPausedEvent"
+      ]
     },
     {
       "name": "reset_circuit_breaker",
-      "category": "management",
-      "access": "public",
-      "description": "Function reset_circuit_breaker",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Reset consecutive failure counter and unpause vault",
       "parameters": [
         {
           "name": "env",
@@ -668,14 +770,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "CircuitBreakerResetEvent"
+      ]
     },
     {
       "name": "emergency_harvest",
-      "category": "management",
-      "access": "public",
-      "description": "Function emergency_harvest",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Owner fallback to compound yield during agent rotation or outage",
       "parameters": [
         {
           "name": "env",
@@ -687,18 +792,26 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "EmergencyHarvestEvent"
+      ],
+      "authorized_caller": "owner"
     },
     {
-      "name": "set_migration_target",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_migration_target",
+      "name": "schedule_migration_target",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Propose a new contract address for vault migration behind a timelock",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
         },
         {
           "name": "target",
@@ -706,14 +819,76 @@
         }
       ],
       "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MigrationTargetScheduledEvent"
+      ]
+    },
+    {
+      "name": "execute_migration_target",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Execute a scheduled migration target after the timelock window expires",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MigrationTargetUpdatedEvent"
+      ]
+    },
+    {
+      "name": "cancel_migration_target",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Cancel a pending migration target proposal during the timelock window",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MigrationTargetCancelledEvent"
+      ]
+    },
+    {
+      "name": "get_pending_migration_target",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_pending_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Option<(Address, u32)>",
       "requires_auth": false,
-      "state_changing": true
+      "state_changing": false
     },
     {
       "name": "set_migration_paused",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_migration_paused",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Pause or unpause contract share migration",
       "parameters": [
         {
           "name": "env",
@@ -725,8 +900,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MigrationPausedEvent"
+      ]
     },
     {
       "name": "set_tvl_cap",
@@ -746,7 +924,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["TvlCapUpdatedEvent"]
+      "events": [
+        "TvlCapUpdatedEvent"
+      ]
     },
     {
       "name": "set_user_deposit_cap",
@@ -766,7 +946,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["UserDepositCapUpdatedEvent"]
+      "events": [
+        "UserDepositCapUpdatedEvent"
+      ]
     },
     {
       "name": "set_caps",
@@ -790,7 +972,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["CapsUpdatedEvent"],
+      "events": [
+        "CapsUpdatedEvent"
+      ],
       "notes": [
         "Preferred method over calling set_tvl_cap and set_user_deposit_cap separately"
       ]
@@ -844,7 +1028,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["LimitsUpdatedEvent"]
+      "events": [
+        "LimitsUpdatedEvent"
+      ]
     },
     {
       "name": "set_rebalance_cooldown",
@@ -913,7 +1099,9 @@
         "enabled categories require a non-zero window",
         "unknown categories are rejected"
       ],
-      "events": ["RateLimitConfigUpdatedEvent"]
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
     },
     {
       "name": "set_rate_limit_config",
@@ -941,7 +1129,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["RateLimitConfigUpdatedEvent"]
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
     },
     {
       "name": "get_rate_limit",
@@ -1045,7 +1235,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["BatchSizeLimitUpdatedEvent"]
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
     },
     {
       "name": "get_max_batch_size",
@@ -1081,7 +1273,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["BatchSizeLimitUpdatedEvent"]
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
     },
     {
       "name": "get_batch_size_limit",
@@ -1101,9 +1295,9 @@
     },
     {
       "name": "set_min_holding_period",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_min_holding_period",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set minimum ledgers a user must hold deposit before withdrawal",
       "parameters": [
         {
           "name": "env",
@@ -1115,7 +1309,7 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
+      "requires_auth": true,
       "state_changing": true
     },
     {
@@ -1134,14 +1328,52 @@
       "state_changing": false
     },
     {
-      "name": "submit_mev_report",
-      "category": "management",
-      "access": "public",
-      "description": "Function submit_mev_report",
+      "name": "set_max_decrease_bps",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Configure the maximum loss percentage reported in a single total assets update",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "bps",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_decrease_bps",
+      "category": "query",
+      "access": "public",
+      "description": "Get the maximum loss percentage reported in a single total assets update",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "submit_mev_report",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Submit MEV loss report after swap or rebalance",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "protocol",
@@ -1157,8 +1389,9 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "authorized_caller": "agent"
     },
     {
       "name": "get_mev_stats",
@@ -1177,9 +1410,9 @@
     },
     {
       "name": "set_max_acceptable_mev_loss",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_max_acceptable_mev_loss",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set maximum acceptable MEV loss in stroops",
       "parameters": [
         {
           "name": "env",
@@ -1191,18 +1424,22 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
+      "requires_auth": true,
       "state_changing": true
     },
     {
       "name": "submit_apy_prediction",
       "category": "management",
-      "access": "public",
-      "description": "Function submit_apy_prediction",
+      "access": "agent-only",
+      "description": "Submit ML model APY prediction on-chain for a protocol",
       "parameters": [
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "prediction",
@@ -1210,8 +1447,9 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "authorized_caller": "agent"
     },
     {
       "name": "get_apy_prediction",
@@ -1251,9 +1489,9 @@
     },
     {
       "name": "set_max_consecutive_failures",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_max_consecutive_failures",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set failure count threshold before circuit breaker pauses vault",
       "parameters": [
         {
           "name": "env",
@@ -1265,8 +1503,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "MaxConsecutiveFailuresUpdatedEvent"
+      ]
     },
     {
       "name": "get_max_consecutive_failures",
@@ -1424,7 +1665,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["UserStrategyUpdatedEvent"]
+      "events": [
+        "UserStrategyUpdatedEvent"
+      ]
     },
     {
       "name": "get_user_strategy",
@@ -1464,7 +1707,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["AgentUpdatedEvent"]
+      "events": [
+        "AgentUpdatedEvent"
+      ]
     },
     {
       "name": "confirm_agent_update",
@@ -1480,7 +1725,10 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["AgentUpdateConfirmedEvent", "AgentUpdatedEvent"]
+      "events": [
+        "AgentUpdateConfirmedEvent",
+        "AgentUpdatedEvent"
+      ]
     },
     {
       "name": "cancel_agent_update",
@@ -1496,7 +1744,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["AgentUpdateCancelledEvent"]
+      "events": [
+        "AgentUpdateCancelledEvent"
+      ]
     },
     {
       "name": "get_pending_agent_update",
@@ -1531,9 +1781,9 @@
     },
     {
       "name": "update_standby_agent",
-      "category": "management",
-      "access": "public",
-      "description": "Function update_standby_agent",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set or replace the standby AI agent address",
       "parameters": [
         {
           "name": "env",
@@ -1545,14 +1795,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "StandbyAgentUpdatedEvent"
+      ]
     },
     {
       "name": "switch_to_standby_agent",
-      "category": "management",
-      "access": "public",
-      "description": "Function switch_to_standby_agent",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Promote standby AI agent to active agent key",
       "parameters": [
         {
           "name": "env",
@@ -1560,14 +1813,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "AgentKeyRotatedEvent"
+      ]
     },
     {
       "name": "add_supported_asset",
-      "category": "management",
-      "access": "public",
-      "description": "Function add_supported_asset",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Add a supported deposit asset and configure its limits",
       "parameters": [
         {
           "name": "env",
@@ -1595,14 +1851,17 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "SupportedAssetsUpdatedEvent"
+      ]
     },
     {
       "name": "update_asset_limits",
-      "category": "management",
-      "access": "public",
-      "description": "Function update_asset_limits",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Update limits for an already-supported deposit asset",
       "parameters": [
         {
           "name": "env",
@@ -1626,14 +1885,14 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
+      "requires_auth": true,
       "state_changing": true
     },
     {
       "name": "remove_supported_asset",
-      "category": "management",
-      "access": "public",
-      "description": "Function remove_supported_asset",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Remove a supported deposit asset when its pool is empty",
       "parameters": [
         {
           "name": "env",
@@ -1645,8 +1904,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "SupportedAssetsUpdatedEvent"
+      ]
     },
     {
       "name": "get_supported_assets",
@@ -1765,7 +2027,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["BlendPoolConfiguredEvent"]
+      "events": [
+        "BlendPoolConfiguredEvent"
+      ]
     },
     {
       "name": "set_dex_pool",
@@ -1789,7 +2053,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["DexPoolConfiguredEvent"]
+      "events": [
+        "DexPoolConfiguredEvent"
+      ]
     },
     {
       "name": "set_blend_approval_ttl",
@@ -1832,7 +2098,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["OwnershipTransferInitiatedEvent"],
+      "events": [
+        "OwnershipTransferInitiatedEvent"
+      ],
       "notes": [
         "Two-step process prevents accidental ownership loss",
         "New owner must accept within timeframe"
@@ -1856,7 +2124,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["OwnershipTransferredEvent"]
+      "events": [
+        "OwnershipTransferredEvent"
+      ]
     },
     {
       "name": "cancel_ownership_transfer",
@@ -1872,7 +2142,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["OwnershipTransferCancelledEvent"]
+      "events": [
+        "OwnershipTransferCancelledEvent"
+      ]
     },
     {
       "name": "get_pending_owner",
@@ -1929,14 +2201,16 @@
           "type": "bool"
         },
         {
-          "name": "max_decrease_bps",
+          "name": "_max_decrease_bps",
           "type": "u32"
         }
       ],
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["AssetsUpdatedEvent"],
+      "events": [
+        "AssetsUpdatedEvent"
+      ],
       "authorized_caller": "agent",
       "notes": [
         "Only agent can call",
@@ -1966,7 +2240,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["UpgradeScheduledEvent"]
+      "events": [
+        "UpgradeScheduledEvent"
+      ]
     },
     {
       "name": "execute_upgrade",
@@ -1986,7 +2262,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["UpgradedEvent"]
+      "events": [
+        "UpgradedEvent"
+      ]
     },
     {
       "name": "cancel_upgrade",
@@ -2006,7 +2284,9 @@
       "returns": null,
       "requires_auth": true,
       "state_changing": true,
-      "events": ["UpgradeCancelledEvent"]
+      "events": [
+        "UpgradeCancelledEvent"
+      ]
     },
     {
       "name": "get_pending_upgrade",
@@ -2353,6 +2633,21 @@
       "query_only": true
     },
     {
+      "name": "get_vault_health_snapshot",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_vault_health_snapshot",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "VaultHealthSnapshot",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "get_version",
       "category": "queries",
       "access": "public",
@@ -2524,9 +2819,9 @@
     },
     {
       "name": "set_queue_config",
-      "category": "management",
-      "access": "public",
-      "description": "Function set_queue_config",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Configure withdrawal queue capacity and request TTL",
       "parameters": [
         {
           "name": "env",
@@ -2542,8 +2837,11 @@
         }
       ],
       "returns": null,
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "QueueConfigUpdatedEvent"
+      ]
     },
     {
       "name": "get_queue_config",
@@ -2562,9 +2860,9 @@
     },
     {
       "name": "queue_withdrawal",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function queue_withdrawal",
+      "description": "Queue a withdrawal request when immediate liquidity is unavailable",
       "parameters": [
         {
           "name": "env",
@@ -2580,8 +2878,11 @@
         }
       ],
       "returns": "u32",
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "WithdrawalQueuedEvent"
+      ]
     },
     {
       "name": "get_withdrawal_request",
@@ -2603,44 +2904,10 @@
       "state_changing": false
     },
     {
-      "name": "get_vault_health_snapshot",
-      "category": "queries",
-      "access": "public",
-      "description": "Returns a read-only snapshot of vault health and operational state (#838)",
-      "parameters": [
-        {
-          "name": "env",
-          "type": "Env"
-        }
-      ],
-      "returns": "VaultHealthSnapshot",
-      "requires_auth": false,
-      "state_changing": false
-    },
-    {
-      "name": "get_withdrawal_eligibility",
-      "category": "queries",
-      "access": "public",
-      "description": "Returns the next withdrawal eligibility for a user (#846)",
-      "parameters": [
-        {
-          "name": "env",
-          "type": "Env"
-        },
-        {
-          "name": "user",
-          "type": "Address"
-        }
-      ],
-      "returns": "WithdrawalEligibility",
-      "requires_auth": false,
-      "state_changing": false
-    },
-    {
       "name": "cancel_withdrawal_request",
-      "category": "management",
+      "category": "liquidity",
       "access": "public",
-      "description": "Function cancel_withdrawal_request",
+      "description": "Cancel a pending unfulfilled withdrawal request",
       "parameters": [
         {
           "name": "env",
@@ -2656,14 +2923,36 @@
         }
       ],
       "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "WithdrawalCancelledEvent"
+      ]
+    },
+    {
+      "name": "get_withdrawal_eligibility",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_withdrawal_eligibility",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": "WithdrawalEligibility",
       "requires_auth": false,
-      "state_changing": true
+      "state_changing": false
     },
     {
       "name": "process_withdrawal_queue",
       "category": "management",
-      "access": "public",
-      "description": "Function process_withdrawal_queue",
+      "access": "agent-only",
+      "description": "Process batched withdrawal requests from the queue",
       "parameters": [
         {
           "name": "env",
@@ -2679,8 +2968,12 @@
         }
       ],
       "returns": "u32",
-      "requires_auth": false,
-      "state_changing": true
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "WithdrawalFulfilledEvent"
+      ],
+      "authorized_caller": "agent"
     }
   ],
   "events": [
@@ -2783,7 +3076,7 @@
         {
           "name": "amount_cycled",
           "type": "i128",
-          "description": "Amount actually resupplied; not a yield amount"
+          "description": "Amount actually resupplied; this is a compounding-cycle amount, not yield."
         }
       ]
     },
@@ -3185,12 +3478,12 @@
     {
       "name": "ProtocolApprovalScheduledEvent",
       "topic": "ttl_sch",
-      "description": "Emitted alongside ApprovalTtlUpdatedEvent whenever the shared protocol approval TTL is persisted, so operators can schedule a renewal before the approval window closes (Issue #847). Publishing the event never extends or renews an approval.",
+      "description": "Emitted by the contract.",
       "fields": [
         {
           "name": "protocol",
           "type": "Symbol",
-          "description": "Protocol whose approval window is described: SymbolShort(\"blend\") for the legacy Blend-only setter, SymbolShort(\"dex\") for a DEX-only window, or SymbolShort(\"both\") when the shared TTL covers every protocol approval the vault can issue."
+          "description": "Protocol whose approval window is described: `SymbolShort(\"blend\")` for the legacy Blend-only setter, `SymbolShort(\"dex\")` for a DEX-only window, or `SymbolShort(\"both\")` when the shared TTL covers every protocol approval the vault can issue."
         },
         {
           "name": "current_ledger",
@@ -3200,7 +3493,7 @@
         {
           "name": "approval_ttl",
           "type": "u32",
-          "description": "Persisted approval TTL in ledgers, equal to get_approval_ttl()"
+          "description": "Persisted approval TTL in ledgers, equal to `get_approval_ttl()`"
         },
         {
           "name": "expiry_ledger",
@@ -3210,7 +3503,7 @@
         {
           "name": "available_window",
           "type": "u32",
-          "description": "Ledgers of usable window between now and expiry (expiry_ledger - current_ledger)"
+          "description": "Ledgers of usable window between now and expiry (`expiry_ledger - current_ledger`)"
         },
         {
           "name": "lead_time",
@@ -3220,7 +3513,7 @@
         {
           "name": "renewal_deadline_ledger",
           "type": "u32",
-          "description": "Ledger by which a renewal should be submitted so the approval never lapses (expiry_ledger - lead_time)"
+          "description": "Ledger by which a renewal should be submitted so the approval never lapses (`expiry_ledger - lead_time`)"
         }
       ]
     },
@@ -3299,7 +3592,7 @@
     },
     {
       "name": "AgentUpdateCancelledEvent",
-      "topic": "unknown",
+      "topic": "agt_cncl",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3724,7 +4017,7 @@
     },
     {
       "name": "YieldAttributedEvent",
-      "topic": "unknown",
+      "topic": "yld_attr",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3756,7 +4049,7 @@
     },
     {
       "name": "AssetDepositEvent",
-      "topic": "unknown",
+      "topic": "asset_dep",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3783,7 +4076,7 @@
     },
     {
       "name": "AssetWithdrawEvent",
-      "topic": "unknown",
+      "topic": "asset_wd",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3810,7 +4103,7 @@
     },
     {
       "name": "SupportedAssetsUpdatedEvent",
-      "topic": "unknown",
+      "topic": "assets_up",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3854,7 +4147,7 @@
     },
     {
       "name": "UserStrategyUpdatedEvent",
-      "topic": "unknown",
+      "topic": "usr_strat",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3876,7 +4169,7 @@
     },
     {
       "name": "SharesMigratedEvent",
-      "topic": "unknown",
+      "topic": "migrate",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3907,6 +4200,33 @@
       ]
     },
     {
+      "name": "MigrationReceivedEvent",
+      "topic": "mig_recv",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose position was credited"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address",
+          "description": "The vault that sent the migrated funds"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of assets (USDC) credited"
+        },
+        {
+          "name": "shares_minted",
+          "type": "i128",
+          "description": "Shares minted for the credited amount"
+        }
+      ]
+    },
+    {
       "name": "MigrationTargetUpdatedEvent",
       "topic": "mig_tgt",
       "description": "Emitted by the contract.",
@@ -3929,6 +4249,45 @@
       ]
     },
     {
+      "name": "MigrationTargetScheduledEvent",
+      "topic": "mig_sched",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "new_target",
+          "type": "Address",
+          "description": "Address that will become the migration target once executed"
+        },
+        {
+          "name": "effective_ledger",
+          "type": "u32",
+          "description": "Ledger at which `execute_migration_target()` becomes callable"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who scheduled the change"
+        }
+      ]
+    },
+    {
+      "name": "MigrationTargetCancelledEvent",
+      "topic": "mig_cncl",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "cancelled_target",
+          "type": "Address",
+          "description": "Address whose pending change was cancelled"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who cancelled the change"
+        }
+      ]
+    },
+    {
       "name": "MigrationPausedEvent",
       "topic": "mig_pse",
       "description": "Emitted by the contract.",
@@ -3947,7 +4306,7 @@
     },
     {
       "name": "SharesLockedEvent",
-      "topic": "unknown",
+      "topic": "lock",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3966,11 +4325,6 @@
           "description": "Lock duration in days"
         },
         {
-          "name": "boost_multiplier",
-          "type": "u32",
-          "description": "Boost multiplier applied (e.g., 1.1x, 1.25x, 1.5x)"
-        },
-        {
           "name": "expiry_ledger",
           "type": "u32",
           "description": "Ledger when lock expires"
@@ -3979,7 +4333,7 @@
     },
     {
       "name": "SharesUnlockedEvent",
-      "topic": "unknown",
+      "topic": "unlock",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -3996,7 +4350,7 @@
     },
     {
       "name": "EmergencyWithdrawalEvent",
-      "topic": "unknown",
+      "topic": "em_wd",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -4518,18 +4872,6 @@
       "code": 79,
       "description": "The call requires single-protocol mode, but multi-protocol mode is active."
     },
-    "VaultError::RateLimitExceeded": {
-      "code": 77,
-      "description": "The configured call rate for an operation has been exhausted."
-    },
-    "VaultError::InvalidRateLimitCategory": {
-      "code": 78,
-      "description": "The owner supplied an unsupported rate-limit category."
-    },
-    "VaultError::InvalidRateLimitConfig": {
-      "code": 79,
-      "description": "A rate-limit window must be non-zero when a limit is enabled."
-    },
     "VaultError::BatchSizeExceeded": {
       "code": 80,
       "description": "A batch contains more entries than the configured maximum."
@@ -4545,6 +4887,42 @@
     "VaultError::UnsupportedAsset": {
       "code": 83,
       "description": "The token is not configured for the requested vault asset operation."
+    },
+    "VaultError::RateLimitExceeded": {
+      "code": 84,
+      "description": "The configured call rate for an operation has been exhausted."
+    },
+    "VaultError::InvalidRateLimitCategory": {
+      "code": 85,
+      "description": "The owner supplied an unsupported rate-limit category."
+    },
+    "VaultError::InvalidRateLimitConfig": {
+      "code": 86,
+      "description": "A rate-limit window must be non-zero when a limit is enabled."
+    },
+    "VaultError::WithdrawalRequestAlreadyFulfilled": {
+      "code": 87,
+      "description": "The withdrawal request has already been fulfilled."
+    },
+    "VaultError::WithdrawalRequestAlreadyCancelled": {
+      "code": 88,
+      "description": "The withdrawal request has already been cancelled."
+    },
+    "VaultError::NotRequestOwner": {
+      "code": 89,
+      "description": "The caller is not the address that created this withdrawal request."
+    },
+    "VaultError::UnauthorizedAgentError": {
+      "code": 90,
+      "description": "The caller is neither the primary agent nor the standby agent (#653)."
+    },
+    "VaultError::AlreadyPaused": {
+      "code": 91,
+      "description": "`pause()` was called while the vault is already paused (#988)."
+    },
+    "VaultError::StandbyMatchesPrimaryAgent": {
+      "code": 92,
+      "description": "`update_standby_agent` was called with the primary agent's own address. Neither `NotInitialized` nor `InvalidStrategy` (the two variants this call site used interchangeably before) describes this case; both are unrelated error conditions reused by mistake."
     },
     "ValidationError": {
       "code": 100,
@@ -4645,11 +5023,16 @@
     },
     "Symbol": {
       "description": "Fixed-length Soroban symbol",
-      "examples": ["blend", "none"]
+      "examples": [
+        "blend",
+        "none"
+      ]
     },
     "i128": {
       "description": "128-bit signed integer",
-      "notes": ["USDC amounts use 7 decimal places"]
+      "notes": [
+        "USDC amounts use 7 decimal places"
+      ]
     }
   },
   "constants": {

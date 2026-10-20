@@ -54,6 +54,14 @@ The Owner key is the primary administrative authority of the contract. As mandat
   - Configure whitelisted external protocol pool addresses (`set_blend_pool`, `set_dex_pool`).
   - Initiate and complete ownership transfers (`transfer_ownership`, `accept_ownership`).
   - Execute emergency yield harvests during agent rotation (`emergency_harvest`).
+  - Manage supported multi-asset tokens and per-asset deposit/TVL limits (`add_supported_asset`, `update_asset_limits`, `remove_supported_asset`).
+  - Manage multi-protocol allocation mode (`enable_multi_protocol`).
+  - Configure withdrawal queue settings (`set_queue_config`).
+  - Reset the circuit breaker after consecutive failure pauses (`reset_circuit_breaker`).
+  - Manage hot-standby agent key rotation (`update_standby_agent`, `switch_to_standby_agent`).
+  - Manage timelocked migration targets and pause share migrations (`schedule_migration_target`, `execute_migration_target`, `cancel_migration_target`, `set_migration_paused`).
+  - Configure rate limits and batch deposit size ceilings (`set_rate_limit`, `set_rate_limit_config`, `set_max_batch_size`, `set_batch_size_limit`).
+  - Configure minimum deposit holding periods and maximum acceptable MEV loss (`set_min_holding_period`, `set_max_acceptable_mev_loss`).
 - **CANNOT**:
   - Direct user USDC deposits to owner-controlled arbitrary wallets.
   - Withdraw or burn user shares without explicit user authorization.
@@ -65,9 +73,11 @@ The Owner key is the primary administrative authority of the contract. As mandat
 The AI Agent key is utilized by automated backend trading engines to execute strategy rebalances and update yield metrics. Because it operates in a hot server environment, it faces higher risk of exposure.
 
 - **CAN**:
-  - Trigger protocol allocation adjustments between whitelisted strategies (`rebalance`).
+  - Trigger protocol allocation adjustments between whitelisted strategies (`rebalance`, `rebalance_multi`).
   - Execute routine yield compounding (`harvest`).
   - Report total asset valuations and strategy yield/losses (`update_total_assets`).
+  - Submit on-chain ML APY predictions and MEV slippage reports (`submit_apy_prediction`, `submit_mev_report`).
+  - Set protocol APY metrics and process batched withdrawal requests (`set_protocol_apy`, `process_withdrawal_queue`).
 - **CANNOT**:
   - Transfer vault funds to external addresses outside whitelisted protocol pools.
   - Change vault administrative configurations (caps, pool targets, timelocks, owners).
@@ -81,6 +91,11 @@ Depositors are un-privileged external accounts interacting with the vault to ear
 
 - **CAN**:
   - Deposit USDC into the vault to mint proportional shares (`deposit`, `batch_deposit`).
+  - Deposit and withdraw supported non-USDC assets via independent asset share pools (`deposit_asset`, `withdraw_asset`).
+  - Lock vault shares for duration boosts or unlock expired locked shares (`lock_shares`, `unlock_shares`).
+  - Queue withdrawal requests or cancel pending requests (`queue_withdrawal`, `cancel_withdrawal_request`).
+  - Migrate vault shares to a new contract target (`migrate_shares`).
+  - Execute emergency withdrawals while the vault is paused (`emergency_withdraw`).
   - Redeem vault shares for underlying USDC at any time (`withdraw`, `withdraw_all`).
   - Select individual yield strategy preferences (`set_user_strategy`).
   - Call permissionless maintenance utilities (`touch_user_ttl`).
@@ -330,51 +345,87 @@ This register documents every owner-only and agent-only capability, the blast ra
 
 | Function | Owner | Agent | User | Anyone |
 |----------|-------|-------|------|--------|
-| update_agent | yes | - | - | - |
-| confirm_agent_update | yes | - | - | - |
+| accept_ownership | - | - | - | pending owner |
+| add_supported_asset | yes | - | - | - |
+| batch_deposit | - | - | yes | - |
 | cancel_agent_update | yes | - | - | - |
-| update_standby_agent | yes | - | - | - |
-| switch_to_standby_agent | yes | - | - | - |
-| update_total_assets | - | yes | - | - |
+| cancel_migration_target | yes | - | - | - |
+| cancel_ownership_transfer | yes | - | - | - |
+| cancel_upgrade | yes | - | - | - |
+| cancel_withdrawal_request | - | - | yes | - |
+| confirm_agent_update | yes | - | - | - |
+| convert_to_assets | - | - | - | anyone |
+| convert_to_shares | - | - | - | anyone |
 | deposit | - | - | yes | - |
-| withdraw | - | - | yes | - |
-| withdraw_all | - | - | yes | - |
-| rebalance | - | yes | - | - |
-| harvest | - | yes | - | - |
-| pause | yes | - | - | - |
+| deposit_asset | - | - | yes | - |
+| emergency_harvest | yes | - | - | - |
 | emergency_pause | yes | - | - | - |
-| unpause | yes | - | - | - |
+| emergency_withdraw | - | - | yes | - |
+| enable_multi_protocol | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| execute_upgrade | yes | - | - | - |
+| harvest | - | yes | - | - |
+| lock_shares | - | - | yes | - |
+| migrate_shares | - | - | yes | - |
+| pause | yes | - | - | - |
+| preview_deposit_to_shares | - | - | - | anyone |
+| preview_shares_to_assets | - | - | - | anyone |
+| preview_withdraw | - | - | - | anyone |
+| process_withdrawal_queue | - | yes | - | - |
+| queue_withdrawal | - | - | yes | - |
+| rebalance | - | yes | - | - |
+| rebalance_multi | - | yes | - | - |
+| receive_migration | - | - | - | anyone |
+| remove_supported_asset | yes | - | - | - |
 | reset_circuit_breaker | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| schedule_upgrade | yes | - | - | - |
+| set_approval_ttl | yes | - | - | - |
+| set_batch_size_limit | yes | - | - | - |
+| set_blend_approval_ttl | yes | - | - | - |
+| set_blend_pool | yes | - | - | - |
 | set_caps | yes | - | - | - |
+| set_deposit_limits | yes | - | - | - |
+| set_dex_pool | yes | - | - | - |
+| set_limits | yes | - | - | - |
+| set_max_acceptable_mev_loss | yes | - | - | - |
+| set_max_batch_size | yes | - | - | - |
+| set_max_consecutive_failures | yes | - | - | - |
+| set_max_decrease_bps | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
+| set_min_holding_period | yes | - | - | - |
+| set_protocol_apy | - | yes | - | - |
+| set_queue_config | yes | - | - | - |
+| set_rate_limit | yes | - | - | - |
+| set_rate_limit_config | yes | - | - | - |
+| set_rebalance_cooldown | yes | - | - | - |
 | set_tvl_cap | yes | - | - | - |
 | set_user_deposit_cap | yes | - | - | - |
-| set_deposit_limits | yes | - | - | - |
-| set_limits | yes | - | - | - |
-| set_rebalance_cooldown | yes | - | - | - |
-| set_approval_ttl | yes | - | - | - |
-| set_blend_approval_ttl | yes | - | - | - |
-| schedule_upgrade | yes | - | - | - |
-| execute_upgrade | yes | - | - | - |
-| cancel_upgrade | yes | - | - | - |
-| set_blend_pool | yes | - | - | - |
-| set_dex_pool | yes | - | - | - |
-| schedule_migration_target | yes | - | - | - |
-| execute_migration_target | yes | - | - | - |
-| cancel_migration_target | yes | - | - | - |
-| set_migration_paused | yes | - | - | - |
-| transfer_ownership | yes | - | - | - |
-| cancel_ownership_transfer | yes | - | - | - |
-| accept_ownership | - | - | - | pending owner |
-| touch_user_ttl | - | - | - | anyone |
 | set_user_strategy | - | - | yes | - |
-| set_min_holding_period | yes | - | - | - |
-| get_min_holding_period | - | - | - | anyone |
-| set_rate_limit, set_rate_limit_config | yes | - | - | - |
-| set_queue_config | yes | - | - | - |
-| process_withdrawal_queue | - | - | - | anyone (authenticated) |
-| submit_mev_report | - | yes | - | - |
-| set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
+| submit_mev_report | - | yes | - | - |
+| switch_to_standby_agent | yes | - | - | - |
+| touch_user_ttl | - | - | - | anyone |
+| transfer_ownership | yes | - | - | - |
+| unlock_shares | - | - | yes | - |
+| unpause | yes | - | - | - |
+| update_agent | yes | - | - | - |
+| update_asset_limits | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| update_total_assets | - | yes | - | - |
+| withdraw | - | - | yes | - |
+| withdraw_all | - | - | yes | - |
+| withdraw_asset | - | - | yes | - |
+
+### Multi-Asset Support (#646)
+
+The vault supports multiple deposit assets (e.g., XLM, USDT, EURC, USDC) alongside the primary USDC pool. Each supported asset maintains its own isolated accounting pool (`AssetTotals` and `MultiAssetKey::Balance`) to prevent cross-asset pricing distortions:
+
+- `add_supported_asset`: **Owner only** (`Self::require_is_owner`). Registers a new token address, min/max deposit limits, and per-asset TVL cap. Emits `SupportedAssetsUpdatedEvent`.
+- `update_asset_limits`: **Owner only** (`Self::require_is_owner`). Adjusts deposit floors/ceilings or the TVL cap for an existing asset pool.
+- `remove_supported_asset`: **Owner only** (`Self::require_is_owner`). Deregisters an asset when its pool has zero remaining shares and assets (`shares == 0 && assets == 0`), ensuring user funds cannot be stranded.
+- `deposit_asset`: **User only** (`user.require_auth`). Deposits a supported non-USDC token, validates per-asset limits and TVL cap, mints shares in that asset's independent share pool, and transfers tokens from user to vault. Emits `AssetDepositEvent`.
+- `withdraw_asset`: **User only** (`user.require_auth`). Burns user shares in the asset's pool, enforces per-user withdrawal rate limits, and transfers tokens from vault to user. Emits `AssetWithdrawEvent`.
 
 
 ### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)
@@ -461,6 +512,7 @@ to compound yield during this window:
 | `batch_deposit` | User | 🔴 BLOCKED | Same reason as `deposit` |
 | `withdraw` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
 | `withdraw_all` | User | 🔴 BLOCKED | See note below on withdrawal semantics |
+| `receive_migration` | Anyone (Source Vault) | 🔴 BLOCKED | Cannot credit migrated positions while vault is paused |
 | `rebalance` | Agent | 🔴 BLOCKED | No fund movement while vault is paused |
 | `harvest` | Agent | 🔴 BLOCKED | No protocol interaction while paused |
 | `schedule_upgrade` | Owner | 🔴 BLOCKED | Upgrades must not be proposed during an emergency |
