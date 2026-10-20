@@ -152,14 +152,20 @@ fn test_security_inflation_attack_bounded_by_actual_assets() {
     assert_eq!(client.get_total_assets(), deposit_user * 2);
 
     // Agent tries to inflate: total_assets = 100 USDC (only 20 exist). Must fail.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.update_total_assets(&agent, &100_000_000_i128, &false, &0);
-    }));
+    //
+    // Uses `try_update_total_assets` (a `Result`-returning call) rather than
+    // `std::panic::catch_unwind` around the panicking client call: unwinding
+    // through the Soroban host mid-invocation can leave its internal call
+    // context corrupted ("no contract running" on the next call), whereas
+    // `try_*` cleanly surfaces the contract error without ever panicking.
+    let result = client.try_update_total_assets(&agent, &100_000_000_i128, &false, &0);
     assert!(result.is_err(), "inflation beyond backing must fail");
 
     // Because the inflation failed, accomplice withdrawal must be bounded by
-    // the real 20 USDC valuation.
-    user_b.require_auth();
+    // the real 20 USDC valuation. (`env.mock_all_auths()` is already active
+    // for the whole test; a standalone `user_b.require_auth()` call here —
+    // outside of any contract invocation — corrupts the host's internal call
+    // context rather than actually asserting anything.)
     let b_shares_before = client.get_shares(&user_b);
     let b_balance_before = client.get_balance(&user_b);
 

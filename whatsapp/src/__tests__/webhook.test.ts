@@ -91,13 +91,16 @@ require.cache[dbPath] = {
   paths: [],
 } as any;
 
-import { test, describe, beforeEach } from 'node:test';
+import { test, describe, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { VaultClient } from '@neurowealth/vault-client';
 import { handleWhatsAppWebhook } from '../webhook';
 import { InMemoryStateStore, setStateStore } from '../stateStore';
 
 setStateStore(new InMemoryStateStore());
 import { INPUT_LIMITS, SAFE_OVERSIZE_REPLY, SAFE_STRATEGY_REPLY, SAFE_MALFORMED_REPLY } from '../inputBounds';
+
+const FAKE_TX_HASH = 'b'.repeat(64);
 
 // ── Minimal req/res helpers ──────────────────────────────────────────────────
 
@@ -290,7 +293,16 @@ describe('webhook – VERIFIED state: balance / earnings / APY', () => {
 });
 
 describe('webhook – VERIFIED state: deposit', () => {
+  // #1001: handleDeposit now submits a real @neurowealth/vault-client
+  // `deposit` invocation rather than fabricating a hash, so the one test
+  // that reaches it needs VaultClient.prototype.deposit mocked, the same
+  // way vault-router.test.ts mocks it directly.
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
   test('valid deposit returns confirmation with tx hash', async () => {
+    mock.method(VaultClient.prototype, 'deposit', () => Promise.resolve({ hash: FAKE_TX_HASH }));
     const phone = nextPhone();
     await fullVerify(phone);
     await handleWhatsAppWebhook(makeReq(phone, 'deposit 100 USDC'), makeRes());
@@ -321,7 +333,14 @@ describe('webhook – VERIFIED state: deposit', () => {
 });
 
 describe('webhook – VERIFIED state: withdraw', () => {
+  // #1001: handleWithdraw now submits a real @neurowealth/vault-client
+  // `withdraw`/`withdraw_all` invocation rather than fabricating a hash.
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
   test('valid partial withdraw returns confirmation', async () => {
+    mock.method(VaultClient.prototype, 'withdraw', () => Promise.resolve({ hash: FAKE_TX_HASH }));
     const phone = nextPhone();
     await fullVerify(phone);
     await handleWhatsAppWebhook(makeReq(phone, 'withdraw 50'), makeRes());
@@ -329,6 +348,9 @@ describe('webhook – VERIFIED state: withdraw', () => {
   });
 
   test('withdraw all returns all-funds confirmation', async () => {
+    mock.method(VaultClient.prototype, 'withdraw_all', () =>
+      Promise.resolve({ hash: FAKE_TX_HASH, result: 0n }),
+    );
     const phone = nextPhone();
     await fullVerify(phone);
     await handleWhatsAppWebhook(makeReq(phone, 'withdraw all'), makeRes());

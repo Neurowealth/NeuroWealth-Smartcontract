@@ -123,7 +123,7 @@ describe("AlertDispatcher", () => {
 
       await slackDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload).toHaveProperty("text");
       expect(payload).toHaveProperty("blocks");
       expect(payload.blocks).toEqual(
@@ -141,19 +141,24 @@ describe("AlertDispatcher", () => {
 
       await slackDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       const metricsBlock = payload.blocks.find((b: any) => b.type === "section" && b.text?.text?.includes("Metrics"));
       expect(metricsBlock).toBeDefined();
     });
 
     it("should use correct emoji for Slack severity", async () => {
-      const slackWebhook = mockWebhooks.find((w) => w.type === "slack");
-      const slackDispatcher = new AlertDispatcher([slackWebhook!]);
+      // Deliberately no `severity` filter: mockWebhooks' own slack entry is
+      // pinned to "critical", which would filter out the warning-severity
+      // dispatch below before it ever reaches sendAlert. This test is about
+      // the emoji formatting, not severity filtering (covered separately
+      // under "Severity Filtering").
+      const slackWebhook = { ...mockWebhooks.find((w) => w.type === "slack")!, severity: undefined };
+      const slackDispatcher = new AlertDispatcher([slackWebhook]);
 
       const criticalAlert = { ...testAlert, severity: "critical" as const };
       await slackDispatcher.dispatch(criticalAlert);
 
-      let payload = mockedAxios.post.mock.calls[0][1] as any;
+      let payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.text).toContain("🚨");
 
       mockedAxios.post.mockClear();
@@ -166,7 +171,7 @@ describe("AlertDispatcher", () => {
       const warningAlert = { ...testAlert, severity: "warning" as const };
       await warningSlackDispatcher.dispatch(warningAlert);
 
-      payload = mockedAxios.post.mock.calls[0][1] as any;
+      payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.text).toContain("⚠️");
     });
   });
@@ -178,7 +183,7 @@ describe("AlertDispatcher", () => {
 
       await discordDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload).toHaveProperty("embeds");
       expect(payload.embeds).toHaveLength(1);
       expect(payload.embeds[0]).toHaveProperty("title");
@@ -195,7 +200,7 @@ describe("AlertDispatcher", () => {
       const criticalAlert = { ...testAlert, severity: "critical" as const };
       await discordDispatcher.dispatch(criticalAlert);
 
-      let payload = mockedAxios.post.mock.calls[0][1] as any;
+      let payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.embeds[0].color).toBe(15158332); // Red for critical
 
       mockedAxios.post.mockClear();
@@ -203,7 +208,7 @@ describe("AlertDispatcher", () => {
       const warningAlert = { ...testAlert, severity: "warning" as const };
       await discordDispatcher.dispatch(warningAlert);
 
-      payload = mockedAxios.post.mock.calls[0][1] as any;
+      payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.embeds[0].color).toBe(15105570); // Orange for warning
     });
 
@@ -213,7 +218,7 @@ describe("AlertDispatcher", () => {
 
       await discordDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.embeds[0].fields).toBeDefined();
       expect(payload.embeds[0].fields.length).toBeGreaterThan(0);
       expect(payload.embeds[0].fields).toContainEqual(
@@ -236,7 +241,7 @@ describe("AlertDispatcher", () => {
 
       await telegramDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload).toHaveProperty("text");
       expect(payload).toHaveProperty("parse_mode");
       expect(payload.parse_mode).toBe("HTML");
@@ -252,7 +257,7 @@ describe("AlertDispatcher", () => {
 
       await telegramDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.text).toContain("<b>");
       expect(payload.text).toContain("</b>");
       expect(payload.text).toContain("<code>");
@@ -271,7 +276,7 @@ describe("AlertDispatcher", () => {
 
       await genericDispatcher.dispatch(testAlert);
 
-      const payload = mockedAxios.post.mock.calls[0][1] as any;
+      const payload = mockedAxios.post.mock.calls[0][1] as Record<string, any>;
       expect(payload.alert_id).toBe(testAlert.id);
       expect(payload.type).toBe(testAlert.type);
       expect(payload.severity).toBe(testAlert.severity);

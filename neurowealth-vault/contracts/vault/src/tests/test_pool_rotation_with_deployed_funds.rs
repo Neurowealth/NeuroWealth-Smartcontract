@@ -239,7 +239,7 @@ fn test_cross_protocol_rotation_blend_to_dex_with_deployed_funds() {
     env.mock_all_auths();
 
     // Setup with Blend
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_pool_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -250,7 +250,7 @@ fn test_cross_protocol_rotation_blend_to_dex_with_deployed_funds() {
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(blend_pool_client.supplied(&usdc_token), deposit_amount);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
@@ -264,7 +264,7 @@ fn test_cross_protocol_rotation_blend_to_dex_with_deployed_funds() {
 
     // Rebalance to DEX — should exit Blend first, then enter DEX
     let dex_pool_client = MockDexPoolClient::new(&env, &dex_pool);
-    client.rebalance(&_agent, &symbol_short!("dex"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
 
     // Verify transition: Blend exited, DEX entered
     assert_eq!(

@@ -166,7 +166,7 @@ fn test_rebalance_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
@@ -174,7 +174,7 @@ fn test_rebalance_blocked_while_paused() {
 
     // require_not_paused fires before any blend check
     client.rebalance(
-        &_agent,
+        &agent,
         &soroban_sdk::symbol_short!("blend"),
         &500_i128,
         &0_i128,
@@ -283,7 +283,7 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
     env.mock_all_auths();
 
     // --- Part 1: owner-initiated pause emits VaultPausedEvent (topic "paused") ---
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
@@ -311,7 +311,7 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
 
     // --- Part 2: circuit-breaker auto-pause emits EmergencyPausedEvent (topic "emerg") ---
     // Deploy a fresh vault with Blend so the circuit breaker can fire.
-    let (contract_id2, _agent2, owner2, usdc_token2, blend_pool2) =
+    let (contract_id2, agent2, owner2, usdc_token2, blend_pool2) =
         setup_vault_with_token_and_blend(&env);
     let client2 = NeuroWealthVaultClient::new(&env, &contract_id2);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool2);
@@ -332,19 +332,19 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
 
     // Three consecutive failures trip the default threshold (3).
     client2.rebalance(
-        &_agent2,
+        &agent2,
         &soroban_sdk::symbol_short!("blend"),
         &500_i128,
         &0_i128,
     );
     client2.rebalance(
-        &_agent2,
+        &agent2,
         &soroban_sdk::symbol_short!("blend"),
         &500_i128,
         &0_i128,
     );
     client2.rebalance(
-        &_agent2,
+        &agent2,
         &soroban_sdk::symbol_short!("blend"),
         &500_i128,
         &0_i128,
@@ -425,7 +425,7 @@ fn test_emergency_pause_blocks_operations_and_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -475,7 +475,7 @@ fn test_emergency_pause_blocks_operations_and_emits_event() {
 
     // 6. Asserts a rebalance attempt panics with VaultError::Paused (#35)
     let rebalance_res = client.try_rebalance(
-        &_agent,
+        &agent,
         &soroban_sdk::symbol_short!("blend"),
         &500_i128,
         &0_i128,
@@ -611,14 +611,14 @@ fn pause_matrix_withdraw_all_blocked() {
 fn pause_matrix_rebalance_blocked() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
 
     assert_eq!(
         client.try_rebalance(
-            &_agent,
+            &agent,
             &soroban_sdk::symbol_short!("blend"),
             &500_i128,
             &0_i128
@@ -633,13 +633,13 @@ fn pause_matrix_rebalance_blocked() {
 fn pause_matrix_harvest_blocked() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
 
     assert_eq!(
-        client.try_harvest(&_agent, &0_i128),
+        client.try_harvest(&agent, &0_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR))),
         "harvest must be blocked while paused"
     );

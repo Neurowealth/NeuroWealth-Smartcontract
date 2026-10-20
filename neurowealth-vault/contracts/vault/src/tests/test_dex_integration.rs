@@ -17,7 +17,7 @@ fn test_dex_integration_supply_via_rebalance() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -32,7 +32,7 @@ fn test_dex_integration_supply_via_rebalance() {
 
     // 3. Rebalance into the DEX pool.
     let protocol = Symbol::new(&env, "dex");
-    vault_client.rebalance(&_agent, &protocol, &850, &0_i128);
+    vault_client.rebalance(&agent, &protocol, &850, &0_i128);
 
     // 4. Funds moved to the DEX, protocol tracked as "dex".
     assert_eq!(token_client.balance(&vault_id), 0);
@@ -52,7 +52,7 @@ fn test_dex_integration_withdraw_via_rebalance() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -61,11 +61,11 @@ fn test_dex_integration_withdraw_via_rebalance() {
     // 1. Supply to the DEX.
     let amount = 50_000_000;
     token_client.mint(&vault_id, &amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
     assert_eq!(token_client.balance(&dex_pool), amount);
 
     // 2. Exit the DEX by rebalancing to "none".
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "none"), &0, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0_i128);
 
     // 3. Funds restored, protocol back to "none".
     assert_eq!(token_client.balance(&vault_id), amount);
@@ -86,7 +86,7 @@ fn test_dex_integration_balance_read() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -94,7 +94,7 @@ fn test_dex_integration_balance_read() {
 
     let amount = 75_000_000;
     token_client.mint(&vault_id, &amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
 
     // The pool reports the vault's supplied position via `balance(asset, user)`.
     let args: Vec<Val> = vec![&env, usdc_token.into_val(&env), vault_id.into_val(&env)];
@@ -108,13 +108,13 @@ fn test_rebalance_dex_without_pool_configured_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, _owner, usdc_token, _dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, _owner, usdc_token, _dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
     token_client.mint(&vault_id, &10_000_000);
     // No set_dex_pool — DexPoolNotConfigured (#46).
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn test_dex_supply_min_out_enforced() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -247,7 +247,7 @@ fn test_dex_supply_min_out_enforced() {
     dex_client.set_max_supply_limit(&40_000_000);
 
     // Require at least 50 USDC supplied: the 40 USDC fill trips MinOutNotMet (#42).
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &50_000_000);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &50_000_000);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn test_rebalance_switch_blend_to_dex() {
     env.mock_all_auths();
 
     // Vault with both a Blend pool and a DEX pool.
-    let (vault_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (vault_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let blend_pool = env.register_contract(None, MockBlendPool);
@@ -268,12 +268,12 @@ fn test_rebalance_switch_blend_to_dex() {
     // 1. Deploy to Blend.
     let amount = 60_000_000;
     token_client.mint(&vault_id, &amount);
-    vault_client.rebalance(&_agent, &symbol_short!("blend"), &850, &0_i128);
+    vault_client.rebalance(&agent, &symbol_short!("blend"), &850, &0_i128);
     assert_eq!(token_client.balance(&blend_pool), amount);
     assert_eq!(vault_client.get_current_protocol(), symbol_short!("blend"));
 
     // 2. Switch to the DEX — exits Blend, then supplies the DEX.
-    vault_client.rebalance(&_agent, &symbol_short!("dex"), &900, &0_i128);
+    vault_client.rebalance(&agent, &symbol_short!("dex"), &900, &0_i128);
 
     assert_eq!(token_client.balance(&blend_pool), 0);
     assert_eq!(token_client.balance(&dex_pool), amount);
@@ -285,7 +285,7 @@ fn test_user_withdraw_pulls_from_dex() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -295,7 +295,7 @@ fn test_user_withdraw_pulls_from_dex() {
     let user = Address::generate(&env);
     let amount = 80_000_000;
     mint_and_deposit(&env, &vault_client, &usdc_token, &user, amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
     assert_eq!(token_client.balance(&vault_id), 0);
     assert_eq!(token_client.balance(&dex_pool), amount);
 
@@ -317,7 +317,7 @@ fn test_dex_balance_delta_against_lying_pool() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -336,7 +336,7 @@ fn test_dex_balance_delta_against_lying_pool() {
     dex_client.set_reported_supply_amount(&lying_reported);
 
     // Rebalance into DEX. min_out = 0 so no MinOutNotMet.
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
 
     // The vault's recorded total_assets must reflect the actual balance delta
     // (deposit_amount), not the pool's inflated claim (lying_reported).
@@ -362,7 +362,7 @@ fn test_dex_partial_fill_rebalance_accounts_for_actual_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -378,7 +378,7 @@ fn test_dex_partial_fill_rebalance_accounts_for_actual_amount() {
     dex_client.set_max_supply_limit(&pool_cap);
 
     // Rebalance with min_out = 0 so slippage guard does not block a partial fill.
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
 
     // The pool accepted only 60 USDC; the vault retains the remaining 40 USDC.
     let actual_supplied = pool_cap;
@@ -418,7 +418,7 @@ fn test_set_dex_pool_rotation_while_deployed_strands_funds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let old_pool_client = MockDexPoolClient::new(&env, &old_pool);
@@ -428,7 +428,7 @@ fn test_set_dex_pool_rotation_while_deployed_strands_funds() {
     // Deploy funds to the DEX.
     let deposit_amount = 20_000_000_i128;
     token_client.mint(&vault_id, &deposit_amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
     assert_eq!(
         old_pool_client.balance(&usdc_token, &vault_id),
         deposit_amount,
@@ -461,7 +461,7 @@ fn test_set_dex_pool_rotation_while_deployed_strands_funds() {
     // Attempting to exit the position silently succeeds without recovering
     // anything: the vault queries new_pool (via DataKey::DexPool), sees 0,
     // and flips CurrentProtocol to "none" — funds remain stranded.
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "none"), &0, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0_i128);
 
     assert_eq!(
         vault_client.get_current_protocol(),
@@ -495,7 +495,7 @@ fn test_rebalance_dex_withdraw_leg_below_min_out_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -505,7 +505,7 @@ fn test_rebalance_dex_withdraw_leg_below_min_out_panics() {
     // Deploy 100 USDC into the DEX pool.
     let deposit_amount = 100_000_000_i128;
     token_client.mint(&vault_id, &deposit_amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "dex"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
     assert_eq!(token_client.balance(&dex_pool), deposit_amount);
 
     // Cap the pool's withdrawal to 30 USDC — simulates a partial-fill exit.
@@ -514,5 +514,5 @@ fn test_rebalance_dex_withdraw_leg_below_min_out_panics() {
     // Attempt to exit with min_out = 50 USDC.
     // The pool can only return 30 USDC, which is below min_out — must panic
     // with MinOutNotMet (#42), leaving no partial state change.
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "none"), &0, &50_000_000_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &50_000_000_i128);
 }

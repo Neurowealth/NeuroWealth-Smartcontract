@@ -31,7 +31,7 @@ fn asset_breakdown_matches_getters_for_fully_deployed_assets() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     client.set_blend_pool(&owner, &blend_pool);
@@ -40,7 +40,7 @@ fn asset_breakdown_matches_getters_for_fully_deployed_assets() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     assert_eq!(client.get_idle_balance(), 0);
     assert_eq!(client.get_deployed_assets(), deposit_amount);
@@ -52,7 +52,7 @@ fn asset_breakdown_matches_getters_for_partially_deployed_assets() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -64,7 +64,7 @@ fn asset_breakdown_matches_getters_for_partially_deployed_assets() {
     blend_client.set_max_supply_limit(&supply_limit);
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     assert_eq!(client.get_idle_balance(), deposit_amount - supply_limit);
     assert_eq!(client.get_deployed_assets(), supply_limit);

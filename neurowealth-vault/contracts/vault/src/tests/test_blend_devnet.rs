@@ -14,7 +14,7 @@ fn test_blend_production_entrypoints_on_mock_pool() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -23,9 +23,9 @@ fn test_blend_production_entrypoints_on_mock_pool() {
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
 
-    client.rebalance(&_agent, &symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
-    client.rebalance(&_agent, &symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));
 }

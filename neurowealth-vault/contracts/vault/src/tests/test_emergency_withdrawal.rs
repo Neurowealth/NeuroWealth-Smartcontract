@@ -139,7 +139,7 @@ fn test_emergency_withdraw_with_no_shares_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);

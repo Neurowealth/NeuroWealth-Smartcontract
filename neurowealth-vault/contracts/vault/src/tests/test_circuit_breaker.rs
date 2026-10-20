@@ -119,7 +119,7 @@ fn test_success_between_failures_resets_counter() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -131,14 +131,14 @@ fn test_success_between_failures_resets_counter() {
 
     // Two failures.
     blend_client.set_max_supply_limit(&-1_i128);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(client.get_consecutive_failures(), 2);
     assert!(!client.is_paused());
 
     // A success resets the counter to zero.
     blend_client.set_max_supply_limit(&0_i128); // no limit -> full supply succeeds
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(
         client.get_consecutive_failures(),
         0,
@@ -150,8 +150,8 @@ fn test_success_between_failures_resets_counter() {
     // stays unpaused. Without the reset it would have reached 4 and paused.
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
     blend_client.set_max_supply_limit(&-1_i128);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(client.get_consecutive_failures(), 2);
     assert!(
         !client.is_paused(),

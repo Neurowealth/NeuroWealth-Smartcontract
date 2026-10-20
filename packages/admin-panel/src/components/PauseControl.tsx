@@ -53,10 +53,9 @@ export function PauseControl({ client, signer }: PauseControlProps) {
       }
 
       if (!hash) {
-        throw new Error("Transaction hash missing");
+        throw new Error("Transaction did not return a hash");
       }
-
-      setTxHash(hash ?? null);
+      setTxHash(hash);
       setPaused(!paused);
       setShowConfirm(false);
 

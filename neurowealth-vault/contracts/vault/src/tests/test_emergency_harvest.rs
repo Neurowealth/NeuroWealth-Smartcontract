@@ -18,8 +18,7 @@ use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, TryFromVa
 /// Sets up a vault with Blend, deposits, and moves funds into the protocol
 /// so there is an active position to harvest from.
 fn setup_with_deployed_funds(env: &Env) -> (Address, Address, Address, Address, Address) {
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
-        setup_vault_with_token_and_blend(env);
+    let (contract_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
 
     client.set_blend_pool(&owner, &blend_pool);
@@ -28,9 +27,9 @@ fn setup_with_deployed_funds(env: &Env) -> (Address, Address, Address, Address, 
     mint_and_deposit(env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Move all idle funds into Blend so harvest has something to compound.
-    client.rebalance(&_agent, &symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
-    (contract_id, _agent, owner, usdc_token, blend_pool)
+    (contract_id, agent, owner, usdc_token, blend_pool)
 }
 
 // ============================================================================
@@ -164,7 +163,7 @@ fn test_emergency_harvest_works_after_circuit_breaker_pause() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -175,20 +174,17 @@ fn test_emergency_harvest_works_after_circuit_breaker_pause() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Move funds into Blend so we have something to harvest later.
-    client.rebalance(&_agent, &symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
-    // Trip the circuit breaker (3 consecutive failures). Once everything is
-    // deployed, re-calling `rebalance(..., "blend", ...)` is a no-op (vault
-    // idle balance is 0, so there's nothing new to attempt supplying — it
-    // never even calls the pool, let alone fails), so it can never trip the
-    // breaker here regardless of `set_max_supply_limit`. `harvest()` always
-    // attempts a real withdraw-then-resupply round trip against the existing
-    // deployed position, so it's the right lever for a genuine failure, same
-    // as `test_harvest::test_consecutive_failed_harvests_trip_circuit_breaker`.
-    blend_client.set_max_withdraw_limit(&-1_i128);
-    client.harvest(&_agent, &0_i128);
-    client.harvest(&_agent, &0_i128);
-    client.harvest(&_agent, &0_i128);
+    // Trip the circuit breaker (3 consecutive failures). Each `rebalance`
+    // call only counts as a "failed" outcome (vs. a "noop") when there is
+    // idle vault balance to attempt supplying, so top up before each of the
+    // three attempts below.
+    blend_client.set_max_supply_limit(&-1_i128);
+    for _ in 0..3 {
+        mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000_i128);
+        client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    }
     assert!(client.is_paused(), "circuit breaker must pause");
 
     // Owner can still harvest to compound any remaining yield before

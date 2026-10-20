@@ -96,7 +96,8 @@ fn test_zero_share_holders_are_filtered_out() {
     mint_and_deposit(&env, &client, &usdc, &u2, 3_000_000);
     mint_and_deposit(&env, &client, &usdc, &u3, 7_000_000);
 
-    // u2 fully withdraws: shares -> 0, but the index slot stays.
+    // u2 fully withdraws: shares -> 0. `prune_user_from_index` (#440) also
+    // actively removes u2 from the index, so no stale slot remains.
     client.withdraw_all(&u2);
     assert_eq!(client.get_shares(&u2), 0);
 

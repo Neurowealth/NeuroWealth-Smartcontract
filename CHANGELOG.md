@@ -10,6 +10,13 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Deprecate `set_limits` (Issue #991; no behavior change):** `set_limits` is
+  marked `#[deprecated]` in favor of `set_caps` (or `set_tvl_cap`/
+  `set_user_deposit_cap`/`set_deposit_limits` individually), which use
+  clearer parameter names and a consistent `panic_with_error!` convention
+  instead of `set_limits`'s `Result`-returning style. See `DEPRECATION.md`
+  for the migration path. `set_limits` itself is unchanged and still
+  functions; only tests that exercise its own access control still call it.
 - **WhatsApp bot hardening (Issues #943, #944, #945, #946; no contract change):**
   OTP challenges and sessions are persisted in Postgres (`whatsapp_otps`,
   `whatsapp_sessions`) with atomic, replica-safe operations; custodial wallet

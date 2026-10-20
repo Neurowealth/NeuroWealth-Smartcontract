@@ -262,7 +262,7 @@ fn test_cancel_unreserves_shares() {
 fn test_cannot_queue_locked_shares() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let user = Address::generate(&env);
     client.set_queue_config(&100u32, &3600u64);

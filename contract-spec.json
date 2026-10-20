@@ -1328,6 +1328,40 @@
       "state_changing": false
     },
     {
+      "name": "set_max_decrease_bps",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Configure the maximum loss percentage reported in a single total assets update",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "bps",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_decrease_bps",
+      "category": "query",
+      "access": "public",
+      "description": "Get the maximum loss percentage reported in a single total assets update",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "submit_mev_report",
       "category": "management",
       "access": "agent-only",
@@ -2167,7 +2201,7 @@
           "type": "bool"
         },
         {
-          "name": "max_decrease_bps",
+          "name": "_max_decrease_bps",
           "type": "u32"
         }
       ],

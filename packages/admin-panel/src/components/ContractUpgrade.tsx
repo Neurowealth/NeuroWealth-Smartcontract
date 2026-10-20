@@ -101,7 +101,10 @@ export function ContractUpgrade({
         signer.publicKey(),
         hashBytes as any,
       );
-      setTxHash(result?.hash ?? null);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
+      setTxHash(result.hash);
       setShowScheduleConfirm(false);
 
       // Fetch updated info
@@ -127,12 +130,11 @@ export function ContractUpgrade({
 
     try {
       const result = await client.execute_upgrade(signer, signer.publicKey());
-      setTxHash(result?.hash ?? null);
-
-      const txHash = result?.hash;
-      if (!txHash) {
-        throw new Error("Transaction hash missing");
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
       }
+      setTxHash(result.hash);
+      const txHash = result.hash;
 
       // Poll for confirmation
       const server = getSorobanServer(network);
@@ -164,12 +166,11 @@ export function ContractUpgrade({
 
     try {
       const result = await client.cancel_upgrade(signer, signer.publicKey());
-      setTxHash(result?.hash ?? null);
-
-      const txHash = result?.hash;
-      if (!txHash) {
-        throw new Error("Transaction hash missing");
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
       }
+      setTxHash(result.hash);
+      const txHash = result.hash;
 
       // Poll for confirmation
       const server = getSorobanServer(network);

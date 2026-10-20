@@ -1792,6 +1792,23 @@ export class VaultClient {
   }
 
   /**
+   * Configure the maximum loss percentage reported in a single total assets update
+   * @param bps
+   */
+  async set_max_decrease_bps(signer: StellarSdk.Keypair, bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(bps, { type: 'u32' })];
+    return this.invoke<void>('set_max_decrease_bps', args, signer);
+  }
+
+  /**
+   * Get the maximum loss percentage reported in a single total assets update
+   */
+  async get_max_decrease_bps(sourcePublicKey: string): Promise<number> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<number>('get_max_decrease_bps', args, sourcePublicKey);
+  }
+
+  /**
    * Submit MEV loss report after swap or rebalance
    * @param agent
    * @param protocol
@@ -2168,11 +2185,11 @@ export class VaultClient {
    * @param agent
    * @param new_total
    * @param allow_decrease
-   * @param max_decrease_bps
+   * @param _max_decrease_bps
    * @fires AssetsUpdatedEvent
    */
-  async update_total_assets(signer: StellarSdk.Keypair, agent: string, new_total: bigint, allow_decrease: boolean, max_decrease_bps: number): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(new_total, { type: 'i128' }), nativeToScVal(allow_decrease, { type: 'bool' }), nativeToScVal(max_decrease_bps, { type: 'u32' })];
+  async update_total_assets(signer: StellarSdk.Keypair, agent: string, new_total: bigint, allow_decrease: boolean, _max_decrease_bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(new_total, { type: 'i128' }), nativeToScVal(allow_decrease, { type: 'bool' }), nativeToScVal(_max_decrease_bps, { type: 'u32' })];
     return this.invoke<void>('update_total_assets', args, signer);
   }
 

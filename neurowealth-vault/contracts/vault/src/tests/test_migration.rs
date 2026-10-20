@@ -75,7 +75,7 @@ fn test_set_migration_paused() {
     env.mock_all_auths();
     extend_ttls_for_migration_timelock(&env);
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Owner can pause migration
@@ -95,7 +95,7 @@ fn test_set_migration_paused_unauthorized() {
     env.mock_all_auths();
     extend_ttls_for_migration_timelock(&env);
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     env.mock_auths(&[]);

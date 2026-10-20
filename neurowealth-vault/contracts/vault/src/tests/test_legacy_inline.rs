@@ -1,5 +1,8 @@
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env,
+};
 
 /// Keeps storage entries alive across the large ledger jumps these tests make.
 fn keep_storage_alive(env: &Env) {
@@ -139,14 +142,22 @@ fn test_update_agent() {
     env.mock_all_auths();
     keep_storage_alive(&env);
 
+    // The 24-hour agent timelock jump below would otherwise archive contract
+    // instance storage under the host's default entry-TTL ceiling (mirrors
+    // the `keep_storage_alive` helper in `test_share_locking.rs`).
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+
     let (contract_id, old_agent, _owner, _usdc_token) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    // update_agent only PROPOSES the change (step 1 of 2, issue #317); it
-    // must be confirmed via confirm_agent_update() after the timelock.
+    // `update_agent` only proposes the change; it takes effect after the
+    // timelock elapses and `confirm_agent_update` is called (#317).
     let new_agent = Address::generate(&env);
     client.update_agent(&new_agent);
-
     assert_eq!(
         client.get_agent(),
         old_agent,
@@ -334,11 +345,11 @@ fn test_rebalance_basic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let protocol = soroban_sdk::symbol_short!("none");
     let expected_apy = 850_i128;
 
-    client.rebalance(&_agent, &protocol, &expected_apy, &0_i128);
+    client.rebalance(&agent, &protocol, &expected_apy, &0_i128);
 }

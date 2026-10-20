@@ -436,7 +436,7 @@ fn test_failed_rotation_entry_leg_rolls_back_all_accounting() {
     env.mock_all_auths();
 
     let amount = 100_000_000_i128;
-    let (vault_id, _owner, _agent, usdc, blend_pool, dex_pool, user) =
+    let (vault_id, _owner, agent, usdc, blend_pool, dex_pool, user) =
         setup_deployed_blend(&env, amount);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend = MockBlendPoolClient::new(&env, &blend_pool);
@@ -449,7 +449,7 @@ fn test_failed_rotation_entry_leg_rolls_back_all_accounting() {
 
     // Negative supply limit makes the mock reject the whole supply.
     dex.set_max_supply_limit(&-1_i128);
-    let result = client.try_rebalance(&_agent, &symbol_short!("dex"), &850_i128, &1_i128);
+    let result = client.try_rebalance(&agent, &symbol_short!("dex"), &850_i128, &1_i128);
     assert!(
         result.is_err(),
         "a blocked DEX entry must fail the rotation"
@@ -478,7 +478,7 @@ fn test_failed_rotation_exit_leg_rolls_back_all_accounting() {
     env.mock_all_auths();
 
     let amount = 100_000_000_i128;
-    let (vault_id, _owner, _agent, usdc, blend_pool, dex_pool, user) =
+    let (vault_id, _owner, agent, usdc, blend_pool, dex_pool, user) =
         setup_deployed_blend(&env, amount);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend = MockBlendPoolClient::new(&env, &blend_pool);
@@ -492,7 +492,7 @@ fn test_failed_rotation_exit_leg_rolls_back_all_accounting() {
     // The Blend bug/illiquidity scenario: only 40 USDC of a 100 USDC exit can
     // be realized, below the caller's 50 USDC floor.
     blend.set_max_withdraw_limit(&40_000_000_i128);
-    let result = client.try_rebalance(&_agent, &symbol_short!("dex"), &850_i128, &50_000_000_i128);
+    let result = client.try_rebalance(&agent, &symbol_short!("dex"), &850_i128, &50_000_000_i128);
     assert!(
         result.is_err(),
         "an under-filled exit below min_out must fail the rotation"

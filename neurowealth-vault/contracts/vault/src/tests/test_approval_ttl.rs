@@ -258,7 +258,7 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -268,10 +268,12 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
     // Set initial approval TTL to a valid value
     client.set_blend_approval_ttl(&owner, &10_000_u32);
 
-    // Deposit funds and deploy them to Blend via rebalance
+    // Deposit funds and deploy them to Blend via rebalance. `expected_apy` is
+    // a basis-points value in 0..=10_000, purely informational for the
+    // emitted event — it does not affect how much is supplied.
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
-    client.rebalance(&_agent, &symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Verify funds are deployed (vault has less idle USDC)
     let vault_idle_balance = token_client.balance(&contract_id);
@@ -386,7 +388,7 @@ fn test_blend_approval_ttl_affects_supply_to_blend_approval_ledger() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -403,7 +405,7 @@ fn test_blend_approval_ttl_affects_supply_to_blend_approval_ledger() {
 
     // Trigger supply_to_blend via rebalance
     let sequence = env.ledger().sequence();
-    client.rebalance(&_agent, &symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Assert the approval expiration uses the custom TTL, not the default
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);

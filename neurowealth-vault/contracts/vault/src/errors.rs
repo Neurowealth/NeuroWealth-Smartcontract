@@ -143,4 +143,6 @@ pub enum VaultError {
     ProtocolAdapterNotConfigured = 84,
     /// Protocol not whitelisted.
     ProtocolNotWhitelisted = 85,
+    /// Deposit rejected when total shares > 0 but total assets == 0.
+    DepositRejectedZeroAssetsWithShares = 86,
 }

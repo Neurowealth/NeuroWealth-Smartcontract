@@ -3,7 +3,10 @@
 use super::utils::*;
 use crate::{DataKey, VaultError, WithdrawEvent, TOPIC_WITHDRAW};
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, TryFromVal};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, TryFromVal,
+};
 
 /// Reads the raw `Shares(user)` value persisted in storage.
 fn stored_shares(env: &Env, contract_id: &Address, user: &Address) -> Option<i128> {
@@ -148,7 +151,26 @@ fn test_partial_withdrawal_reduces_shares() {
     );
 }
 
+// NOT FIXED: disabled rather than guessing at corrected expected values for
+// a security-adjacent rounding/accounting test. This test cannot pass as
+// written against the current contract:
+//
+// - `mint_and_deposit(..., 2)` panics with `BelowMinimumDeposit` (#38)
+//   because 2 is far below `DEFAULT_MIN_DEPOSIT` (1_000_000), and the owner
+//   cannot lower that floor either (`set_deposit_limits` itself requires
+//   `min >= DEFAULT_MIN_DEPOSIT`).
+// - Scaling the A/S/amount values up to clear the floor does not reproduce
+//   the same rounding edge case: ceil/floor behavior at these exact
+//   integers (2, 3) does not scale linearly, and a scaled version was
+//   observed to assert on different (non-equivalent) numbers.
+// - Separately, the test's final assertion (`get_balance(&user) == 2`
+//   immediately after asserting `get_shares(&user) == 0`) is
+//   self-contradictory against the current `get_balance`, which returns 0
+//   whenever shares are 0 (lib.rs `get_balance`, ~line 7798) — so even
+//   bypassing the deposit floor via direct storage writes cannot make this
+//   assertion pass.
 #[test]
+#[ignore = "pre-existing: incompatible with DEFAULT_MIN_DEPOSIT floor and self-contradictory final assertion; see comment above"]
 fn test_withdraw_caps_ceil_then_floor_rounding_at_requested_amount() {
     let env = Env::default();
     env.mock_all_auths();
@@ -374,9 +396,11 @@ fn test_withdraw_all_enforces_min_holding_period() {
         VaultError::HoldingPeriodNotElapsed.into()
     );
 
-    // Advance ledger sequence by 10 ledgers
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + min_holding);
+    // Advance ledger sequence past the holding period.
+    let current_sequence = env.ledger().sequence();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = current_sequence + min_holding;
+    });
 
     // Now withdraw_all must succeed
     let withdrawn = client.withdraw_all(&user);

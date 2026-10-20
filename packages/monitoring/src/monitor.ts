@@ -104,8 +104,8 @@ export class VaultMonitor {
 
   private async checkInsuranceFund(metrics: HealthMetrics): Promise<void> {
     const insuranceConfig = this.config.insurance;
-    if (!metrics || !insuranceConfig) {
-      return;
+    if (!insuranceConfig || metrics.insuranceFundBalance === undefined) {
+      return; // Insurance not configured or not available in metrics
     }
 
     const balance = metrics.insuranceFundBalance;

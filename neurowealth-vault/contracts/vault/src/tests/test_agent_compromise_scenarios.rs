@@ -504,30 +504,20 @@ fn test_agent_cannot_set_migration_paused() {
 }
 
 #[test]
-fn test_agent_cannot_set_min_withdrawal() {
-    let (env, contract_id, agent, _owner, _usdc, victim) = setup_compromise();
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let before = snapshot_vault_state(&client, &[agent.clone(), victim.clone()]);
-    let amount = 1_000_000_i128;
-
-    let accepted = client.try_set_min_withdrawal(&agent, &amount).is_ok();
-    assert_err_and_frozen(
-        &client,
-        &agent,
-        &victim,
-        &before,
-        accepted,
-        "set_min_withdrawal",
-    );
-}
-
-#[test]
 fn test_agent_cannot_set_queue_config() {
     let (env, contract_id, agent, _owner, _usdc, victim) = setup_compromise();
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let before = snapshot_vault_state(&client, &[agent.clone(), victim.clone()]);
 
-    let accepted = client.try_set_queue_config(&agent, &1_u32, &1_u64).is_ok();
+    mock_agent_only_auth(
+        &env,
+        &contract_id,
+        &agent,
+        "set_queue_config",
+        (1_u32, 1_u64).into_val(&env),
+    );
+    let accepted = client.try_set_queue_config(&1_u32, &1_u64).is_ok();
+    env.mock_all_auths();
     assert_err_and_frozen(
         &client,
         &agent,
@@ -544,7 +534,15 @@ fn test_agent_cannot_set_max_batch_size() {
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let before = snapshot_vault_state(&client, &[agent.clone(), victim.clone()]);
 
-    let accepted = client.try_set_max_batch_size(&agent, &1_u32).is_ok();
+    mock_agent_only_auth(
+        &env,
+        &contract_id,
+        &agent,
+        "set_max_batch_size",
+        (1_u32,).into_val(&env),
+    );
+    let accepted = client.try_set_max_batch_size(&1_u32).is_ok();
+    env.mock_all_auths();
     assert_err_and_frozen(
         &client,
         &agent,
@@ -668,17 +666,15 @@ fn test_agent_cannot_cancel_victim_withdrawal_request() {
     let (env, contract_id, agent, _owner, _usdc, victim) = setup_compromise();
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    mock_agent_only_auth(
-        &env,
-        &contract_id,
-        &agent,
-        "cancel_withdrawal_request",
-        (victim.clone(), 1_u64).into_val(&env),
-    );
+    // The victim genuinely queues a withdrawal; cancel_withdrawal_request
+    // checks `request.user == user` (not an owner/agent-only guard), so
+    // this is exercised under plain mock_all_auths() with the agent
+    // claiming to be the caller, not via mock_agent_only_auth.
+    let request_id = client.queue_withdrawal(&victim, &1_000_000_i128);
+
     let accepted = client
-        .try_cancel_withdrawal_request(&victim, &1_u64)
+        .try_cancel_withdrawal_request(&agent, &request_id)
         .is_ok();
-    env.mock_all_auths();
     assert!(
         !accepted,
         "agent must not cancel another user's withdrawal request"
@@ -709,9 +705,9 @@ fn test_agent_cannot_modify_contract_storage_directly() {
     let _ = client.try_execute_upgrade(&agent);
     let _ = client.try_cancel_upgrade(&agent);
     let _ = client.try_accept_ownership(&agent);
-    let _ = client.try_set_min_withdrawal(&agent, &1_i128);
-    let _ = client.try_set_queue_config(&agent, &1_u32, &1_u64);
-    let _ = client.try_set_max_batch_size(&agent, &1_u32);
+    let _ = client.try_set_min_holding_period(&1_u32);
+    let _ = client.try_set_queue_config(&1_u32, &1_u64);
+    let _ = client.try_set_max_batch_size(&1_u32);
 
     mock_agent_only_auth(
         &env,
@@ -979,12 +975,12 @@ fn test_agent_rebalance_cannot_touch_user_shares() {
 
 #[test]
 fn test_agent_submit_mev_report_cannot_steal() {
-    let (env, contract_id, _agent, _owner, _usdc, victim) = setup_compromise();
+    let (env, contract_id, agent, _owner, _usdc, victim) = setup_compromise();
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let victim_shares = client.get_shares(&victim);
     let assets = client.get_total_assets();
 
-    client.submit_mev_report(&_agent, &symbol_short!("blend"), &1_i128, &0_i128);
+    client.submit_mev_report(&agent, &symbol_short!("blend"), &1_i128, &0_i128);
 
     assert_eq!(client.get_shares(&victim), victim_shares);
     assert_eq!(client.get_total_assets(), assets);
@@ -992,12 +988,12 @@ fn test_agent_submit_mev_report_cannot_steal() {
 
 #[test]
 fn test_agent_submit_apy_prediction_cannot_steal() {
-    let (env, contract_id, _agent, _owner, _usdc, victim) = setup_compromise();
+    let (env, contract_id, agent, _owner, _usdc, victim) = setup_compromise();
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let victim_shares = client.get_shares(&victim);
 
     client.submit_apy_prediction(
-        &_agent,
+        &agent,
         &ApyPrediction {
             protocol: symbol_short!("blend"),
             predicted_apy_bps: 800,

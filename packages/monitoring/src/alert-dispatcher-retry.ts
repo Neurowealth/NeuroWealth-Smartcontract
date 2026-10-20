@@ -109,7 +109,10 @@ export class AlertDispatcherRetry {
       alert,
       webhook,
       attempts,
-      nextRetryAt: Date.now() + this.config.retryBackoffMs ?? 300000,
+      // Already exhausted the exponential-backoff schedule in sendWithRetry,
+      // so the next attempt (a later flushQueue pass) waits the longest
+      // configured tier rather than restarting the schedule from attempt 0.
+      nextRetryAt: Date.now() + this.config.maxDelayMs,
     });
 
     this.logger.info(

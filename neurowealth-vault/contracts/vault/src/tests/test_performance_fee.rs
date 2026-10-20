@@ -8,6 +8,8 @@
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
+// Pure arithmetic regression tests for the documented performance-fee policy.
+
 /// Maximum performance fee the vault will ever be allowed to charge (10%).
 const MAX_PERFORMANCE_FEE_BPS: u32 = 1_000;
 

@@ -57,8 +57,15 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
     setTxHash(null);
 
     try {
-      const result = await client.set_blend_pool(signer, signer.publicKey(), newBlendPool);
-      setTxHash(result?.hash ?? null);
+      const result = await client.set_blend_pool(
+        signer,
+        signer.publicKey(),
+        newBlendPool,
+      );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
+      setTxHash(result.hash);
       setBlendPool(newBlendPool);
 
       // Poll for confirmation
@@ -94,8 +101,15 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
     setTxHash(null);
 
     try {
-      const result = await client.set_dex_pool(signer, signer.publicKey(), newDexPool);
-      setTxHash(result?.hash ?? null);
+      const result = await client.set_dex_pool(
+        signer,
+        signer.publicKey(),
+        newDexPool,
+      );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
+      setTxHash(result.hash);
       setDexPool(newDexPool);
 
       // Poll for confirmation

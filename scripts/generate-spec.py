@@ -888,6 +888,20 @@ FUNCTION_METADATA = {
         "state_changing": True,
         "events": ["CircuitBreakerResetEvent"]
     },
+    "set_max_decrease_bps": {
+        "category": "administration",
+        "access": "owner-only",
+        "description": "Configure the maximum loss percentage reported in a single total assets update",
+        "requires_auth": True,
+        "state_changing": True,
+    },
+    "get_max_decrease_bps": {
+        "category": "query",
+        "access": "public",
+        "description": "Get the maximum loss percentage reported in a single total assets update",
+        "requires_auth": False,
+        "state_changing": False,
+    },
     "set_max_consecutive_failures": {
         "category": "administration",
         "access": "owner-only",

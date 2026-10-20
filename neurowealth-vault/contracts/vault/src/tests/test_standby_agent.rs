@@ -31,6 +31,7 @@ fn test_standby_agent_rotation_updates_roles_and_emits_payloads() {
     assert_eq!(updated.owner, owner);
     assert_eq!(updated.timestamp, env.ledger().timestamp());
 
+    // Switchover is immediate — no timelock (#653).
     client.switch_to_standby_agent();
 
     assert_eq!(client.get_agent(), new_primary);

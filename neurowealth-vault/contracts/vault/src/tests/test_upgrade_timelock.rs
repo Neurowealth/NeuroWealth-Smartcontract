@@ -120,14 +120,12 @@ fn test_schedule_zero_hash_rejected() {
     let zero_hash = BytesN::from_array(&env, &[0u8; 32]);
     let result = client.try_schedule_upgrade(&owner, &zero_hash);
     // `schedule_upgrade` (lib.rs) rejects a zero wasm hash by reusing
-    // `VaultError::UnauthorizedDeployer` (#5) — there is no dedicated
-    // `InvalidWasmHash` variant in the (50-variant-capped) error enum. #47
-    // is `InvalidStrategy`, an unrelated code this assertion never actually
-    // matched against the real implementation.
+    // `VaultError::InvalidStrategy` (#47) — there is no dedicated
+    // `InvalidWasmHash` variant in the (50-variant-capped) error enum.
     assert_eq!(
         result,
-        Err(Ok(soroban_sdk::Error::from_contract_error(5))),
-        "zero wasm hash should be rejected with VaultError::UnauthorizedDeployer (#5)"
+        Err(Ok(soroban_sdk::Error::from_contract_error(47))),
+        "zero wasm hash should be rejected with VaultError::InvalidStrategy (#47)"
     );
 
     assert!(
@@ -305,10 +303,7 @@ fn test_cancel_upgrade_after_execute_upgrade_rejected() {
     env.as_contract(&contract_id, || {
         env.storage()
             .instance()
-            .remove(&crate::DataKey::PendingUpgradeHash);
-        env.storage()
-            .instance()
-            .remove(&crate::DataKey::UpgradeTimelockExpiry);
+            .remove(&crate::DataKey::PendingUpgrade);
     });
     assert!(
         client.get_pending_upgrade().is_none(),

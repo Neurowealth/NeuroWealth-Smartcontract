@@ -95,7 +95,7 @@ fn test_enable_multi_protocol_from_none_seeds_zero_allocation() {
 fn test_enable_multi_protocol_from_blend_seeds_full_blend_allocation() {
     let env = Env::default();
     env.mock_all_auths();
-    let (vault_id, _a, _o, usdc, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, usdc, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let user = Address::generate(&env);
@@ -103,7 +103,7 @@ fn test_enable_multi_protocol_from_blend_seeds_full_blend_allocation() {
     mint_and_deposit(&env, &client, &usdc, &user, amount);
 
     // Legacy single-protocol deployment.
-    client.rebalance(&_a, &symbol_short!("blend"), &800, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &800, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
     // Migrating must not move any funds.
@@ -120,14 +120,14 @@ fn test_enable_multi_protocol_from_blend_seeds_full_blend_allocation() {
 fn test_enable_multi_protocol_from_dex_seeds_full_dex_allocation() {
     let env = Env::default();
     env.mock_all_auths();
-    let (vault_id, _a, _o, usdc, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, usdc, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let user = Address::generate(&env);
     let amount = 100_000_000_i128;
     mint_and_deposit(&env, &client, &usdc, &user, amount);
 
-    client.rebalance(&_a, &symbol_short!("dex"), &800, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &800, &0_i128);
     client.enable_multi_protocol(&true);
 
     assert_eq!(client.get_allocation(), (0, BPS));
@@ -177,10 +177,10 @@ fn test_disable_multi_protocol_after_consolidating_succeeds() {
 fn test_rebalance_multi_requires_multi_protocol_mode() {
     let env = Env::default();
     env.mock_all_auths();
-    let (vault_id, _a, _o, _t, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, _t, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
-    client.rebalance_multi(&_a, &6_000, &4_000, &0_i128);
+    client.rebalance_multi(&agent, &6_000, &4_000, &0_i128);
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn test_rebalance_multi_requires_blend_pool_for_nonzero_blend_allocation() {
     env.mock_all_auths();
 
     // Vault with only a DEX pool configured.
-    let (vault_id, _agent, owner, usdc) = setup_vault_with_token(&env);
+    let (vault_id, agent, owner, usdc) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let dex_pool = env.register_contract(None, MockDexPool);
     client.set_dex_pool(&owner, &dex_pool);
@@ -344,7 +344,7 @@ fn test_rebalance_multi_requires_blend_pool_for_nonzero_blend_allocation() {
     mint_and_deposit(&env, &client, &usdc, &user, 100_000_000);
     client.enable_multi_protocol(&true);
 
-    client.rebalance_multi(&_agent, &5_000, &5_000, &0_i128);
+    client.rebalance_multi(&agent, &5_000, &5_000, &0_i128);
 }
 
 // ===========================================================================
@@ -423,7 +423,7 @@ fn test_multi_user_withdrawals_preserve_allocation_ratio() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _a, _o, usdc, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, usdc, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let alice = Address::generate(&env);
@@ -432,7 +432,7 @@ fn test_multi_user_withdrawals_preserve_allocation_ratio() {
     mint_and_deposit(&env, &client, &usdc, &bob, 40_000_000);
 
     client.enable_multi_protocol(&true);
-    client.rebalance_multi(&_a, &5_000, &5_000, &0_i128);
+    client.rebalance_multi(&agent, &5_000, &5_000, &0_i128);
     assert_eq!(client.get_protocol_breakdown(), (50_000_000, 50_000_000));
 
     client.withdraw(&alice, &20_000_000_i128);
@@ -494,14 +494,14 @@ fn test_composite_apy_dilutes_with_idle_capital() {
 fn test_composite_apy_in_single_protocol_mode_uses_active_venue() {
     let env = Env::default();
     env.mock_all_auths();
-    let (vault_id, _a, _o, usdc, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, usdc, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc, &user, 100_000_000);
 
-    client.set_protocol_apy(&_a, &symbol_short!("blend"), &750);
-    client.rebalance(&_a, &symbol_short!("blend"), &750, &0_i128);
+    client.set_protocol_apy(&agent, &symbol_short!("blend"), &750);
+    client.rebalance(&agent, &symbol_short!("blend"), &750, &0_i128);
 
     assert!(!client.is_multi_protocol_enabled());
     assert_eq!(client.get_composite_apy(), 750);
@@ -575,20 +575,20 @@ fn test_set_protocol_apy_emits_event() {
 fn test_legacy_single_protocol_rebalance_still_works() {
     let env = Env::default();
     env.mock_all_auths();
-    let (vault_id, _a, _o, usdc, _b, _d) = setup_multi(&env);
+    let (vault_id, agent, _o, usdc, _b, _d) = setup_multi(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let user = Address::generate(&env);
     let amount = 100_000_000_i128;
     mint_and_deposit(&env, &client, &usdc, &user, amount);
 
-    client.rebalance(&_a, &symbol_short!("blend"), &800, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &800, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
     assert_eq!(client.get_deployed_to_blend(), amount);
     assert_eq!(client.get_deployed_to_dex(), 0);
 
     // Legacy switch remains mutually exclusive.
-    client.rebalance(&_a, &symbol_short!("dex"), &900, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &900, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("dex"));
     assert_eq!(client.get_deployed_to_blend(), 0);
     assert_eq!(client.get_deployed_to_dex(), amount);

@@ -50,7 +50,10 @@ export function ApprovalTTL({ client, signer }: ApprovalTTLProps) {
 
     try {
       const result = await client.set_approval_ttl(signer, value);
-      setTxHash(result?.hash ?? null);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
+      setTxHash(result.hash);
       setTtl(value);
 
       // Poll for confirmation

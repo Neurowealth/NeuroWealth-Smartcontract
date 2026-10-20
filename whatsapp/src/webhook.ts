@@ -284,12 +284,15 @@ async function processWhatsAppMessage(
 
         if (verification.success) {
           await updateState(phoneHash, UserState.VERIFIED);
-          const wallet = await createCustodialWallet(phoneHash);
+          const { wallet, isNew } = await createCustodialWallet(phoneHash);
+          const shortKey = `${wallet.publicKey.substring(0, 8)}...${wallet.publicKey.substring(wallet.publicKey.length - 8)}`;
+          const walletLine = isNew
+            ? `🔒 Created your secure custodial Stellar wallet:\nPublic Key: ${shortKey}`
+            : `👋 Welcome back! Your existing wallet:\nPublic Key: ${shortKey}`;
 
           reply(twiml,
             `✅ Phone number verified!\n\n` +
-            `🔒 Created your secure custodial Stellar wallet:\n` +
-            `Public Key: ${wallet.publicKey.substring(0, 8)}...${wallet.publicKey.substring(wallet.publicKey.length - 8)}\n\n` +
+            `${walletLine}\n\n` +
             `You can now interact with NeuroWealth entirely through WhatsApp:\n` +
             `• "deposit 100 USDC"\n` +
             `• "what's my balance"\n` +

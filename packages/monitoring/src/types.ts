@@ -11,10 +11,12 @@ export interface MonitoringConfig {
   thresholds: AlertThresholds;
   metricsBackendUrl?: string;
   enablePauseDrill?: boolean;
-  insurance?: {
-    minimumFundLevel: number;
-    alertCooldownMs?: number;
-  };
+  insurance?: InsuranceFundConfig;
+}
+
+export interface InsuranceFundConfig {
+  minimumFundLevel: number;
+  alertCooldownMs?: number;
 }
 
 export interface AlertWebhook {

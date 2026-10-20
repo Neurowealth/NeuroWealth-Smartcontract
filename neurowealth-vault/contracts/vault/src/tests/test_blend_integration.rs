@@ -9,7 +9,7 @@ fn test_blend_integration_supply_via_rebalance() {
     env.mock_all_auths();
 
     // Setup: Vault + Token + Blend Pool
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -26,7 +26,7 @@ fn test_blend_integration_supply_via_rebalance() {
 
     // 3. Trigger rebalance to Blend
     let protocol = Symbol::new(&env, "blend");
-    vault_client.rebalance(&_agent, &protocol, &850, &0_i128); // 8.5% expected APY
+    vault_client.rebalance(&agent, &protocol, &850, &0_i128); // 8.5% expected APY
 
     // 4. Verify results
     // - Vault USDC balance should be 0 (transferred to Blend)
@@ -48,7 +48,7 @@ fn test_blend_integration_withdraw_via_rebalance() {
     env.mock_all_auths();
 
     // Setup: Vault + Token + Blend Pool
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -57,11 +57,11 @@ fn test_blend_integration_withdraw_via_rebalance() {
     // 1. Supply to Blend first
     let amount = 50_000_000;
     token_client.mint(&vault_id, &amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "blend"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "blend"), &850, &0_i128);
     assert_eq!(token_client.balance(&blend_pool), amount);
 
     // 2. Withdraw from Blend by rebalancing to "none"
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "none"), &0, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0_i128);
 
     // 3. Verify results
     // - Vault USDC balance should be restored
@@ -88,7 +88,7 @@ fn test_blend_balance_delta_against_lying_pool() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -103,11 +103,19 @@ fn test_blend_balance_delta_against_lying_pool() {
     let lying_reported = deposit_amount * 2;
     blend_client.set_reported_supply_amount(&lying_reported);
 
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "blend"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "blend"), &850, &0_i128);
 
-    let total_assets = vault_client.get_total_assets();
+    // This test funds the vault directly via `mint` (bypassing `deposit`),
+    // so `TotalAssets` is never touched by anything in this flow:
+    // `rebalance` only moves already-accounted funds between idle and
+    // deployed, and `TotalAssets` is written only by `deposit`/`withdraw`/
+    // `update_total_assets`. The locally tracked per-venue deployment figure
+    // (`get_deployed_to_blend`, synced from the vault's own balance-delta
+    // measurement in `supply_to_blend`) is the right place to observe that
+    // the pool's lying return value was not trusted.
+    let deployed_to_blend = vault_client.get_deployed_to_blend();
     assert_eq!(
-        total_assets, deposit_amount,
+        deployed_to_blend, deposit_amount,
         "vault must record actual balance delta, not the pool's reported amount"
     );
 
@@ -121,7 +129,7 @@ fn test_blend_integration_balance_read() {
     env.mock_all_auths();
 
     // Setup
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let vault_client = NeuroWealthVaultClient::new(&env, &vault_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -130,7 +138,7 @@ fn test_blend_integration_balance_read() {
     // 1. Supply some funds
     let amount = 75_000_000;
     token_client.mint(&vault_id, &amount);
-    vault_client.rebalance(&_agent, &Symbol::new(&env, "blend"), &850, &0_i128);
+    vault_client.rebalance(&agent, &Symbol::new(&env, "blend"), &850, &0_i128);
 
     // 2. Check balance via the shared get_reserve + get_positions helper
     // (#986 — Blend has no plain `balance(asset, user)` function; the mock

@@ -118,7 +118,7 @@ fn test_index_tracks_active_users_only() {
     let deposit_amount = 10_000_000_i128;
 
     // Phase 1: Create 50 users with active shares
-    let mut active_users = Vec::new();
+    let mut active_users: std::vec::Vec<Address> = std::vec::Vec::new();
     for _ in 0..50 {
         let token_client = TestTokenClient::new(&env, &usdc_token);
         let user = Address::generate(&env);

@@ -54,7 +54,10 @@ export function RebalanceCooldown({ client, signer }: RebalanceCooldownProps) {
     try {
       const cooldownValue = parseInt(newCooldown);
       const result = await client.set_rebalance_cooldown(signer, cooldownValue);
-      setTxHash(result?.hash ?? null);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
+      setTxHash(result.hash);
       setCooldown(cooldownValue);
 
       const txHash = result?.hash;

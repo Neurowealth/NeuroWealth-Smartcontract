@@ -212,8 +212,15 @@ fn test_inflation_attack_profit_always_below_gas_cost_across_timings() {
         ("after_first_victim", 1_000_000_i128, 10_000_000_000_i128),
         ("interleaved_multiple", 1_000_000_i128, 10_000_000_000_i128),
         (
+            // The smallest seed an attacker can actually use is
+            // `DEFAULT_MIN_DEPOSIT` (1_000_000): the minimum-deposit floor
+            // forecloses the classic even-smaller micro-seed variant of this
+            // attack by construction, so this scenario now represents the
+            // worst case reachable through the public `deposit` API rather
+            // than the historical 100_000 seed (which `deposit` rejects with
+            // `BelowMinimumDeposit` before the attack can even begin).
             "large_donation_small_seed",
-            100_000_i128,
+            1_000_000_i128,
             50_000_000_000_i128,
         ),
     ];

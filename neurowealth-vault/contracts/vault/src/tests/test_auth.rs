@@ -163,12 +163,12 @@ fn test_agent_rebalance_with_scoped_auth() {
 #[test]
 fn test_rebalance_requires_agent_auth() {
     let env = Env::default();
-    let (contract_id, _agent, _owner, _usdc_token) = setup(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     env.mock_auths(&[]);
 
-    let result = client.try_rebalance(&_agent, &symbol_short!("none"), &500_i128, &0_i128);
+    let result = client.try_rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
     assert!(
         result.is_err(),
         "rebalance must fail without the agent's authorization"

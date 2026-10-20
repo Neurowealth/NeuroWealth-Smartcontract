@@ -204,7 +204,7 @@ fn test_current_protocol_key_survives_rebalance_transitions() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (vault_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     // Initial state: no rebalance yet — protocol is "none".
@@ -220,7 +220,7 @@ fn test_current_protocol_key_survives_rebalance_transitions() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
 
     // Rebalance to "none" (idempotent).
-    client.rebalance(&_agent, &symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
     assert_eq!(
         client.get_current_protocol(),
         symbol_short!("none"),
