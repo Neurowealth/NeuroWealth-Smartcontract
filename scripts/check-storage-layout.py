@@ -32,7 +32,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 def find_cli_binary() -> str:
     """Find stellar or soroban CLI in PATH."""
-    for binary in ["stellar", "soroban"]:
+    candidates = []
+    if os.environ.get("STELLAR_BIN"):
+        candidates.append(os.environ["STELLAR_BIN"])
+    candidates.extend(["stellar", "soroban"])
+    for binary in candidates:
         try:
             result = subprocess.run(
                 [binary, "--version"],
@@ -53,17 +57,62 @@ def extract_datakey_spec(wasm_path: Path, cli_bin: str) -> List[Dict[str, Any]]:
     if not wasm_path.exists():
         raise FileNotFoundError(f"WASM file not found at: {wasm_path}")
 
-    cmd = [cli_bin, "contract", "info", "interface", "--wasm", str(wasm_path), "--output", "json"]
-    try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        raw_output = proc.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to inspect WASM '{wasm_path}' with {cli_bin}: {e.stderr.strip()}")
+    spec_entries: List[Dict[str, Any]] = []
 
-    try:
-        spec_entries = json.loads(raw_output)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Could not parse JSON output from {cli_bin} for '{wasm_path}': {e}")
+    # Primary method (Stellar CLI v21.x): `contract inspect --output xdr-base64`
+    # piped into `xdr decode --type ScSpecEntry --input stream-base64 --output json`
+    inspect_cmd = [cli_bin, "contract", "inspect", "--wasm", str(wasm_path), "--output", "xdr-base64"]
+    inspect_proc = subprocess.run(
+        inspect_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if inspect_proc.returncode == 0 and inspect_proc.stdout.strip():
+        decode_cmd = [
+            cli_bin,
+            "xdr",
+            "decode",
+            "--type",
+            "ScSpecEntry",
+            "--input",
+            "stream-base64",
+            "--output",
+            "json",
+        ]
+        decode_proc = subprocess.run(
+            decode_cmd,
+            input=inspect_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if decode_proc.returncode == 0 and decode_proc.stdout.strip():
+            for line in decode_proc.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    spec_entries.append(json.loads(line))
+
+    # Fallback for newer CLI versions with `contract info interface`
+    if not spec_entries:
+        cmd = [cli_bin, "contract", "info", "interface", "--wasm", str(wasm_path), "--output", "json"]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            raw_output = proc.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            err_msg = inspect_proc.stderr.strip() or e.stderr.strip()
+            raise RuntimeError(f"Failed to inspect WASM '{wasm_path}' with {cli_bin}: {err_msg}")
+
+        try:
+            parsed = json.loads(raw_output)
+            if isinstance(parsed, list):
+                spec_entries = parsed
+            elif isinstance(parsed, dict):
+                spec_entries = [parsed]
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Could not parse JSON output from {cli_bin} for '{wasm_path}': {e}")
 
     datakey_union = None
     for entry in spec_entries:

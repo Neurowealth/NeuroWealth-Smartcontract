@@ -215,14 +215,23 @@ sweep_getter() {
       return 1
     fi
 
-    if [[ -n "$expected" && "$val" != "$expected" ]]; then
-      add_report "[FAIL] $name: Value mismatch ($compare_desc) — Expected: '$expected', Got: '$val'"
-      FAILURES=$((FAILURES + 1))
-      MISMATCHES+=("$name (Expected: $expected, Got: $val)")
-      return 1
-    fi
-
     if [[ -n "$expected" ]]; then
+      local matched=0
+      local IFS='|'
+      for exp_opt in $expected; do
+        if [[ "$val" == "$exp_opt" ]]; then
+          matched=1
+          break
+        fi
+      done
+      unset IFS
+
+      if [[ "$matched" -eq 0 ]]; then
+        add_report "[FAIL] $name: Value mismatch ($compare_desc) — Expected: '$expected', Got: '$val'"
+        FAILURES=$((FAILURES + 1))
+        MISMATCHES+=("$name (Expected: $expected, Got: $val)")
+        return 1
+      fi
       add_report "[ OK ] $name: $val (matches expected: $expected)"
     else
       add_report "[ OK ] $name: $val"
@@ -299,9 +308,7 @@ sweep_getter "get_max_consecutive_failures" "" ""
 sweep_getter "get_consecutive_failures" "" ""
 
 # 4. Timelock & Pending State Getters (Must be cleared post-upgrade)
-sweep_getter "get_pending_upgrade" "()" "Pending upgrade must be cleared" || \
-  sweep_getter "get_pending_upgrade" "None" "Pending upgrade must be cleared" || \
-  sweep_getter "get_pending_upgrade" "null" "Pending upgrade must be cleared" || true
+sweep_getter "get_pending_upgrade" "null|None|()" "Pending upgrade must be cleared" || true
 
 sweep_getter "get_pending_agent_update" "" ""
 sweep_getter "get_pending_owner" "" ""
