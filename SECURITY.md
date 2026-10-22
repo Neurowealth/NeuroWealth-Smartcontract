@@ -1,5 +1,17 @@
 # Security Model
 
+## Reporting a Vulnerability
+
+Follow the [private reporting instructions](docs/BUG_BOUNTY.md#reporting-channel)
+in the bug bounty policy. The formerly listed security mailbox is unavailable;
+use only a confirmed private channel. GitHub's **Report a vulnerability** form
+works only after maintainers enable private vulnerability reporting.
+
+If the form is unavailable, request channel activation or a verified contact
+without disclosing vulnerability details publicly. See
+[issue #1073](https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/1073)
+for the non-sensitive channel-availability request.
+
 This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
 
 ## Threat Model & Trust Boundaries (Issue #563)
