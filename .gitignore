@@ -10,6 +10,7 @@ pr.md
 
 # Node
 node_modules/
+**/node_modules/
 
 # Next.js build output
 .next/

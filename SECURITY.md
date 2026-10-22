@@ -369,12 +369,41 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |
-| set_rate_limit, set_rate_limit_config | yes | - | - | - |
-| set_queue_config | yes | - | - | - |
-| process_withdrawal_queue | - | - | - | anyone (authenticated) |
 | submit_mev_report | - | yes | - | - |
 | set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
+| add_supported_asset | yes | - | - | - |
+| batch_deposit | - | - | yes | - |
+| cancel_migration_target | yes | - | - | - |
+| cancel_withdrawal_request | - | - | yes | - |
+| deposit_asset | - | - | yes | - |
+| emergency_harvest | yes | - | - | - |
+| emergency_withdraw | - | - | yes | - |
+| enable_multi_protocol | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| lock_shares | - | - | yes | - |
+| migrate_shares | - | - | yes | - |
+| process_withdrawal_queue | - | yes | - | - |
+| queue_withdrawal | - | - | yes | - |
+| rebalance_multi | - | yes | - | - |
+| receive_migration | - | - | - | anyone |
+| remove_supported_asset | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| set_batch_size_limit | yes | - | - | - |
+| set_max_batch_size | yes | - | - | - |
+| set_max_consecutive_failures | yes | - | - | - |
+| set_max_decrease_bps | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
+| set_protocol_apy | - | yes | - | - |
+| set_queue_config | yes | - | - | - |
+| set_rate_limit | yes | - | - | - |
+| set_rate_limit_config | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
+| unlock_shares | - | - | yes | - |
+| update_asset_limits | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| withdraw_asset | - | - | yes | - |
 
 
 ### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)
