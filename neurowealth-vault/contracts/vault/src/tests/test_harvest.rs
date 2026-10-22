@@ -7,7 +7,7 @@
 //!
 //! Acceptance criteria covered here:
 //!   1. Success path: withdraws and re-supplies to CurrentProtocol, emits
-//!      `HarvestEvent` with the correct protocol and `amount_harvested`.
+//!      `HarvestEvent` with the correct protocol and `amount_cycled`.
 //!   2. Rejects when the vault is paused (`VaultError::Paused`, #35).
 //!   3. Rejects when the caller is not the agent.
 //!   4. Rejects a negative `min_out` (`VaultError::MinOutMustBeNonNegative`, #16).
@@ -21,7 +21,7 @@
 extern crate std;
 
 use super::utils::*;
-use crate::{HarvestEvent, TOPIC_HARVEST};
+use crate::{HarvestEvent, TOPIC_HARVEST, TOPIC_PROTOCOL_CHANGED};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
@@ -38,15 +38,14 @@ fn setup_with_deployed_blend(
     env: &Env,
     amount: i128,
 ) -> (Address, Address, Address, Address, Address) {
-    let (contract_id, agent, owner, usdc_token, blend_pool) =
-        setup_vault_with_token_and_blend(env);
+    let (contract_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
 
     client.set_blend_pool(&owner, &blend_pool);
 
     let user = Address::generate(env);
     mint_and_deposit(env, &client, &usdc_token, &user, amount);
-    client.rebalance(&symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
     (contract_id, agent, owner, usdc_token, blend_pool)
 }
@@ -57,15 +56,14 @@ fn setup_with_deployed_dex(
     env: &Env,
     amount: i128,
 ) -> (Address, Address, Address, Address, Address) {
-    let (contract_id, agent, owner, usdc_token, dex_pool) =
-        setup_vault_with_token_and_dex(env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
 
     client.set_dex_pool(&owner, &dex_pool);
 
     let user = Address::generate(env);
     mint_and_deposit(env, &client, &usdc_token, &user, amount);
-    client.rebalance(&symbol_short!("dex"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &850_i128, &0_i128);
 
     (contract_id, agent, owner, usdc_token, dex_pool)
 }
@@ -88,14 +86,14 @@ fn decode_harvest_event(env: &Env) -> HarvestEvent {
 
 /// Harvesting a Blend position withdraws the full deployed amount and
 /// immediately re-supplies it. The vault ends with the same protocol
-/// allocation and emits `HarvestEvent { protocol: "blend", amount_harvested }`.
+/// allocation and emits `HarvestEvent { protocol: "blend", amount_cycled }`.
 #[test]
 fn test_harvest_withdraws_and_resupplies_blend() {
     let env = Env::default();
     env.mock_all_auths();
 
     let deposit_amount = 10_000_000_i128;
-    let (contract_id, _agent, _owner, usdc_token, blend_pool) =
+    let (contract_id, agent, _owner, usdc_token, blend_pool) =
         setup_with_deployed_blend(&env, deposit_amount);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -107,7 +105,21 @@ fn test_harvest_withdraws_and_resupplies_blend() {
     assert_eq!(blend_client.supplied(&usdc_token), deposit_amount);
     assert_eq!(token_client.balance(&blend_pool), deposit_amount);
 
-    client.harvest(&0_i128);
+    let protocol_events_before =
+        find_events_by_topic(env.events().all(), &env, TOPIC_PROTOCOL_CHANGED).len();
+    let total_assets_before = client.get_total_assets();
+    client.harvest(&agent, &0_i128);
+    assert_eq!(
+        client.get_total_assets(),
+        total_assets_before,
+        "compounding harvest does not report realized yield to TotalAssets"
+    );
+    let protocol_events_after =
+        find_events_by_topic(env.events().all(), &env, TOPIC_PROTOCOL_CHANGED).len();
+    assert_eq!(
+        protocol_events_after, protocol_events_before,
+        "harvest must not emit transient ProtocolChanged events"
+    );
 
     // Post-harvest: funds must be back in Blend (withdraw + re-supply).
     assert_eq!(
@@ -130,8 +142,8 @@ fn test_harvest_withdraws_and_resupplies_blend() {
     let event = decode_harvest_event(&env);
     assert_eq!(event.protocol, symbol_short!("blend"));
     assert_eq!(
-        event.amount_harvested, deposit_amount,
-        "amount_harvested must equal the withdrawn (and re-supplied) position"
+        event.amount_cycled, deposit_amount,
+        "amount_cycled must equal the amount actually resupplied"
     );
 }
 
@@ -143,7 +155,7 @@ fn test_harvest_withdraws_and_resupplies_dex() {
     env.mock_all_auths();
 
     let deposit_amount = 12_000_000_i128;
-    let (contract_id, _agent, _owner, usdc_token, dex_pool) =
+    let (contract_id, agent, _owner, usdc_token, dex_pool) =
         setup_with_deployed_dex(&env, deposit_amount);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -156,7 +168,7 @@ fn test_harvest_withdraws_and_resupplies_dex() {
         deposit_amount
     );
 
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 
     assert_eq!(
         client.get_current_protocol(),
@@ -176,7 +188,7 @@ fn test_harvest_withdraws_and_resupplies_dex() {
 
     let event = decode_harvest_event(&env);
     assert_eq!(event.protocol, symbol_short!("dex"));
-    assert_eq!(event.amount_harvested, deposit_amount);
+    assert_eq!(event.amount_cycled, deposit_amount);
 }
 
 /// A successful harvest updates `LastRebalanceLedger` to the current ledger
@@ -186,12 +198,12 @@ fn test_harvest_updates_last_rebalance_ledger() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let before = env.ledger().sequence();
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 
     let stored = client.get_last_rebalance_ledger();
     assert!(
@@ -201,7 +213,7 @@ fn test_harvest_updates_last_rebalance_ledger() {
 }
 
 /// Harvesting a Blend position that currently holds zero funds still
-/// succeeds and emits `HarvestEvent` with `amount_harvested == 0`. This
+/// succeeds and emits `HarvestEvent` with `amount_cycled == 0`. This
 /// covers the noop-rebalance-then-harvest path (`CurrentProtocol == blend`
 /// but no deployed balance).
 #[test]
@@ -209,20 +221,20 @@ fn test_harvest_zero_position_emits_zero_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token, blend_pool) =
+    let (contract_id, agent, owner, _usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.set_blend_pool(&owner, &blend_pool);
     // No deposit — rebalance is a noop that still records CurrentProtocol.
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 
     let event = decode_harvest_event(&env);
     assert_eq!(event.protocol, symbol_short!("blend"));
-    assert_eq!(event.amount_harvested, 0_i128);
+    assert_eq!(event.amount_cycled, 0_i128);
 }
 
 // ===========================================================================
@@ -235,14 +247,14 @@ fn test_harvest_rejects_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
     assert!(client.is_paused());
 
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 }
 
 /// `try_harvest` returns the typed `Paused` error so callers can distinguish
@@ -252,14 +264,14 @@ fn test_harvest_while_paused_returns_paused_error() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
 
     assert_eq!(
-        client.try_harvest(&0_i128),
+        client.try_harvest(&agent, &0_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(35))),
         "harvest must return VaultError::Paused (#35) while paused"
     );
@@ -284,13 +296,13 @@ fn test_harvest_requires_agent_auth() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     env.mock_auths(&[]);
 
-    let result = client.try_harvest(&0_i128);
+    let result = client.try_harvest(&agent, &0_i128);
     assert!(
         result.is_err(),
         "harvest must fail without the agent's authorization"
@@ -311,7 +323,7 @@ fn test_harvest_rejects_non_agent_signer() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -321,12 +333,12 @@ fn test_harvest_rejects_non_agent_signer() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "harvest",
-            args: (0_i128,).into_val(&env),
+            args: (agent.clone(), 0_i128).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_harvest(&0_i128);
+    let result = client.try_harvest(&agent, &0_i128);
     assert!(
         result.is_err(),
         "harvest must require the stored agent's authorization, not another signer's"
@@ -350,16 +362,16 @@ fn test_agent_harvest_with_scoped_auth() {
         invoke: &MockAuthInvoke {
             contract: &contract_id,
             fn_name: "harvest",
-            args: (0_i128,).into_val(&env),
+            args: (agent.clone(), 0_i128).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 
     let event = decode_harvest_event(&env);
     assert_eq!(event.protocol, symbol_short!("blend"));
-    assert_eq!(event.amount_harvested, 10_000_000_i128);
+    assert_eq!(event.amount_cycled, 10_000_000_i128);
 }
 
 // ===========================================================================
@@ -372,11 +384,11 @@ fn test_harvest_rejects_negative_min_out() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    client.harvest(&-1_i128);
+    client.harvest(&agent, &-1_i128);
 }
 
 /// `try_harvest` surfaces `MinOutMustBeNonNegative` (#16) for any negative
@@ -386,17 +398,17 @@ fn test_harvest_negative_min_out_returns_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     assert_eq!(
-        client.try_harvest(&-1_i128),
+        client.try_harvest(&agent, &-1_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(16))),
         "harvest(-1) must return VaultError::MinOutMustBeNonNegative (#16)"
     );
     assert_eq!(
-        client.try_harvest(&i128::MIN),
+        client.try_harvest(&agent, &i128::MIN),
         Err(Ok(soroban_sdk::Error::from_contract_error(16))),
         "harvest(i128::MIN) must return VaultError::MinOutMustBeNonNegative (#16)"
     );
@@ -418,12 +430,12 @@ fn test_harvest_rejects_when_protocol_is_none() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Fresh vault: CurrentProtocol defaults to "none".
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 }
 
 /// Harvest also rejects after an explicit rebalance back to `"none"`.
@@ -433,18 +445,18 @@ fn test_harvest_rejects_after_rebalance_to_none() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.set_blend_pool(&owner, &blend_pool);
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &850_i128, &0_i128);
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 }
 
 #[test]
@@ -452,11 +464,11 @@ fn test_harvest_none_protocol_returns_unsupported_protocol() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     assert_eq!(
-        client.try_harvest(&0_i128),
+        client.try_harvest(&agent, &0_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(17))),
         "harvest with CurrentProtocol=none must return UnsupportedProtocol (#17)"
     );
@@ -481,14 +493,14 @@ fn test_harvest_rejects_before_cooldown_elapses() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // setup_with_deployed_blend already rebalanced (and wrote LastRebalanceLedger)
     // in this same ledger. Enable a cooldown so the subsequent harvest is blocked.
     client.set_rebalance_cooldown(&10_u32);
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 }
 
 /// Two harvests in the same ledger with cooldown > 0: the first succeeds
@@ -499,7 +511,7 @@ fn test_second_harvest_within_cooldown_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -511,9 +523,9 @@ fn test_second_harvest_within_cooldown_panics() {
     });
 
     client.set_rebalance_cooldown(&10_u32);
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
     // Same ledger — elapsed == 0 < 10.
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 }
 
 /// `try_harvest` returns the typed cooldown error and does not update
@@ -523,7 +535,7 @@ fn test_harvest_within_cooldown_returns_error_without_side_effects() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, 10_000_000_i128);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -531,7 +543,7 @@ fn test_harvest_within_cooldown_returns_error_without_side_effects() {
     let ledger_before = client.get_last_rebalance_ledger();
 
     assert_eq!(
-        client.try_harvest(&0_i128),
+        client.try_harvest(&agent, &0_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(43))),
         "harvest within cooldown must return RebalanceCooldownActive (#43)"
     );
@@ -556,7 +568,7 @@ fn test_harvest_succeeds_after_cooldown_elapses() {
     env.mock_all_auths();
 
     let deposit_amount = 10_000_000_i128;
-    let (contract_id, _agent, _owner, _usdc_token, _blend_pool) =
+    let (contract_id, agent, _owner, _usdc_token, _blend_pool) =
         setup_with_deployed_blend(&env, deposit_amount);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -568,15 +580,39 @@ fn test_harvest_succeeds_after_cooldown_elapses() {
         li.sequence_number = last + interval;
     });
 
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
 
     let event = decode_harvest_event(&env);
     assert_eq!(event.protocol, symbol_short!("blend"));
-    assert_eq!(event.amount_harvested, deposit_amount);
+    assert_eq!(event.amount_cycled, deposit_amount);
 
     let new_last = client.get_last_rebalance_ledger();
     assert!(
         new_last >= last + interval,
         "LastRebalanceLedger should advance after a successful post-cooldown harvest"
     );
+}
+
+/// Repeated harvests with a fully blocked withdrawal increment the shared
+/// consecutive-failure breaker and pause at its configured threshold.
+#[test]
+fn test_consecutive_failed_harvests_trip_circuit_breaker() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, agent, _owner, _usdc_token, blend_pool) =
+        setup_with_deployed_blend(&env, 10_000_000_i128);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
+
+    client.set_max_consecutive_failures(&2);
+    blend_client.set_max_withdraw_limit(&-1_i128);
+
+    client.harvest(&agent, &0_i128);
+    assert_eq!(client.get_consecutive_failures(), 1);
+    assert!(!client.is_paused());
+
+    client.harvest(&agent, &0_i128);
+    assert_eq!(client.get_consecutive_failures(), 2);
+    assert!(client.is_paused());
 }

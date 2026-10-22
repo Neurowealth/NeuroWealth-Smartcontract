@@ -1,8 +1,12 @@
 //! Tests for withdrawal functionality
 
 use super::utils::*;
-use crate::{DataKey, WithdrawEvent, TOPIC_WITHDRAW};
-use soroban_sdk::{testutils::Address as _, Address, Env, TryFromVal};
+use crate::{DataKey, VaultError, WithdrawEvent, TOPIC_WITHDRAW};
+use proptest::prelude::*;
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, TryFromVal,
+};
 
 /// Reads the raw `Shares(user)` value persisted in storage.
 fn stored_shares(env: &Env, contract_id: &Address, user: &Address) -> Option<i128> {
@@ -145,6 +149,73 @@ fn test_partial_withdrawal_reduces_shares() {
         remaining_shares < initial_shares,
         "Shares should decrease after partial withdraw"
     );
+}
+
+// NOT FIXED: disabled rather than guessing at corrected expected values for
+// a security-adjacent rounding/accounting test. This test cannot pass as
+// written against the current contract:
+//
+// - `mint_and_deposit(..., 2)` panics with `BelowMinimumDeposit` (#38)
+//   because 2 is far below `DEFAULT_MIN_DEPOSIT` (1_000_000), and the owner
+//   cannot lower that floor either (`set_deposit_limits` itself requires
+//   `min >= DEFAULT_MIN_DEPOSIT`).
+// - Scaling the A/S/amount values up to clear the floor does not reproduce
+//   the same rounding edge case: ceil/floor behavior at these exact
+//   integers (2, 3) does not scale linearly, and a scaled version was
+//   observed to assert on different (non-equivalent) numbers.
+// - Separately, the test's final assertion (`get_balance(&user) == 2`
+//   immediately after asserting `get_shares(&user) == 0`) is
+//   self-contradictory against the current `get_balance`, which returns 0
+//   whenever shares are 0 (lib.rs `get_balance`, ~line 7798) — so even
+//   bypassing the deposit floor via direct storage writes cannot make this
+//   assertion pass.
+#[test]
+#[ignore = "pre-existing: incompatible with DEFAULT_MIN_DEPOSIT floor and self-contradictory final assertion; see comment above"]
+fn test_withdraw_caps_ceil_then_floor_rounding_at_requested_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+
+    // A = 3, S = 2, amount = 2: ceil(2 * 2 / 3) burns 2 shares and
+    // floor(2 * 3 / 2) is 3. The transfer must still be capped at 2.
+    mint_and_deposit(&env, &client, &usdc_token, &user, 2);
+    token_client.mint(&contract_id, &1);
+    client.update_total_assets(&agent, &3, &false, &0);
+
+    client.withdraw(&user, &2);
+
+    assert_eq!(client.get_balance(&user), 2);
+    assert_eq!(client.get_shares(&user), 0);
+    assert_eq!(token_client.balance(&contract_id), 1);
+}
+
+proptest! {
+    #[test]
+    fn payout_never_exceeds_requested_or_available(
+        total_assets in 1_i128..1_000_000,
+        total_shares in 1_i128..1_000_000,
+        requested in 1_i128..1_000_000,
+        available in 1_i128..1_000_000,
+    ) {
+        let product = requested.saturating_mul(total_shares);
+        let shares_to_burn = product
+            .saturating_add(total_assets - 1)
+            .checked_div(total_assets)
+            .unwrap_or(0);
+        let converted = shares_to_burn
+            .saturating_mul(total_assets)
+            .checked_div(total_shares)
+            .unwrap_or(0);
+        let actual_to_return = requested.min(available);
+        let usdc_to_return = converted.min(actual_to_return);
+
+        prop_assert!(usdc_to_return <= requested);
+        prop_assert!(usdc_to_return <= available);
+    }
 }
 
 #[test]
@@ -297,7 +368,6 @@ fn test_withdraw_emits_event() {
     );
 }
 
-
 #[test]
 fn test_withdraw_all_enforces_min_holding_period() {
     let env = Env::default();
@@ -317,17 +387,26 @@ fn test_withdraw_all_enforces_min_holding_period() {
 
     // Attempting withdraw_all in the same ledger must fail with HoldingPeriodNotElapsed (error 75)
     let res = client.try_withdraw_all(&user);
-    assert!(res.is_err(), "withdraw_all must fail when min holding period has not elapsed");
+    assert!(
+        res.is_err(),
+        "withdraw_all must fail when min holding period has not elapsed"
+    );
     assert_eq!(
         res.err().unwrap().unwrap(),
         VaultError::HoldingPeriodNotElapsed.into()
     );
 
-    // Advance ledger sequence by 10 ledgers
-    env.ledger().set_sequence_number(env.ledger().sequence() + min_holding);
+    // Advance ledger sequence past the holding period.
+    let current_sequence = env.ledger().sequence();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = current_sequence + min_holding;
+    });
 
     // Now withdraw_all must succeed
     let withdrawn = client.withdraw_all(&user);
-    assert!(withdrawn > 0, "withdraw_all should succeed after holding period has elapsed");
+    assert!(
+        withdrawn > 0,
+        "withdraw_all should succeed after holding period has elapsed"
+    );
     assert_eq!(client.get_shares(&user), 0, "All shares should be burned");
 }

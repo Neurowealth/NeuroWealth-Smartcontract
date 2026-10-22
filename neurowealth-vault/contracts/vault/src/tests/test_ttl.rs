@@ -3,7 +3,10 @@
 use super::utils::*;
 use crate::DataKey;
 use soroban_sdk::testutils::storage::Persistent as _;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env,
+};
 
 #[test]
 fn test_get_shares_does_not_extend_ttl() {
@@ -162,6 +165,13 @@ fn test_touch_restores_ttl_when_below_threshold() {
     let env = Env::default();
     env.mock_all_auths();
 
+    // The host clamps persistent-entry TTLs to `min_persistent_entry_ttl`
+    // (4096 ledgers by default), which would prevent forcing a TTL below
+    // that floor below. Lower it so the test can actually set a 1-ledger TTL.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1;
+    });
+
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let user = Address::generate(&env);
@@ -253,6 +263,13 @@ fn test_touch_does_not_extend_when_ttl_equals_threshold() {
 fn test_touch_extends_when_ttl_is_one_below_threshold() {
     let env = Env::default();
     env.mock_all_auths();
+
+    // See the comment in `test_touch_restores_ttl_when_below_threshold`:
+    // the host clamps persistent-entry TTLs to `min_persistent_entry_ttl`
+    // (4096 by default), which is above the 99-ledger TTL this test forces.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1;
+    });
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);

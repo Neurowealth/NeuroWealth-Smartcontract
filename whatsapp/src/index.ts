@@ -1,13 +1,12 @@
+// Must stay first: loads .env and rejects an insecure environment before any
+// other module reads configuration at load time (#945).
+import './bootstrapEnv';
 import express from 'express';
 import bodyParser from 'body-parser';
-import dotenv from 'dotenv';
 import { handleWhatsAppWebhook } from './webhook';
 import { handleDeliveryStatusCallback } from './statusWebhook';
 import { verifyTwilioSignature } from './twilioSignature';
-import { assertConfig } from './cryptoUtils';
-
-dotenv.config();
-assertConfig();
+import { purgeExpiredState } from './stateManager';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,6 +36,15 @@ app.post(
   }),
   handleDeliveryStatusCallback
 );
+
+// Sessions and OTPs live in Postgres now, so idle rows are swept instead of
+// being capped in memory. Safe to run on every replica.
+const purgeTimer = setInterval(() => {
+  purgeExpiredState().catch((error: unknown) => {
+    console.error('Failed to purge expired WhatsApp state:', error instanceof Error ? error.message : error);
+  });
+}, 10 * 60 * 1000);
+purgeTimer.unref();
 
 app.listen(PORT, () => {
   console.log(`🚀 NeuroWealth WhatsApp Bot Handler running on port ${PORT}`);

@@ -58,7 +58,7 @@ fn test_large_deposit_within_range_succeeds() {
 /// through the public deposit path. The conversion guard below is the reachable
 /// boundary on the share-conversion path.)
 #[test]
-#[should_panic(expected = "vault: conversion mul overflow")]
+#[should_panic(expected = "vault: share conversion overflow")]
 fn test_convert_to_shares_mul_overflow_is_checked() {
     let env = Env::default();
     env.mock_all_auths();
@@ -155,7 +155,7 @@ fn test_large_balance_full_withdraw() {
 /// decrease. With `old_total == i128::MAX` this would overflow; the checked_mul
 /// must surface the explicit message instead of an opaque panic.
 #[test]
-#[should_panic(expected = "vault: max decrease mul overflow")]
+#[should_panic(expected = "vault: total available overflow")]
 fn test_update_total_assets_decrease_bound_overflow_is_checked() {
     let env = Env::default();
     env.mock_all_auths();

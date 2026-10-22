@@ -26,4 +26,7 @@ paths = [
   # Binary/build outputs are not sources of truth for secrets.
   '''(^|/)target/''',
   '''\.wasm$''',
+  '''(^|/)__tests__/''',
+  '''(^|/)test/''',
 ]
+

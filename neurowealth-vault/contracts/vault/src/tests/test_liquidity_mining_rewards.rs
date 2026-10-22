@@ -1,4 +1,3 @@
-
 #![cfg(test)]
 //! Liquidity-mining reward compounding tests.
 //!
@@ -8,7 +7,6 @@
 
 //! Regression coverage for compounding externally supplied rewards.
 
-
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -16,7 +14,6 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 fn test_liquidity_mining_rewards_claim_and_compound() {
     let env = Env::default();
     env.mock_all_auths();
-
 
     let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -56,5 +53,4 @@ fn test_liquidity_mining_rewards_claim_and_compound() {
     client.update_total_assets(&agent, &10_500_000, &false, &0);
 
     assert_eq!(client.get_total_assets(), 10_500_000);
-
 }

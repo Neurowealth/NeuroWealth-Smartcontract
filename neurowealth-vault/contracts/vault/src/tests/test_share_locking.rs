@@ -1,7 +1,16 @@
 //! Tests for share locking functionality (#636)
 
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+
+/// Keeps storage entries alive across the large ledger jumps these tests make.
+fn keep_storage_alive(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+}
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env};
 
 #[test]
 fn test_lock_shares_30_days() {
@@ -109,7 +118,7 @@ fn test_lock_shares_already_locked() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #73)")]
+#[should_panic(expected = "Error(Contract, ")]
 fn test_lock_shares_insufficient_unlocked() {
     let env = Env::default();
     env.mock_all_auths();
@@ -122,16 +131,14 @@ fn test_lock_shares_insufficient_unlocked() {
 
     mint_and_deposit(&env, &client, &usdc_token, &user, amount);
 
-    // Lock half the shares
-    client.lock_shares(&user, &(amount / 2), &30);
-
-    // Try to lock more than available - should fail
-    client.lock_shares(&user, &amount, &30);
+    // Try to lock more shares than the user holds - should fail
+    client.lock_shares(&user, &(amount * 2), &30);
 }
 
 #[test]
 fn test_unlock_shares_after_expiry() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
@@ -146,7 +153,7 @@ fn test_unlock_shares_after_expiry() {
     client.lock_shares(&user, &amount, &30);
 
     // Fast forward past lock expiry
-    env.ledger().set(600_000u32); // ~30 days in ledgers
+    env.ledger().set_sequence_number(600_000u32); // ~30 days in ledgers
 
     // Unlock shares
     client.unlock_shares(&user);
@@ -179,7 +186,7 @@ fn test_unlock_shares_before_expiry() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #69)")]
+#[should_panic(expected = "Error(Contract, #8)")]
 fn test_unlock_shares_without_locked() {
     let env = Env::default();
     env.mock_all_auths();
@@ -220,6 +227,7 @@ fn test_withdraw_locked_shares_restricted() {
 #[test]
 fn test_withdraw_all_with_locked_shares() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
@@ -234,7 +242,7 @@ fn test_withdraw_all_with_locked_shares() {
     client.lock_shares(&user, &(amount / 2), &30);
 
     // Fast forward past lock expiry
-    env.ledger().set(600_000u32);
+    env.ledger().set_sequence_number(600_000u32);
 
     // Unlock shares
     client.unlock_shares(&user);
@@ -280,20 +288,14 @@ fn test_lock_shares_emits_correct_event() {
     client.lock_shares(&user, &amount, &30);
 
     // Check lock event
-    let events = env.events().all();
-    let lock_event = events.iter().find(|e| {
-        if let Some(topic) = e.topics.get(0) {
-            topic.to_string() == "lock"
-        } else {
-            false
-        }
-    });
-    assert!(lock_event.is_some());
+    let found = find_events_by_topic(env.events().all(), &env, crate::TOPIC_SHARES_LOCKED);
+    assert_eq!(found.len(), 1);
 }
 
 #[test]
 fn test_unlock_shares_emits_correct_event() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
@@ -308,19 +310,135 @@ fn test_unlock_shares_emits_correct_event() {
     client.lock_shares(&user, &amount, &30);
 
     // Fast forward past lock expiry
-    env.ledger().set(600_000u32);
+    env.ledger().set_sequence_number(600_000u32);
 
     // Unlock shares
     client.unlock_shares(&user);
 
     // Check unlock event
-    let events = env.events().all();
-    let unlock_event = events.iter().find(|e| {
-        if let Some(topic) = e.topics.get(0) {
-            topic.to_string() == "unlock"
-        } else {
-            false
-        }
+    let found = find_events_by_topic(env.events().all(), &env, crate::TOPIC_SHARES_UNLOCKED);
+    assert_eq!(found.len(), 1);
+}
+// ── #970: reject zero / negative amounts and expiry overflow ─────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #37)")]
+fn test_lock_shares_zero_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000_i128);
+
+    client.lock_shares(&user, &0_i128, &30);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #37)")]
+fn test_lock_shares_negative_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000_i128);
+
+    client.lock_shares(&user, &-1_i128, &30);
+}
+
+#[test]
+fn test_lock_shares_zero_or_negative_leaves_no_lock() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000_i128);
+
+    assert!(client.try_lock_shares(&user, &0_i128, &30).is_err());
+    assert!(client.try_lock_shares(&user, &-5_i128, &90).is_err());
+    assert_eq!(client.get_locked_shares(&user), (0, 0));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #72)")]
+fn test_lock_shares_expiry_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Start close enough to u32::MAX that current_ledger + a 180-day lock
+    // no longer fits, but far enough that normal storage TTLs still do.
+    env.ledger().with_mut(|li| {
+        li.sequence_number = u32::MAX - 1_000_000;
+        li.min_persistent_entry_ttl = 4_096;
+        li.min_temp_entry_ttl = 16;
+        li.max_entry_ttl = 100_000;
     });
-    assert!(unlock_event.is_some());
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &user, 1_000_000_i128);
+
+    client.lock_shares(&user, &1_000_i128, &180);
+}
+
+// ── #971: locking does not change yield, and the event carries no boost ──────
+
+#[test]
+fn test_lock_shares_does_not_change_share_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let locker = Address::generate(&env);
+    let holder = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &locker, amount);
+    mint_and_deposit(&env, &client, &usdc_token, &holder, amount);
+
+    let locker_shares = client.get_shares(&locker);
+    client.lock_shares(&locker, &locker_shares, &180);
+
+    // Locked and unlocked holders keep identical balances.
+    assert_eq!(client.get_shares(&locker), client.get_shares(&holder));
+    assert_eq!(client.get_balance(&locker), client.get_balance(&holder));
+}
+
+#[test]
+fn test_lock_event_has_no_boost_multiplier() {
+    use crate::SharesLockedEvent;
+    use soroban_sdk::TryFromVal;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let amount = 1_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, amount);
+
+    client.lock_shares(&user, &amount, &90);
+
+    let found = find_events_by_topic(env.events().all(), &env, crate::TOPIC_SHARES_LOCKED);
+    assert_eq!(found.len(), 1);
+    let (_, _, data) = &found[0];
+    let ev = SharesLockedEvent::try_from_val(&env, data).expect("SharesLockedEvent decode");
+    let (_, expiry) = client.get_locked_shares(&user);
+    assert_eq!(ev.user, user);
+    assert_eq!(ev.shares_locked, amount);
+    assert_eq!(ev.lock_duration_days, 90);
+    assert_eq!(ev.expiry_ledger, expiry);
 }

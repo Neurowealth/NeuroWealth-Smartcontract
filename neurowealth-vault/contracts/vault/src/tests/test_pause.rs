@@ -23,7 +23,19 @@ extern crate std;
 
 use super::utils::*;
 use crate::{EmergencyPausedEvent, VaultPausedEvent, TOPIC_EMERGENCY_PAUSED, TOPIC_PAUSED};
-use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, BytesN, Env, TryFromVal};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, BytesN, Env, TryFromVal,
+};
+
+/// Keeps storage entries alive across the large ledger jumps these tests make.
+fn keep_storage_alive(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+}
 
 // ============================================================================
 // ── Section 1: Functional pause tests (original) ─────────────────────────────
@@ -154,14 +166,19 @@ fn test_rebalance_blocked_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
     assert!(client.is_paused());
 
     // require_not_paused fires before any blend check
-    client.rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(
+        &agent,
+        &soroban_sdk::symbol_short!("blend"),
+        &500_i128,
+        &0_i128,
+    );
 }
 
 #[test]
@@ -266,7 +283,7 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
     env.mock_all_auths();
 
     // --- Part 1: owner-initiated pause emits VaultPausedEvent (topic "paused") ---
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
@@ -294,7 +311,7 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
 
     // --- Part 2: circuit-breaker auto-pause emits EmergencyPausedEvent (topic "emerg") ---
     // Deploy a fresh vault with Blend so the circuit breaker can fire.
-    let (contract_id2, _agent2, owner2, usdc_token2, blend_pool2) =
+    let (contract_id2, agent2, owner2, usdc_token2, blend_pool2) =
         setup_vault_with_token_and_blend(&env);
     let client2 = NeuroWealthVaultClient::new(&env, &contract_id2);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool2);
@@ -305,13 +322,33 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client2, &usdc_token2, &user, 10_000_000_i128);
 
-    // Record events before triggering the circuit breaker.
+    // Record events before triggering the circuit breaker. `env.events().all()`
+    // accumulates every event from both vault instances sharing this `env`
+    // (including Part 1's `client.pause(&owner)` VaultPausedEvent on the
+    // first `contract_id`), so the "no VaultPausedEvent from auto-pause"
+    // check below must compare against a before-count too, not assume 0.
     let emerg_before = find_events_by_topic(env.events().all(), &env, TOPIC_EMERGENCY_PAUSED).len();
+    let paused_before = find_events_by_topic(env.events().all(), &env, TOPIC_PAUSED).len();
 
     // Three consecutive failures trip the default threshold (3).
-    client2.rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128);
-    client2.rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128);
-    client2.rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128);
+    client2.rebalance(
+        &agent2,
+        &soroban_sdk::symbol_short!("blend"),
+        &500_i128,
+        &0_i128,
+    );
+    client2.rebalance(
+        &agent2,
+        &soroban_sdk::symbol_short!("blend"),
+        &500_i128,
+        &0_i128,
+    );
+    client2.rebalance(
+        &agent2,
+        &soroban_sdk::symbol_short!("blend"),
+        &500_i128,
+        &0_i128,
+    );
     assert!(client2.is_paused(), "circuit breaker must pause the vault");
 
     // Exactly one new EmergencyPausedEvent must have been emitted.
@@ -326,12 +363,14 @@ fn test_auto_pause_emits_different_event_than_owner_pause() {
         .expect("auto-pause event must decode as EmergencyPausedEvent");
     assert_eq!(event.owner, owner2);
 
-    // Ensure no VaultPausedEvent was emitted by the circuit breaker.
+    // Ensure no NEW VaultPausedEvent was emitted by the circuit breaker.
+    // Compared against `paused_before` rather than 0: `env.events().all()`
+    // still carries Part 1's owner-pause VaultPausedEvent from the other
+    // vault instance sharing this `env`.
     let pause_events_after_circuit = find_events_by_topic(env.events().all(), &env, TOPIC_PAUSED);
-    // The owner2 vault has no pause events (we only called rebalance, not pause).
     assert_eq!(
         pause_events_after_circuit.len(),
-        0,
+        paused_before,
         "circuit-breaker auto-pause must NOT emit VaultPausedEvent"
     );
 
@@ -386,7 +425,7 @@ fn test_emergency_pause_blocks_operations_and_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
 
@@ -435,8 +474,12 @@ fn test_emergency_pause_blocks_operations_and_emits_event() {
     );
 
     // 6. Asserts a rebalance attempt panics with VaultError::Paused (#35)
-    let rebalance_res =
-        client.try_rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128);
+    let rebalance_res = client.try_rebalance(
+        &agent,
+        &soroban_sdk::symbol_short!("blend"),
+        &500_i128,
+        &0_i128,
+    );
     assert_eq!(
         rebalance_res,
         Err(Ok(soroban_sdk::Error::from_contract_error(35))),
@@ -568,13 +611,18 @@ fn pause_matrix_withdraw_all_blocked() {
 fn pause_matrix_rebalance_blocked() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
 
     assert_eq!(
-        client.try_rebalance(&soroban_sdk::symbol_short!("blend"), &500_i128, &0_i128),
+        client.try_rebalance(
+            &agent,
+            &soroban_sdk::symbol_short!("blend"),
+            &500_i128,
+            &0_i128
+        ),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR))),
         "rebalance must be blocked while paused"
     );
@@ -585,13 +633,13 @@ fn pause_matrix_rebalance_blocked() {
 fn pause_matrix_harvest_blocked() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.pause(&owner);
 
     assert_eq!(
-        client.try_harvest(&0_i128),
+        client.try_harvest(&agent, &0_i128),
         Err(Ok(soroban_sdk::Error::from_contract_error(PAUSED_ERR))),
         "harvest must be blocked while paused"
     );
@@ -620,6 +668,7 @@ fn pause_matrix_schedule_upgrade_blocked() {
 fn pause_matrix_execute_upgrade_blocked() {
     let env = Env::default();
     env.mock_all_auths();
+    keep_storage_alive(&env);
     let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -628,7 +677,8 @@ fn pause_matrix_execute_upgrade_blocked() {
     client.schedule_upgrade(&owner, &fake_hash);
 
     // Advance ledger past the timelock.
-    env.ledger().set_sequence_number(env.ledger().sequence() + 17_281);
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 17_281);
 
     client.pause(&owner);
     assert!(client.is_paused());
@@ -731,9 +781,13 @@ fn pause_matrix_emergency_harvest_allowed() {
     assert_not_paused_error(&result, "emergency_harvest");
 }
 
-/// `pause` → ALLOWED while already paused (idempotent).
+/// `pause` → REJECTED while already paused (#988: a repeat `pause()` call
+/// is now a deliberate error, `VaultError::AlreadyPaused`, not a silent
+/// idempotent no-op). This is the opposite of `emergency_pause`, which
+/// stays a silent no-op by design — see that function's doc comment.
 #[test]
-fn pause_matrix_pause_allowed_while_paused() {
+#[should_panic(expected = "Error(Contract, #91)")]
+fn pause_matrix_pause_rejected_while_already_paused() {
     let env = Env::default();
     env.mock_all_auths();
     let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
@@ -742,8 +796,36 @@ fn pause_matrix_pause_allowed_while_paused() {
     client.pause(&owner);
     assert!(client.is_paused());
 
+    // Must panic with AlreadyPaused, not silently succeed.
+    client.pause(&owner);
+}
+
+/// #988 regression: `pause` and `emergency_pause` must behave *differently*
+/// when the vault is already paused — `pause` rejects, `emergency_pause`
+/// silently no-ops. Both leave the vault paused either way; only the error
+/// behavior differs. See the doc comments on both functions for the
+/// rationale (an emergency responder should never be blocked by a race,
+/// while a repeat `pause()` call is useful signal of a misbehaving caller).
+#[test]
+fn pause_and_emergency_pause_differ_when_already_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    client.pause(&owner);
+    assert!(client.is_paused());
+
+    // emergency_pause while already paused: silent no-op, no panic.
+    client.emergency_pause(&owner);
+    assert!(client.is_paused());
+
+    // pause while already paused: must reject.
     let result = client.try_pause(&owner);
-    assert_not_paused_error(&result, "pause (while already paused)");
+    assert!(
+        result.is_err(),
+        "pause() must reject a repeat call even though emergency_pause() just no-opped"
+    );
 }
 
 /// `unpause` → ALLOWED while paused.

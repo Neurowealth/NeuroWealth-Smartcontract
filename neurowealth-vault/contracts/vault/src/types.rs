@@ -128,6 +128,8 @@ pub enum DataKey {
     ProtocolWhitelistIndex,
     /// Standby agent key
     StandbyAgent,
+    /// Standby agent timelock expiry ledger
+    StandbyAgentTimelockExpiry,
     /// Withdrawal queue configuration
     QueueConfig,
     /// Next request ID counter

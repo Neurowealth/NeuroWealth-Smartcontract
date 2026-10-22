@@ -273,10 +273,10 @@ fn test_concurrent_deposits_interleaved_with_rebalances() {
 
     // Interleave deposits and rebalances
     client.deposit(&user_a, &10_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     client.deposit(&user_b, &8_000_000_i128);
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     client.deposit(&user_a, &5_000_000_i128);
 
@@ -302,7 +302,7 @@ fn test_concurrent_deposit_during_blend_deployment() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
 
     blend_client.set_max_supply_limit(&15_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Now deposit additional funds while Blend holds 15 USDC.
     let second_deposit = 10_000_000_i128;
@@ -351,7 +351,7 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
 
     // Deploy most of the vault into Blend (cap at 25 USDC so some idle remains).
     blend_client.set_max_supply_limit(&25_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // User A makes a partial withdrawal while Blend holds assets.
@@ -362,7 +362,7 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
     // Agent harvests (compounds yield back into Blend).
     // Disable cooldown so harvest can fire right after rebalance.
     client.set_rebalance_cooldown(&0_u32);
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // User B makes a partial withdrawal.
@@ -371,7 +371,7 @@ fn test_concurrent_harvest_interleaved_with_withdrawals() {
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // Second harvest after the second withdrawal.
-    client.harvest(&0_i128);
+    client.harvest(&agent, &0_i128);
     assert_vault_invariants(&client, &[user_a.clone(), user_b.clone()]);
 
     // Both users withdraw their remaining balances; vault should be fully drained.
@@ -409,7 +409,7 @@ fn test_concurrent_withdrawal_triggers_partial_blend_exit() {
 
     // Deploy 15 to Blend, leave 5 idle by capping pool at 15.
     blend_client.set_max_supply_limit(&15_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let idle_before = token_client.balance(&contract_id);
     let deployed_before = token_client.balance(&blend_pool);

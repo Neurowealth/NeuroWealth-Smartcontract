@@ -413,7 +413,8 @@ pub fn run_fuzz_input(data: &[u8]) {
     let max_pending = data.first().map_or(4, |b| usize::from(b % 8) + 1);
     let mut vault = QueueModel::new(max_pending);
 
-    for chunk in data.chunks_exact(4) {
+    let (chunks, _remainder) = data.as_chunks::<4>();
+    for chunk in chunks {
         let (op, arg, amt) = (chunk[0] % 7, chunk[1], amount([chunk[2], chunk[3]]));
         let user = usize::from(arg) % USERS;
         let before = vault;

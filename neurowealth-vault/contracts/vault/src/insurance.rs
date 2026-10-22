@@ -22,7 +22,11 @@ pub struct InsuranceConfig {
 
 impl InsuranceConfig {
     /// Create a new config.
-    pub fn new(contribution_rate_bps: i128, max_payout_per_incident: i128, min_threshold: i128) -> Self {
+    pub fn new(
+        contribution_rate_bps: i128,
+        max_payout_per_incident: i128,
+        min_threshold: i128,
+    ) -> Self {
         Self {
             contribution_rate_bps,
             max_payout_per_incident,

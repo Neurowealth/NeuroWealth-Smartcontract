@@ -89,9 +89,47 @@ export async function connectFreighterWallet(): Promise<string | null> {
 
     const key = await getFreighterPublicKey();
     return key || null;
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Failed to connect Freighter wallet:', err);
     return null;
+  }
+
+}
+
+const KNOWN_NETWORKS: Record<string, string> = {
+  'Public Global Stellar Network ; September 2015': 'Mainnet',
+  'Test SDF Network ; September 2015': 'Testnet',
+  'Test SDF Future Network ; October 2022': 'Futurenet',
+};
+
+/** Human-readable name for a Stellar network passphrase. */
+export function describeNetwork(passphrase: string | null | undefined): string {
+  if (!passphrase) return 'an unknown network';
+  return KNOWN_NETWORKS[passphrase] ?? 'a custom network';
+}
+
+/**
+ * Reads the network Freighter is currently using and throws unless it matches
+ * `requiredPassphrase`. Must run before any signature is requested so a wallet
+ * on Testnet can never sign a Mainnet transaction (or vice versa).
+ */
+export async function assertFreighterNetwork(requiredPassphrase: string): Promise<void> {
+  const testHarness = getBrowserTestHarness();
+  const networkDetails: { networkPassphrase?: string; error?: string } = testHarness
+    ? await testHarness.getNetworkDetails()
+    : await getNetworkDetails();
+
+  const activePassphrase = networkDetails?.networkPassphrase;
+  if (!activePassphrase || networkDetails?.error) {
+    throw new Error('Freighter is not connected: unable to read its active network.');
+  }
+
+  if (activePassphrase !== requiredPassphrase) {
+    throw new Error(
+      `Freighter is connected to the wrong network: the wallet is on ${describeNetwork(activePassphrase)} ` +
+        `but this app requires ${describeNetwork(requiredPassphrase)}. ` +
+        `Switch networks in Freighter and try again. Expected network passphrase: ${requiredPassphrase}`,
+    );
   }
 }
 
@@ -110,14 +148,10 @@ export async function signWithFreighter(xdr: string, networkPassphrase?: string)
       throw new Error('Network passphrase is not configured in the environment.');
     }
 
-    const testHarness = getBrowserTestHarness();
-    const networkDetails = testHarness
-      ? await testHarness.getNetworkDetails()
-      : await getNetworkDetails();
-    if (networkDetails.networkPassphrase !== requiredPassphrase) {
-      throw new Error(`Freighter is connected to the wrong network. Expected network passphrase: ${requiredPassphrase}`);
-    }
+    // Block network mismatches before Freighter is ever asked for a signature.
+    await assertFreighterNetwork(requiredPassphrase);
 
+    const testHarness = getBrowserTestHarness();
     const signedXdr = testHarness
       ? await testHarness.signTransaction(xdr, requiredPassphrase)
       : await signFreighterTx(xdr, { networkPassphrase: requiredPassphrase });

@@ -53,19 +53,23 @@ export function RebalanceCooldown({ client, signer }: RebalanceCooldownProps) {
 
     try {
       const cooldownValue = parseInt(newCooldown);
-      const result = await client.set_rebalance_cooldown(
-        signer,
-        signer.publicKey(),
-        cooldownValue,
-      );
+      const result = await client.set_rebalance_cooldown(signer, cooldownValue);
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setCooldown(cooldownValue);
+
+      const txHash = result?.hash;
+      if (!txHash) {
+        throw new Error("Transaction hash missing");
+      }
 
       // Poll for confirmation
       const server = getSorobanServer(network);
       for (let i = 0; i < 60; i++) {
         try {
-          const tx = await server.getTransaction(result.hash);
+          const tx = await server.getTransaction(txHash);
           if (tx.status === "SUCCESS") break;
         } catch {
           // Not confirmed yet

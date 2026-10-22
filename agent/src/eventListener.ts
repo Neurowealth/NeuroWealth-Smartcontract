@@ -77,18 +77,25 @@ export async function startEventListener() {
 
     const filters: rpc.Api.EventFilter[] = [{ type: 'contract', contractIds: [process.env.VAULT_CONTRACT_ID!] }];
     let polling = false;
-    isStopped = false;
+    isStopping = false;
+
+    // #902: declare pollTimer and eventCircuitBreaker that were missing
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const eventCircuitBreaker = new EventCircuitBreaker();
 
     const scheduleNextTick = (delayMs: number) => {
-      if (isStopped) return;
+      if (isStopping) return;
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = setTimeout(() => {
         void pollTick();
       }, delayMs);
     };
 
+    // #902: pollTick is self-scheduling via scheduleNextTick (no setInterval).
+    // The old setInterval was removed; all scheduling now flows through
+    // scheduleNextTick so the circuit-breaker delay is respected between ticks.
     const pollTick = async () => {
-      if (isStopped || polling) return;
+      if (isStopping || polling) return;
 
       if (!eventCircuitBreaker.canExecute()) {
         const backoffDelay = eventCircuitBreaker.getNextDelayMs();
@@ -100,10 +107,6 @@ export async function startEventListener() {
         return;
       }
 
-    eventInterval = setInterval(() => {
-      // A slow poll must not overlap the next tick, or the same page would be
-      // processed twice. Also skip if the listener is stopping.
-      if (polling || isStopping) return;
       polling = true;
 
       activePollingPromise = (async () => {
@@ -159,36 +162,33 @@ export async function startEventListener() {
               pageCount++;
             }
           }
+
+          // Successfully completed poll cycle
+          eventCircuitBreaker.recordSuccess();
+          scheduleNextTick(eventCircuitBreaker.getNextDelayMs());
         } catch (error) {
-          logger.error({ error: error instanceof Error ? error.message : error }, 'Error polling Soroban events');
+          eventCircuitBreaker.recordFailure(error);
+          const nextDelay = eventCircuitBreaker.getNextDelayMs();
+          logger.error(
+            {
+              error: error instanceof Error ? error.message : error,
+              nextPollInMs: nextDelay,
+              circuitState: eventCircuitBreaker.getState(),
+            },
+            'Error polling Soroban events; backing off',
+          );
+          scheduleNextTick(nextDelay);
         } finally {
           polling = false;
           activePollingPromise = null;
         }
+      })();
 
-        // Successfully completed poll cycle
-        eventCircuitBreaker.recordSuccess();
-        scheduleNextTick(eventCircuitBreaker.getNextDelayMs());
-      } catch (error) {
-        eventCircuitBreaker.recordFailure(error);
-        const nextDelay = eventCircuitBreaker.getNextDelayMs();
-        logger.error(
-          {
-            error: error instanceof Error ? error.message : error,
-            nextPollInMs: nextDelay,
-            circuitState: eventCircuitBreaker.getState(),
-          },
-          'Error polling Soroban events; backing off',
-        );
-        scheduleNextTick(nextDelay);
-      } finally {
-        polling = false;
-      }
+      await activePollingPromise;
     };
 
     scheduleNextTick(eventCircuitBreaker.getNextDelayMs());
   } catch (error) {
-    eventCircuitBreaker.recordFailure(error);
     logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to initialize event listener');
   }
 }
@@ -224,7 +224,7 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
 
       if (decision.shouldRebalance && decision.targetProtocol) {
         logger.info({ targetProtocol: decision.targetProtocol, userStrategy }, 'Rebalance needed');
-        const expectedApy = currentApy; // use current evaluated APY or fetch it
+        const expectedApy = decision.targetApy ?? currentApy;
         const snapshot = {
           eventId: event.id,
           strategy: userStrategy,
@@ -232,10 +232,21 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
           currentApy,
           decision,
         };
-        await submitRebalanceTx(decision.targetProtocol, expectedApy, {
+        const result = await submitRebalanceTx(decision.targetProtocol, expectedApy, {
           decisionId: createDecisionId('deposit-event', event.id, snapshot),
           snapshot,
         });
+        if (result.status === 'rejected') {
+          logger.error(
+            { targetProtocol: decision.targetProtocol, rejectionReasons: result.rejectionReasons, eventId: event.id },
+            'Rebalance transaction was rejected',
+          );
+        } else {
+          logger.info(
+            { targetProtocol: decision.targetProtocol, status: result.status, txHash: result.txHash, operationId: result.operationId },
+            'Rebalance transaction processed',
+          );
+        }
       }
     } catch (error) {
       logger.error({ error: error instanceof Error ? error.message : error, userStrategy }, 'Yield evaluation failed for deposit');

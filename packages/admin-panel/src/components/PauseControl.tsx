@@ -41,17 +41,20 @@ export function PauseControl({ client, signer }: PauseControlProps) {
     setTxHash(null);
 
     try {
-      let hash;
+      let hash: string | undefined;
       if (paused) {
         // Unpause
         const result = await client.unpause(signer, signer.publicKey());
-        hash = result.hash;
+        hash = result?.hash;
       } else {
         // Pause
         const result = await client.pause(signer, signer.publicKey());
-        hash = result.hash;
+        hash = result?.hash;
       }
 
+      if (!hash) {
+        throw new Error("Transaction did not return a hash");
+      }
       setTxHash(hash);
       setPaused(!paused);
       setShowConfirm(false);

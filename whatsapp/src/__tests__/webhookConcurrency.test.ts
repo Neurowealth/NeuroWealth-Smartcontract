@@ -77,6 +77,9 @@ import assert from 'node:assert/strict';
 import { handleWhatsAppWebhook } from '../webhook';
 import { createCustodialWallet } from '../walletService';
 import { updateState, UserState } from '../stateManager';
+import { InMemoryStateStore, setStateStore } from '../stateStore';
+
+setStateStore(new InMemoryStateStore());
 import { hashPhoneNumber } from '../cryptoUtils';
 
 let phoneCounter = 0;
@@ -105,7 +108,7 @@ function makeRes() {
 async function verifiedPhone(): Promise<string> {
   const phone = nextPhone();
   const phoneHash = hashPhoneNumber(`whatsapp:${phone}`);
-  updateState(phoneHash, UserState.VERIFIED);
+  await updateState(phoneHash, UserState.VERIFIED);
   await createCustodialWallet(phoneHash);
   return phone;
 }

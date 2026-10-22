@@ -15,53 +15,52 @@ body {
   overflow-x: hidden;
 }
 
-.dark body,
 body {
-  background-color: #080b11;
-  color: #f8fafc;
+  background-color: #ffffff;
+  color: #0f172a;
 }
 
-@media (prefers-color-scheme: light) {
-  body:not(.dark *) {
-    background-color: #ffffff;
-    color: #0f172a;
-  }
-}
-
-.dark body {
+.dark body,
+html.dark body {
   background-color: #080b11;
   color: #f8fafc;
 }
 
 .glass-panel {
-  background: rgba(248, 250, 252, 0.8);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
 }
 
-.dark .glass-panel {
+.dark .glass-panel,
+html.dark .glass-panel {
   background: rgba(18, 24, 36, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
 }
 
 .glass-panel-interactive {
-  background: rgba(248, 250, 252, 0.8);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
   transition: all 0.25s ease-in-out;
 }
 
-.dark .glass-panel-interactive {
+.dark .glass-panel-interactive,
+html.dark .glass-panel-interactive {
   background: rgba(18, 24, 36, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
 }
 
 .glass-panel-interactive:hover {
-  border-color: rgba(16, 185, 129, 0.3);
+  border-color: rgba(16, 185, 129, 0.4);
   transform: translateY(-2px);
-  box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.15);
+  box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.2);
 }
 
 /* Custom scrollbar */

@@ -24,7 +24,7 @@ fn test_agent_can_rebalance_with_custom_protocol() {
     let expected_apy = 500_i128; // 5% APY in basis points
 
     // Should succeed with mock_all_auths (require_is_agent passes)
-    client.rebalance(&protocol, &expected_apy, &0_i128);
+    client.rebalance(&agent, &protocol, &expected_apy, &0_i128);
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn test_rebalance_to_same_blend_protocol_with_zero_idle_balance_is_noop() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -44,7 +44,7 @@ fn test_rebalance_to_same_blend_protocol_with_zero_idle_balance_is_noop() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
     assert_eq!(token_client.balance(&contract_id), 0_i128);
@@ -53,7 +53,7 @@ fn test_rebalance_to_same_blend_protocol_with_zero_idle_balance_is_noop() {
 
     let events_before = env.events().all().len();
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     let events_after = find_events_by_topic(env.events().all(), &env, symbol_short!("rebalance"));
     assert_eq!(
@@ -146,7 +146,7 @@ fn test_rebalance_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -157,7 +157,7 @@ fn test_rebalance_emits_event() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     let rebalance_events =
         find_events_by_topic(env.events().all(), &env, symbol_short!("rebalance"));
@@ -179,7 +179,7 @@ fn test_rebalance_storage_current_protocol_changes() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -197,7 +197,7 @@ fn test_rebalance_storage_current_protocol_changes() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Rebalance to blend
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // Assert storage state changed
     assert_eq!(
@@ -212,7 +212,7 @@ fn test_rebalance_storage_current_protocol_changes_to_none() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -222,7 +222,7 @@ fn test_rebalance_storage_current_protocol_changes_to_none() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // First rebalance to blend
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(
         client.get_current_protocol(),
         symbol_short!("blend"),
@@ -230,7 +230,7 @@ fn test_rebalance_storage_current_protocol_changes_to_none() {
     );
 
     // Then rebalance to none
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     // Assert storage state changed to none
     assert_eq!(
@@ -271,11 +271,11 @@ fn test_rebalance_with_none_protocol_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // "none" protocol just sets current protocol to "none" — always safe to call
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn test_rebalance_with_blend_after_deposit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     client.set_blend_pool(&owner, &blend_pool);
@@ -293,7 +293,7 @@ fn test_rebalance_with_blend_after_deposit() {
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -309,13 +309,13 @@ fn test_rebalance_apy_parameter_accepted() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Various APY values should be accepted without panicking
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
-    client.rebalance(&symbol_short!("none"), &850_i128, &0_i128);
-    client.rebalance(&symbol_short!("none"), &2000_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &2000_i128, &0_i128);
 }
 
 #[test]
@@ -324,10 +324,10 @@ fn test_rebalance_rejects_expected_apy_above_range_with_typed_error() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    client.rebalance(&symbol_short!("none"), &10_001_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &10_001_i128, &0_i128);
 }
 
 #[test]
@@ -336,14 +336,14 @@ fn test_rebalance_while_paused_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Pause the vault
     client.pause(&owner);
     assert!(client.is_paused());
 
-    client.rebalance(&symbol_short!("none"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
 }
 
 #[test]
@@ -352,7 +352,7 @@ fn test_blend_rebalance_without_pool_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Deposit so vault_balance > 0, triggering the blend pool check
@@ -361,7 +361,7 @@ fn test_blend_rebalance_without_pool_panics() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // blend pool not set → should panic
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 }
 
 #[test]
@@ -394,11 +394,11 @@ fn test_rebalance_with_unsupported_protocol_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // "balanced" is not a supported protocol — should panic
-    client.rebalance(&symbol_short!("balanced"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("balanced"), &500_i128, &0_i128);
 }
 
 #[test]
@@ -406,11 +406,11 @@ fn test_rebalance_unsupported_protocol_emits_no_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // try_rebalance captures the panic but doesn't crash the test
-    let _result = client.try_rebalance(&symbol_short!("invalid"), &0_i128, &0_i128);
+    let _result = client.try_rebalance(&agent, &symbol_short!("invalid"), &0_i128, &0_i128);
 
     // Verify no rebalance events were published
     let rebalance_events =
@@ -427,7 +427,7 @@ fn test_blend_supply_and_withdraw_with_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -447,7 +447,7 @@ fn test_blend_supply_and_withdraw_with_events() {
     assert_eq!(blend_client.supplied(&usdc_token), 0);
 
     // Rebalance to Blend (supply)
-    client.rebalance(&symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
     // Verify funds moved to Blend
     assert_eq!(
@@ -493,7 +493,7 @@ fn test_blend_supply_and_withdraw_with_events() {
     );
 
     // Rebalance back to none (withdraw all from Blend)
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     // Verify all funds withdrawn from Blend
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));
@@ -522,7 +522,7 @@ fn test_rebalance_blend_to_none_withdraws_all_and_updates_state_and_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -534,7 +534,7 @@ fn test_rebalance_blend_to_none_withdraws_all_and_updates_state_and_events() {
     let deposit_amount = 30_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
-    client.rebalance(&symbol_short!("blend"), &900_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &900_i128, &0_i128);
 
     assert_eq!(
         client.get_current_protocol(),
@@ -553,7 +553,7 @@ fn test_rebalance_blend_to_none_withdraws_all_and_updates_state_and_events() {
     );
 
     let none_apy = 0_i128;
-    client.rebalance(&symbol_short!("none"), &none_apy, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &none_apy, &0_i128);
 
     assert_eq!(
         client.get_current_protocol(),
@@ -629,7 +629,7 @@ fn test_rebalance_fails_on_incomplete_protocol_exit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -640,7 +640,7 @@ fn test_rebalance_fails_on_incomplete_protocol_exit() {
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     assert_eq!(token_client.balance(&contract_id), 0);
     assert_eq!(blend_client.supplied(&usdc_token), deposit_amount);
@@ -649,7 +649,7 @@ fn test_rebalance_fails_on_incomplete_protocol_exit() {
     blend_client.set_max_withdraw_limit(&1_000_000_i128);
 
     // rebalance("none") should abort gracefully — not panic
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     // CurrentProtocol must remain "blend" — incomplete exit leaves state unchanged
     assert_eq!(
@@ -678,7 +678,7 @@ fn test_rebalance_fails_when_switching_protocols_with_partial_exit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -689,7 +689,7 @@ fn test_rebalance_fails_when_switching_protocols_with_partial_exit() {
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     assert_eq!(token_client.balance(&contract_id), 0);
     assert_eq!(blend_client.supplied(&usdc_token), deposit_amount);
@@ -698,7 +698,7 @@ fn test_rebalance_fails_when_switching_protocols_with_partial_exit() {
     blend_client.set_max_withdraw_limit(&2_000_000_i128);
 
     // Attempt protocol switch with limited withdrawal — must abort
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     // CurrentProtocol unchanged
     assert_eq!(
@@ -734,7 +734,7 @@ fn test_rebalance_min_out_panics_when_pool_returns_less_than_requested() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -745,7 +745,7 @@ fn test_rebalance_min_out_panics_when_pool_returns_less_than_requested() {
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &10_000_000_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &10_000_000_i128);
 }
 
 // ─── Issue #348: DEX approval expiry ledger-boundary test ────────────────────
@@ -813,7 +813,7 @@ fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -825,14 +825,14 @@ fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // Deploy to blend
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
     // Limit pool withdrawals so exit is incomplete (only 1M of 10M returns)
     blend_client.set_max_withdraw_limit(&1_000_000_i128);
 
     // Attempt rebalance to none — must abort gracefully
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     // CurrentProtocol must not change on failed exit
     assert_eq!(
@@ -858,7 +858,6 @@ fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
     );
 }
 
-
 // ─── Issue #383: pool-address rotation while funds are deployed ─────────────
 //
 // Companion to the `set_blend_pool`/`set_dex_pool` fund-stranding issue.
@@ -870,7 +869,7 @@ fn test_blend_pool_rotation_while_deployed_strands_funds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
+    let (contract_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let old_pool_client = MockBlendPoolClient::new(&env, &old_pool);
@@ -882,7 +881,7 @@ fn test_blend_pool_rotation_while_deployed_strands_funds() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // Deploy funds to the old pool.
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
@@ -907,7 +906,7 @@ fn test_blend_pool_rotation_while_deployed_strands_funds() {
     // DataKey::BlendPool), sees a 0 balance, treats the exit as complete, and
     // flips CurrentProtocol to "none" — even though the real funds are stuck
     // in `old_pool`.
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     assert_eq!(
         client.get_current_protocol(),
@@ -931,7 +930,7 @@ fn test_dex_pool_rotation_while_deployed_strands_funds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let old_pool_client = MockDexPoolClient::new(&env, &old_pool);
@@ -943,7 +942,7 @@ fn test_dex_pool_rotation_while_deployed_strands_funds() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // Deploy funds to the old pool.
-    client.rebalance(&symbol_short!("dex"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
     assert_eq!(
         old_pool_client.balance(&usdc_token, &contract_id),
         deposit_amount
@@ -971,7 +970,7 @@ fn test_dex_pool_rotation_while_deployed_strands_funds() {
     // DataKey::DexPool), sees a 0 balance, treats the exit as complete, and
     // flips CurrentProtocol to "none" — even though the real funds are stuck
     // in `old_pool`.
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     assert_eq!(
         client.get_current_protocol(),

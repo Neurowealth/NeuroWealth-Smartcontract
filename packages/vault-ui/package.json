@@ -12,7 +12,7 @@
     "lint": "eslint src --ext ts,tsx"
   },
   "dependencies": {
-    "@neurowealth/vault-client": "file:../vault-client",
+    "@neurowealth/vault-client": "^1.0.0",
     "@stellar/stellar-sdk": "^12.0.0",
     "date-fns": "^3.0.0",
     "react": ">=17.0.0",

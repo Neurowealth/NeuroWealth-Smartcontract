@@ -1,8 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { hashPhoneNumber } from './cryptoUtils';
 import { getWallet } from './walletService';
 import { getSession, updateState, UserState } from './stateManager';
+import { InMemoryStateStore, setStateStore } from './stateStore';
+import { smsClient } from './smsService';
+
+setStateStore(new InMemoryStateStore());
 
 const deliveredCodes = new Map<string, string>();
 const otpDeliveryModulePath = require.resolve('./otpDelivery');
@@ -25,9 +29,28 @@ const { handleWhatsAppWebhook } = require('./webhook') as typeof import('./webho
 // Webhook state machine (#691). Each test uses its own phone number, because the
 // session, wallet and OTP stores are module-level maps with no reset hook - and
 // the rate limiter counts per phone, so sharing one would couple the tests.
+//
+// OTP codes are delivered via SMS only, never echoed in the chat reply
+// (#942), so tests monkey-patch smsClient.send to capture the code instead of
+// hitting the real Twilio API.
 
 let counter = 0;
 const freshFrom = () => 'whatsapp:+1555' + String(counter += 1).padStart(7, '0');
+
+let lastSmsCode: string | null = null;
+const realSmsSend = smsClient.send;
+
+beforeEach(() => {
+  lastSmsCode = null;
+  smsClient.send = async (_to: string, body: string) => {
+    const match = body.match(/[0-9]{6}/);
+    lastSmsCode = match ? match[0] : null;
+  };
+});
+
+afterEach(() => {
+  smsClient.send = realSmsSend;
+});
 
 interface Captured {
   status?: number;
@@ -61,6 +84,8 @@ async function verifiedPhone(): Promise<string> {
   const code = deliveredCodes.get(from.replace(/^whatsapp:/i, ''));
   assert.ok(code, 'the OTP must be delivered out of band');
   const confirmation = await send(from, code);
+  assert.ok(lastSmsCode, 'the greeting must issue an OTP via SMS');
+  const confirmation = await send(from, lastSmsCode!);
   assert.match(confirmation.body, /verified/i);
   return from;
 }
@@ -74,7 +99,7 @@ describe('webhook rejected input (#691)', () => {
 });
 
 describe('webhook verification flow (#691)', () => {
-  it('answers a greeting with an OTP and moves the session to AWAITING_OTP', async () => {
+  it('answers a greeting with an OTP sent via SMS and moves the session to AWAITING_OTP', async () => {
     const from = freshFrom();
     const captured = await send(from, 'hi');
 
@@ -84,6 +109,10 @@ describe('webhook verification flow (#691)', () => {
     assert.match(captured.body, /sent by SMS/i);
     assert.doesNotMatch(captured.body, new RegExp(code), 'TwiML must not contain the OTP');
     assert.strictEqual(getSession(hashPhoneNumber(from)).state, UserState.AWAITING_OTP);
+    assert.doesNotMatch(captured.body, /[0-9]{6}/, 'the OTP code must never appear in the chat reply');
+    assert.match(captured.body, /sent a 6-digit verification code to your phone via SMS/);
+    assert.ok(lastSmsCode, 'the OTP must be delivered via SMS');
+    assert.strictEqual((await getSession(hashPhoneNumber(from))).state, UserState.AWAITING_OTP);
   });
 
   it('asks an unverified user to greet first when they send something else', async () => {
@@ -95,10 +124,11 @@ describe('webhook verification flow (#691)', () => {
     const from = freshFrom();
     await send(from, 'hi');
     const issued = deliveredCodes.get(from.replace(/^whatsapp:/i, ''))!;
+    const issued = lastSmsCode!;
     const captured = await send(from, issued);
 
     assert.match(captured.body, /Public Key: G/);
-    assert.strictEqual(getSession(hashPhoneNumber(from)).state, UserState.VERIFIED);
+    assert.strictEqual((await getSession(hashPhoneNumber(from))).state, UserState.VERIFIED);
     assert.ok(getWallet(hashPhoneNumber(from)), 'a wallet should exist after verification');
   });
 
@@ -106,11 +136,12 @@ describe('webhook verification flow (#691)', () => {
     const from = freshFrom();
     await send(from, 'hi');
     const issued = deliveredCodes.get(from.replace(/^whatsapp:/i, ''))!;
+    const issued = lastSmsCode!;
     const wrong = issued === '000000' ? '111111' : '000000';
     const captured = await send(from, wrong);
 
     assert.match(captured.body, /attempts remaining/);
-    assert.strictEqual(getSession(hashPhoneNumber(from)).state, UserState.AWAITING_OTP);
+    assert.strictEqual((await getSession(hashPhoneNumber(from))).state, UserState.AWAITING_OTP);
   });
 
   it('prompts again when the awaiting-OTP user sends something that is not a code', async () => {
@@ -163,11 +194,11 @@ describe('webhook verified flows (#691)', () => {
   it('resets a verified session whose wallet is missing', async () => {
     const from = freshFrom();
     const phoneHash = hashPhoneNumber(from);
-    updateState(phoneHash, UserState.VERIFIED);
+    (await updateState(phoneHash, UserState.VERIFIED));
 
     const captured = await send(from, 'balance');
     assert.match(captured.body, /Session expired/);
-    assert.strictEqual(getSession(phoneHash).state, UserState.UNVERIFIED);
+    assert.strictEqual((await getSession(phoneHash)).state, UserState.UNVERIFIED);
   });
 });
 

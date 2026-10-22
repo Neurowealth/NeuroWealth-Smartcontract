@@ -3,6 +3,7 @@
 import React, { useState, useMemo } from 'react';
 import { ArrowDownLeft, ArrowUpRight, RefreshCw, ExternalLink, Download, Filter, ChevronDown } from 'lucide-react';
 import { TransactionRecord } from '@/lib/database';
+import { useTranslations } from 'next-intl';
 
 interface TransactionHistoryProps {
   transactions: TransactionRecord[];
@@ -82,6 +83,7 @@ function exportToCSV(transactions: TransactionRecord[]): void {
 }
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions }) => {
+  const t = useTranslations('Index');
   const [typeFilter, setTypeFilter] = useState<FilterType>('all');
   const [sortField, setSortField] = useState<SortField>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -98,8 +100,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
 
   if (transactions.length === 0) {
     return (
-      <div className="glass-panel rounded-2xl p-6 text-center text-slate-400 text-sm">
-        No transaction history found for this account.
+      <div className="glass-panel rounded-2xl p-6 text-center text-slate-600 dark:text-slate-400 text-sm">
+        {t('noTransactionHistory')}
       </div>
     );
   }
@@ -108,35 +110,36 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
     <div className="glass-panel rounded-2xl p-6">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h3 className="text-lg font-bold text-white tracking-tight">Transaction History</h3>
-          <p className="text-xs text-slate-400">On-chain Soroban vault events</p>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">{t('transactionHistory')}</h3>
+          <p className="text-xs text-slate-600 dark:text-slate-400">{t('onChainEvents')}</p>
         </div>
         <button
           onClick={() => exportToCSV(transactions)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors"
+          className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 dark:hover:text-emerald-300 bg-emerald-500/10 rounded-lg transition-colors"
         >
           <Download size={14} />
-          Export CSV
+          {t('exportCsv')}
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 mb-4 p-3 bg-slate-800/30 rounded-xl">
+      <div className="flex flex-wrap items-center gap-3 mb-4 p-3 bg-slate-100 dark:bg-slate-800/30 rounded-xl">
         <div className="flex items-center gap-2">
-          <Filter size={14} className="text-slate-400" />
+          <Filter size={14} className="text-slate-600 dark:text-slate-400" />
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as FilterType)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            aria-label="Filter transactions by type"
+            className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:border-emerald-500"
           >
-            <option value="all">All Types</option>
-            <option value="deposit">Deposits</option>
-            <option value="withdrawal">Withdrawals</option>
-            <option value="rebalance">Rebalances</option>
+            <option value="all">{t('allTypes')}</option>
+            <option value="deposit">{t('deposits')}</option>
+            <option value="withdrawal">{t('withdrawals')}</option>
+            <option value="rebalance">{t('rebalances')}</option>
           </select>
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">Sort:</span>
+          <span className="text-xs text-slate-600 dark:text-slate-400">{t('sort')}</span>
           <select
             value={`${sortField}-${sortDirection}`}
             onChange={(e) => {
@@ -144,21 +147,23 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
               setSortField(field as SortField);
               setSortDirection(dir as SortDirection);
             }}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            aria-label="Sort transactions"
+            className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:border-emerald-500"
           >
-            <option value="timestamp-desc">Newest First</option>
-            <option value="timestamp-asc">Oldest First</option>
-            <option value="amount-desc">Highest Amount</option>
-            <option value="amount-asc">Lowest Amount</option>
+            <option value="timestamp-desc">{t('newestFirst')}</option>
+            <option value="timestamp-asc">{t('oldestFirst')}</option>
+            <option value="amount-desc">{t('highestAmount')}</option>
+            <option value="amount-asc">{t('lowestAmount')}</option>
           </select>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-slate-400">Earnings:</span>
+          <span className="text-xs text-slate-600 dark:text-slate-400">{t('earnings')}</span>
           <select
             value={earningsPeriod}
             onChange={(e) => setEarningsPeriod(e.target.value as EarningsPeriod)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            aria-label="Filter earnings by time period"
+            className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:border-emerald-500"
           >
             <option value="daily">24h</option>
             <option value="weekly">7d</option>
@@ -166,8 +171,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
             <option value="yearly">1y</option>
             <option value="all">All Time</option>
           </select>
-          <span className="text-sm font-semibold text-emerald-400">
-            {earnings.toLocaleString()} USDC
+          <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+            {earnings.toLocaleString()} {t('usdc')}
           </span>
         </div>
       </div>
@@ -175,54 +180,54 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse text-sm">
           <thead>
-            <tr className="border-b border-slate-800 text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              <th className="py-3 px-4">Type</th>
-              <th className="py-3 px-4">Amount</th>
-              <th className="py-3 px-4">Tx Hash</th>
-              <th className="py-3 px-4">Date / Time</th>
-              <th className="py-3 px-4 text-right">Status</th>
+            <tr className="border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
+              <th scope="col" className="py-3 px-4">{t('type')}</th>
+              <th scope="col" className="py-3 px-4">{t('amount')}</th>
+              <th scope="col" className="py-3 px-4">{t('txHash')}</th>
+              <th scope="col" className="py-3 px-4">{t('dateTime')}</th>
+              <th scope="col" className="py-3 px-4 text-right">{t('status')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+          <tbody className="divide-y divide-slate-200 dark:divide-slate-800/60 font-mono text-xs">
             {filteredTransactions.map((tx) => (
-              <tr key={tx.id} className="hover:bg-slate-900/40 transition-colors">
+              <tr key={tx.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
                 <td className="py-3 px-4">
                   <div className="flex items-center gap-2">
                     {tx.type === 'deposit' && (
-                      <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                      <span className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
                         <ArrowDownLeft size={14} />
                       </span>
                     )}
                     {tx.type === 'withdrawal' && (
-                      <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
+                      <span className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
                         <ArrowUpRight size={14} />
                       </span>
                     )}
                     {tx.type === 'rebalance' && (
-                      <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400">
+                      <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
                         <RefreshCw size={14} />
                       </span>
                     )}
-                    <span className="capitalize font-sans font-medium text-slate-200">{tx.type}</span>
+                    <span className="capitalize font-sans font-medium text-slate-800 dark:text-slate-200">{tx.type}</span>
                   </div>
                 </td>
-                <td className="py-3 px-4 font-semibold text-white">
-                  {tx.amount.toLocaleString()} USDC
+                <td className="py-3 px-4 font-semibold text-slate-900 dark:text-white">
+                  {tx.amount.toLocaleString()} {t('usdc')}
                 </td>
-                <td className="py-3 px-4 text-slate-400">
+                <td className="py-3 px-4 text-slate-600 dark:text-slate-400">
                   <a
                     href={`https://stellar.expert/explorer/testnet/tx/${tx.txHash}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="flex items-center gap-1 hover:text-emerald-400 transition-colors"
+                    className="flex items-center gap-1 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"
                   >
                     <span>{tx.txHash}</span>
                     <ExternalLink size={12} />
                   </a>
                 </td>
-                <td className="py-3 px-4 text-slate-400">{tx.timestamp}</td>
+                <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{tx.timestamp}</td>
                 <td className="py-3 px-4 text-right">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
                     {tx.status}
                   </span>
                 </td>
@@ -233,8 +238,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transact
       </div>
 
       {filteredTransactions.length === 0 && (
-        <div className="text-center py-8 text-slate-400 text-sm">
-          No transactions match the selected filter.
+        <div className="text-center py-8 text-slate-600 dark:text-slate-400 text-sm" role="status" aria-live="polite">
+          {t('noTransactionsMatch')}
         </div>
       )}
     </div>

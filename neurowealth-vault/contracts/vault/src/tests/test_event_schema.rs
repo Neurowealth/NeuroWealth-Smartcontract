@@ -10,15 +10,28 @@ use super::utils::*;
 use crate::{
     AgentUpdatedEvent, AssetsUpdatedEvent, BlendPoolConfiguredEvent, BlendSupplyEvent,
     BlendWithdrawEvent, DepositEvent, DepositLimitsUpdatedEvent, EmergencyPausedEvent,
-    OwnershipTransferInitiatedEvent, OwnershipTransferredEvent, ProtocolChangedEvent,
+    HarvestEvent, OwnershipTransferInitiatedEvent, OwnershipTransferredEvent, ProtocolChangedEvent,
     RebalanceEvent, TvlCapUpdatedEvent, UserDepositCapUpdatedEvent, VaultInitializedEvent,
     VaultPausedEvent, VaultUnpausedEvent, WithdrawEvent, TOPIC_AGENT_UPDATED, TOPIC_ASSETS_UPDATED,
     TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_DEPOSIT,
-    TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_EMERGENCY_PAUSED, TOPIC_INIT, TOPIC_OWNERSHIP_INITIATED,
-    TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED, TOPIC_REBALANCE,
-    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_USER_CAP_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
+    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
+    TOPIC_REBALANCE, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_USER_CAP_UPDATED, TOPIC_WITHDRAW,
 };
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, TryFromVal};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    Address, Env, TryFromVal,
+};
+
+/// Keeps storage entries alive across the large ledger jumps these tests make.
+fn keep_storage_alive(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+}
 
 /// Test that all core events have the correct topics and payload structure
 #[test]
@@ -187,13 +200,13 @@ fn test_event_schema_rebalance_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Test rebalance event
     let protocol = symbol_short!("none");
     let expected_apy = 850_i128;
-    client.rebalance(&protocol, &expected_apy, &0_i128);
+    client.rebalance(&agent, &protocol, &expected_apy, &0_i128);
 
     let rebalance_events = find_events_by_topic(env.events().all(), &env, TOPIC_REBALANCE);
     assert_eq!(
@@ -216,13 +229,43 @@ fn test_event_schema_rebalance_events() {
     assert_eq!(rebalance_event.amount_withdrawn, 0);
 }
 
+/// HarvestEvent reports the actual amount cycled back into a protocol, not
+/// the full withdrawn position as realized yield.
+#[test]
+fn test_event_schema_harvest_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
+        setup_vault_with_token_and_blend(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    client.set_blend_pool(&owner, &blend_pool);
+    let user = Address::generate(&env);
+    let amount = 5_000_000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, amount);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
+
+    client.harvest(&agent, &0_i128);
+
+    let events = find_events_by_topic(env.events().all(), &env, TOPIC_HARVEST);
+    assert_eq!(
+        events.len(),
+        1,
+        "Exactly one harvest event should be emitted"
+    );
+    let (_, _, data) = &events[0];
+    let harvest = HarvestEvent::try_from_val(&env, data).expect("Should be a valid HarvestEvent");
+    assert_eq!(harvest.protocol, symbol_short!("blend"));
+    assert_eq!(harvest.amount_cycled, amount);
+}
+
 /// ProtocolChangedEvent is emitted when CurrentProtocol updates (#149).
 #[test]
 fn test_event_schema_protocol_changed_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -231,7 +274,7 @@ fn test_event_schema_protocol_changed_events() {
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
-    client.rebalance(&symbol_short!("blend"), &1200_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &1200_i128, &0_i128);
 
     let proto_events = find_events_by_topic(env.events().all(), &env, TOPIC_PROTOCOL_CHANGED);
     assert_eq!(
@@ -246,7 +289,7 @@ fn test_event_schema_protocol_changed_events() {
     assert_eq!(proto_event.old_protocol, symbol_short!("none"));
     assert_eq!(proto_event.new_protocol, symbol_short!("blend"));
 
-    client.rebalance(&symbol_short!("none"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
 
     let proto_events = find_events_by_topic(env.events().all(), &env, TOPIC_PROTOCOL_CHANGED);
     assert_eq!(
@@ -311,14 +354,32 @@ fn test_event_schema_ownership_transfer_events() {
 fn test_event_schema_agent_update_events() {
     let env = Env::default();
     env.mock_all_auths();
+    keep_storage_alive(&env);
+
+    // `TOPIC_AGENT_UPDATED` is emitted by `confirm_agent_update` once the
+    // timelock elapses, not by the `update_agent` proposal step itself
+    // (#317). The ledger jump needs the entry-TTL ceiling raised (mirrors
+    // `test_share_locking.rs`'s `keep_storage_alive`), or contract instance
+    // storage would be reported as archived.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
 
     let (contract_id, old_agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let new_agent = Address::generate(&env);
 
-    // Test agent update event
+    // update_agent only proposes (step 1 of 2, issue #317); AgentUpdatedEvent
+    // (TOPIC_AGENT_UPDATED) is only emitted by confirm_agent_update() for
+    // backward-compatible indexers, once the timelock has elapsed.
     client.update_agent(&new_agent);
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.ledger().set_sequence_number(expiry);
+    client.confirm_agent_update();
+
     let agent_events = find_events_by_topic(env.events().all(), &env, TOPIC_AGENT_UPDATED);
     assert_eq!(
         agent_events.len(),
@@ -404,7 +465,7 @@ fn test_event_schema_blend_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -414,7 +475,7 @@ fn test_event_schema_blend_events() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Test rebalance to blend (should emit BlendSupplyEvent)
-    client.rebalance(&symbol_short!("blend"), &1200_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &1200_i128, &0_i128);
 
     let supply_events = find_events_by_topic(env.events().all(), &env, TOPIC_BLEND_SUPPLY);
     assert_eq!(
@@ -433,7 +494,7 @@ fn test_event_schema_blend_events() {
     assert!(supply_event.success);
 
     // Test rebalance back to none (should emit BlendWithdrawEvent)
-    client.rebalance(&symbol_short!("none"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
 
     let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_BLEND_WITHDRAW);
     assert_eq!(
@@ -517,6 +578,17 @@ fn test_event_schema_blend_pool_configured() {
 fn test_all_event_topics_schema_compliance() {
     let env = Env::default();
     env.mock_all_auths();
+    keep_storage_alive(&env);
+
+    // `confirm_agent_update` below jumps the ledger by the agent timelock
+    // duration; raise the entry-TTL ceiling first or contract instance
+    // storage would be reported as archived (mirrors `test_share_locking.rs`'s
+    // `keep_storage_alive`).
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
 
     let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -538,8 +610,13 @@ fn test_all_event_topics_schema_compliance() {
     client.set_tvl_cap(&500_000_000_000_i128);
     client.set_user_deposit_cap(&50_000_000_000_i128);
 
-    // Agent and assets events
+    // Agent and assets events. `update_agent` only proposes the change;
+    // `TOPIC_AGENT_UPDATED` (the "agent" topic checked below) is emitted by
+    // `confirm_agent_update` once the timelock elapses (#317).
     client.update_agent(&new_agent);
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.ledger().set_sequence_number(expiry);
+    client.confirm_agent_update();
 
     let token_client = TestTokenClient::new(&env, &usdc_token);
     token_client.mint(&contract_id, &3_000_000_i128);

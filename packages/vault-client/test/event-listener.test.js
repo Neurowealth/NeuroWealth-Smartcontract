@@ -8,6 +8,7 @@ class MockSorobanServer {
   constructor() {
     this.events = [];
     this.latestLedger = 1000;
+    this.requests = [];
   }
 
   addMockEvent(topic, value, ledger) {
@@ -15,14 +16,19 @@ class MockSorobanServer {
       topic: topic.map(t => createMockScVal(t)),
       value: createMockScVal(value),
       ledger: ledger || this.latestLedger.toString(),
+      id: `event-${this.events.length + 1}`,
+      pagingToken: `event-${this.events.length + 1}`,
       contractId: 'CTEST123'
     });
   }
 
-  async getEvents({ startLedger, limit, filters }) {
-    const eventsToReturn = this.events.filter(e => 
-      parseInt(e.ledger) >= startLedger
-    ).slice(0, limit);
+  async getEvents(request) {
+    this.requests.push(request);
+    const startIndex = request.cursor
+      ? this.events.findIndex(event => event.pagingToken === request.cursor) + 1
+      : this.events.findIndex(event => parseInt(event.ledger) >= request.startLedger);
+    const eventsToReturn = this.events
+      .slice(Math.max(startIndex, 0), Math.max(startIndex, 0) + request.limit);
     return { events: eventsToReturn };
   }
 
@@ -126,6 +132,35 @@ test('VaultEventListener dispatches deposit events', async () => {
   assert.ok(capturedEvent);
   assert.equal(capturedEvent.user, 'GTEST123');
   assert.equal(capturedEvent.amount, '1000000');
+});
+
+test('VaultEventListener resumes a full page from its cursor within the same ledger', async () => {
+  const server = new MockSorobanServer();
+  server.addMockEvent(['deposit', 'GUSER'], { user: 'GUSER', amount: '100' }, 1001);
+  server.addMockEvent(['deposit', 'GUSER'], { user: 'GUSER', amount: '200' }, 1001);
+  server.addMockEvent(['deposit', 'GUSER'], { user: 'GUSER', amount: '300' }, 1001);
+
+  const listener = new VaultEventListener({
+    contractId: 'CTEST123',
+    server,
+    networkPassphrase: 'Test SDF Network ; September 2015',
+    batchSize: 2,
+  });
+  listener.sleep = async () => {};
+
+  const received = [];
+  listener.onDeposit((event) => {
+    received.push(event.amount);
+    if (received.length === 3) listener.stop();
+  });
+
+  await listener.start(1000);
+
+  assert.deepEqual(received, ['100', '200', '300']);
+  assert.equal(server.requests[0].startLedger, 1000);
+  assert.equal(server.requests[0].cursor, undefined);
+  assert.equal(server.requests[1].cursor, 'event-2');
+  assert.equal(server.requests[1].startLedger, undefined);
 });
 
 test('VaultEventListener filters events by user address', async () => {

@@ -10,6 +10,30 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Deprecate `set_limits` (Issue #991; no behavior change):** `set_limits` is
+  marked `#[deprecated]` in favor of `set_caps` (or `set_tvl_cap`/
+  `set_user_deposit_cap`/`set_deposit_limits` individually), which use
+  clearer parameter names and a consistent `panic_with_error!` convention
+  instead of `set_limits`'s `Result`-returning style. See `DEPRECATION.md`
+  for the migration path. `set_limits` itself is unchanged and still
+  functions; only tests that exercise its own access control still call it.
+- **WhatsApp bot hardening (Issues #943, #944, #945, #946; no contract change):**
+  OTP challenges and sessions are persisted in Postgres (`whatsapp_otps`,
+  `whatsapp_sessions`) with atomic, replica-safe operations; custodial wallet
+  secrets use envelope encryption with a versioned KEK, `npm run rotate-keys`
+  and a custody threat model in `SECURITY.md`; the service validates its
+  environment on boot (`envGuard`), `check-no-production-defaults.py` covers
+  the new variables, and the inbound-webhook idempotency ledger lost in a
+  revert is restored with replay tests; README deploy/test commands now point
+  at scripts that exist. Requires applying
+  `20261016000000_whatsapp_otps_sessions_key_envelope.sql` (and
+  `20261015000000_whatsapp_inbound_webhooks.sql`) and setting `DATABASE_URL`.
+- **Per-leg rebalance slippage:** `rebalance`, `rebalance_multi`, and `harvest`
+  now interpret `min_out` as a basis-point tolerance and derive an independent
+  minimum for every supply/withdraw leg, including each multi-protocol venue.
+  Legacy absolute minimums above 10,000 remain accepted during migration.
+  Incomplete exits now count toward the circuit breaker; they intentionally do
+  not update `LastRebalanceLedger` because no rebalance completed.
 - **Approval-expiry readiness event (Issue #847):** `set_approval_ttl` and the
   legacy `set_blend_approval_ttl` now emit `ProtocolApprovalScheduledEvent`
   (`ttl_sch`) alongside `ApprovalTtlUpdatedEvent`, carrying the protocol, the

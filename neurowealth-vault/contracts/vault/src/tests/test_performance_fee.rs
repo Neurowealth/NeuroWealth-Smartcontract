@@ -1,4 +1,3 @@
-
 #![cfg(test)]
 //! Performance-fee arithmetic tests.
 //!
@@ -9,8 +8,7 @@
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
-//! Pure arithmetic regression tests for the documented performance-fee policy.
-
+// Pure arithmetic regression tests for the documented performance-fee policy.
 
 /// Maximum performance fee the vault will ever be allowed to charge (10%).
 const MAX_PERFORMANCE_FEE_BPS: u32 = 1_000;
@@ -21,7 +19,6 @@ fn fee_on_yield(yield_earned: i128, bps: u32) -> i128 {
 
 #[test]
 fn test_performance_fee_configuration_and_deduction() {
-
     let env = Env::default();
     env.mock_all_auths();
 
@@ -56,7 +53,6 @@ fn test_performance_fee_configuration_and_deduction() {
 
 #[test]
 fn test_performance_fee_exceeds_maximum_rejected() {
-
     let invalid_bps = MAX_PERFORMANCE_FEE_BPS + 1;
     assert!(invalid_bps > MAX_PERFORMANCE_FEE_BPS);
 }
@@ -68,5 +64,4 @@ fn test_performance_fee_zero_bps_takes_nothing() {
     let max_allowed_bps = 1_000_u32;
     let invalid_bps = 1_001_u32;
     assert!(invalid_bps > max_allowed_bps);
-
 }

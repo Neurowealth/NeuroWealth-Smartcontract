@@ -1,244 +1,34 @@
-use near_sdk::test_utils::{accounts, VMContextBuilder};
-use near_sdk::{testing_env, AccountId};
+#![cfg(test)]
+//! Minimal ownership smoke test (#989).
+//!
+//! This file previously tested a NEAR Protocol contract (`near_sdk`,
+//! `Contract::new`, `VMContextBuilder`) with no relationship to this
+//! Soroban vault's actual API, so none of its content was salvageable.
+//! The two-step ownership-transfer flow it was trying to exercise
+//! (`transfer_ownership` / `accept_ownership` / `cancel_ownership_transfer`
+//! / `get_pending_owner`) already has thorough coverage in
+//! `test_access_control.rs`'s "TWO-STEP OWNERSHIP TRANSFER" section; this
+//! file is kept as a lightweight smoke test confirming the basic flow
+//! works end to end, not a duplicate of that coverage.
 
-use crate::Contract;
-
-fn get_context(predecessor: AccountId) -> VMContextBuilder {
-    let mut builder = VMContextBuilder::new();
-    builder.predecessor_account_id(predecessor);
-    builder
-}
-
-/// Helper: deploy contract with owner = accounts(0)
-fn setup() -> Contract {
-    let context = get_context(accounts(0));
-    testing_env!(context.build());
-    Contract::new(accounts(0))
-}
-
-// ──────────────────────────────────────────────
-// Happy path: propose → accept
-// ──────────────────────────────────────────────
+use super::utils::*;
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 #[test]
-fn test_transfer_ownership_happy_path() {
-    let mut contract = setup();
+fn test_ownership_transfer_end_to_end_smoke_test() {
+    let env = Env::default();
+    env.mock_all_auths();
 
-    // Owner proposes transfer to accounts(1)
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
+    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    assert_eq!(
-        contract.pending_owner(),
-        Some(accounts(1)),
-        "pending_owner should be set after transfer_ownership"
-    );
+    let new_owner = Address::generate(&env);
 
-    // New owner accepts
-    let ctx = get_context(accounts(1));
-    testing_env!(ctx.build());
-    contract.accept_ownership();
+    client.transfer_ownership(&new_owner);
+    assert_eq!(client.get_pending_owner(), Some(new_owner.clone()));
+    assert_eq!(client.get_owner(), owner);
 
-    assert_eq!(
-        contract.owner(),
-        accounts(1),
-        "owner should be updated after accept_ownership"
-    );
-    assert_eq!(
-        contract.pending_owner(),
-        None,
-        "pending_owner should be cleared after accept"
-    );
-}
-
-// ──────────────────────────────────────────────
-// Cancel path: propose → cancel → pending cleared
-// ──────────────────────────────────────────────
-
-#[test]
-fn test_cancel_ownership_transfer() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    assert_eq!(contract.pending_owner(), Some(accounts(1)));
-
-    // Owner cancels
-    contract.cancel_ownership_transfer();
-
-    assert_eq!(
-        contract.pending_owner(),
-        None,
-        "pending_owner should be None after cancel"
-    );
-    assert_eq!(
-        contract.owner(),
-        accounts(0),
-        "owner should remain unchanged after cancel"
-    );
-}
-
-// ──────────────────────────────────────────────
-// Non-pending accept must panic
-// ──────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "No pending ownership transfer")]
-fn test_accept_ownership_with_no_pending_panics() {
-    let mut contract = setup();
-
-    // accounts(1) tries to accept when nothing was proposed
-    let ctx = get_context(accounts(1));
-    testing_env!(ctx.build());
-    contract.accept_ownership();
-}
-
-// ──────────────────────────────────────────────
-// Wrong account trying to accept must panic
-// ──────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Only pending owner can accept")]
-fn test_accept_ownership_wrong_caller_panics() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    // accounts(2) tries to accept — should panic
-    let ctx = get_context(accounts(2));
-    testing_env!(ctx.build());
-    contract.accept_ownership();
-}
-
-// ──────────────────────────────────────────────
-// Only owner can initiate a transfer
-// ──────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Only owner")]
-fn test_transfer_ownership_non_owner_panics() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(1)); // not the owner
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(2));
-}
-
-// ──────────────────────────────────────────────
-// Only owner can cancel
-// ──────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Only owner")]
-fn test_cancel_ownership_non_owner_panics() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    // accounts(2) tries to cancel
-    let ctx = get_context(accounts(2));
-    testing_env!(ctx.build());
-    contract.cancel_ownership_transfer();
-}
-
-// ──────────────────────────────────────────────
-// Pending owner cannot cancel transfer (Issue #573)
-// ──────────────────────────────────────────────
-
-#[test]
-#[should_panic(expected = "Only owner")]
-fn test_pending_owner_cannot_cancel_ownership_transfer() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    assert_eq!(contract.pending_owner(), Some(accounts(1)));
-
-    // The pending owner (accounts(1)) tries to cancel — should panic
-    let ctx = get_context(accounts(1));
-    testing_env!(ctx.build());
-    contract.cancel_ownership_transfer();
-}
-
-#[test]
-#[should_panic(expected = "Only owner")]
-fn test_third_party_cannot_cancel_ownership_transfer() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    assert_eq!(contract.pending_owner(), Some(accounts(1)));
-
-    // An uninvolved third party (accounts(2)) tries to cancel — should panic
-    let ctx = get_context(accounts(2));
-    testing_env!(ctx.build());
-    contract.cancel_ownership_transfer();
-}
-
-// ──────────────────────────────────────────────
-// Events emitted on transfer / accept / cancel
-// ──────────────────────────────────────────────
-
-#[test]
-fn test_transfer_ownership_emits_event() {
-    let mut contract = setup();
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-
-    contract.transfer_ownership(accounts(1));
-
-    let logs = near_sdk::test_utils::get_logs();
-    assert!(
-        logs.iter().any(|l| l.contains("ownership_transfer_initiated")),
-        "Expected ownership_transfer_initiated event, got: {:?}",
-        logs
-    );
-}
-
-#[test]
-fn test_accept_ownership_emits_event() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-
-    let ctx = get_context(accounts(1));
-    testing_env!(ctx.build());
-    contract.accept_ownership();
-
-    let logs = near_sdk::test_utils::get_logs();
-    assert!(
-        logs.iter().any(|l| l.contains("ownership_transferred")),
-        "Expected ownership_transferred event, got: {:?}",
-        logs
-    );
-}
-
-#[test]
-fn test_cancel_ownership_emits_event() {
-    let mut contract = setup();
-
-    let ctx = get_context(accounts(0));
-    testing_env!(ctx.build());
-    contract.transfer_ownership(accounts(1));
-    contract.cancel_ownership_transfer();
-
-    let logs = near_sdk::test_utils::get_logs();
-    assert!(
-        logs.iter().any(|l| l.contains("ownership_transfer_cancelled")),
-        "Expected ownership_transfer_cancelled event, got: {:?}",
-        logs
-    );
+    client.accept_ownership(&new_owner);
+    assert_eq!(client.get_owner(), new_owner);
+    assert_eq!(client.get_pending_owner(), None);
 }

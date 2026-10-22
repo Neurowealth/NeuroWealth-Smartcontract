@@ -1,10 +1,10 @@
 # Guardian-Key Design: Second Signature for `execute_upgrade`
 
-> **Issue:** #607  
-> **Category:** Audit-Prep  
-> **Status:** Design Decision Recorded  
+> **Issue:** #607, #922  
+> **Category:** Audit-Prep / Security Architecture  
+> **Status:** Formally Deferred (Native Stellar Multi-Sig Adopted) — Issue #922  
 > **Author:** NeuroWealth Security Team  
-> **Date:** 2026-08-24
+> **Date:** 2026-08-24 (Updated: 2026-10-16)
 
 ---
 
@@ -208,57 +208,67 @@ to execute), or compromise M signers and wait out the timelock.
 
 ---
 
-## 6. Decision
+## 6. Recorded Decision (Issue #922)
 
-### Decision: **Adopt Multi-Sig Owner for Mainnet + Guardian as Interim**
+### Decision: **FORMALLY DEFER Contract-Level Guardian Key (Phase 1) in Favor of Native Stellar Owner Multi-Sig (Phase 2)**
 
 **Rationale:**
 
-Multi-sig is the **target state** for mainnet. It covers all owner actions
-(not just upgrades), uses the Stellar protocol's native security model, and
-requires no new contract code.
+1. **Protocol-Level Protection Across All Operations**:
+   Stellar natively enforces multi-signature thresholds directly at the account level (Layer 1). A 2-of-3 multi-sig owner account protects **all** privileged calls (`set_tvl_cap`, `set_blend_pool`, `pause`, `unpause`, `schedule_upgrade`, and `execute_upgrade`), whereas a smart-contract-level guardian key only protects `execute_upgrade`. Gating `execute_upgrade` alone with a contract-level key leaves all other owner-gated administrative powers vulnerable to single-key compromise.
 
-However, multi-sig requires coordination tooling and operational procedures
-that are not yet in place. As an **interim measure** before multi-sig is
-operational, we will implement the guardian pattern:
+2. **Avoiding Redundant Interim Complexity and Attack Surface**:
+   Implementing an interim contract-level guardian pattern would require:
+   - Introducing `DataKey::Guardian` in contract instance storage.
+   - Adding entrypoints `set_guardian` and `remove_guardian`.
+   - Adding new authorization checks and `GuardianUpdatedEvent` emission.
+   - Adding extra error handling within the constrained `#[contracterror]` 50-variant SDK budget.
+   
+   Once the owner account is configured with native Stellar multi-sig, any smart-contract guardian mechanism becomes redundant dead code and a source of conflicting operational workflows.
 
-**Phase 1 (Pre-Mainnet):** Add `DataKey::Guardian` and require guardian
-co-sign on `execute_upgrade`. This is a one-time contract upgrade that
-immediately raises the bar for upgrade hijacking.
+3. **Existing Timelock and Cancellation Safeties**:
+   The existing two-step upgrade flow (`schedule_upgrade` → 17,280 ledgers / ~24 hours → `execute_upgrade`) already provides a robust observation window. Off-chain monitoring alerts immediately upon `UpgradeScheduledEvent`, allowing the owner key (or multi-sig quorum) to call `cancel_upgrade()` or `pause()` the vault before an unauthorized proposal can ever execute.
 
-**Phase 2 (Mainnet):** Migrate the owner account to a 2-of-3 multi-sig.
-At that point, the guardian pattern is redundant but harmless — it remains
-as defense-in-depth.
+4. **Consistency with Pre-Mainnet Deferral Precedents**:
+   Both [`CAP_CHANGE_TIMELOCK_DESIGN.md`](CAP_CHANGE_TIMELOCK_DESIGN.md) (§4) and [`ROLLING_DECREASE_CAP_DESIGN.md`](ROLLING_DECREASE_CAP_DESIGN.md) (§5) formally deferred bespoke contract logic in favor of prioritizing the native owner multi-sig migration. Deferring the interim contract-level guardian avoids fragmented security paradigms and concentrates engineering resources on native multi-sig operational readiness.
 
-### Implementation Plan for Phase 1
+### Conditions for Re-Opening
+
+This decision may be revisited if:
+- Stellar protocol changes compromise native account multi-sig capabilities or make them cost-prohibitive.
+- An institutional deployer requires an off-chain automated HSM key with a distinct contract-enforced role that cannot participate in the Stellar account signer quorum.
+- The Soroban SDK error ceiling is lifted and a unified multi-role governance module is adopted across the protocol.
+
+---
+
+## 7. Deferred Phase 1 Specification (Archival Reference)
+
+The original interim implementation plan is preserved below for reference should the design ever be re-evaluated:
 
 1. Add `DataKey::Guardian` to the storage key enum.
 2. Implement `set_guardian(env, new_guardian)` (owner-only, no timelock).
 3. Implement `remove_guardian(env)` (owner-only) for emergency key removal.
 4. Add `GuardianUpdatedEvent` with topic `guardian`.
-5. Update `execute_upgrade` to check for guardian co-sign when
-   `DataKey::Guardian` is present.
-6. Add `VaultError::GuardianSignatureRequired` (requires a new error code —
-   must restructure the error enum if at the 50-variant limit).
-7. Document the guardian key in the Mainnet Deployment Runbook and
-   Owner-Compromise Runbook.
+5. Update `execute_upgrade` to check for guardian co-sign when `DataKey::Guardian` is present:
+   ```rust
+   if let Some(guardian) = env.storage().instance().get::<DataKey, Address>(&DataKey::Guardian) {
+       guardian.require_auth();
+   }
+   ```
+6. Add `VaultError::GuardianSignatureRequired` if explicit error signaling is required.
 
-### Compatibility Notes
+### Compatibility Notes (Archival)
 
-- Existing deployed instances without `DataKey::Guardian` continue to work
-  with the current single-owner `execute_upgrade`.
-- Guardian key can be set immediately after the upgrade that introduces it,
-  with no additional timelock.
-- The guardian key should be stored in a **geographically separate** location
-  from the owner key (different cloud provider, different HSM).
-- Guardian does NOT participate in `schedule_upgrade` or `cancel_upgrade` —
-  only in `execute_upgrade`. This keeps the proposal/cancellation flow simple.
+- Existing deployed instances without `DataKey::Guardian` continue to work with the current single-owner `execute_upgrade`.
+- Guardian key can be set immediately after the upgrade that introduces it, with no additional timelock.
+- The guardian key should be stored in a **geographically separate** location from the owner key (different cloud provider, different HSM).
+- Guardian does NOT participate in `schedule_upgrade` or `cancel_upgrade` — only in `execute_upgrade`. This keeps the proposal/cancellation flow simple.
 
 ---
 
-## 7. Open Questions for Phase 2 (Multi-Sig)
+## 8. Open Questions for Multi-Sig Governance
 
-- Which multi-sig tool / UI will NeuroWealth use for Stellar?
+- Which multi-sig tool / UI will NeuroWealth use for Stellar? (Recommended: Stellar native account threshold multi-sig via Lobstr Vault / Casa / custom coordination tool).
 - What M-of-N threshold is appropriate? (Recommended: 2-of-3 for balance of
   security and availability.)
 - Who holds each signer key, and what are the custody policies?
@@ -267,10 +277,11 @@ as defense-in-depth.
 
 ---
 
-## 8. References
+## 9. References
 
 - [`SECURITY.md`](../SECURITY.md) — Upgrade risk section, owner-compromise runbook
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — Upgrade safety, timelock design
 - Issue #316 — Upgrade timelock implementation
-- Issue #607 — This design doc
+- Issue #607 — Guardian-key design evaluation
+- Issue #922 — Formal deferral of guardian key in favor of native Stellar multi-sig
 - [`docs/UPGRADE_MIGRATION.md`](UPGRADE_MIGRATION.md) — Upgrade migration guide

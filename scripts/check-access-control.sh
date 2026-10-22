@@ -3,14 +3,18 @@
 #
 # Verifies that the access control table in SECURITY.md is accurate and
 # complete by cross-referencing it against the function definitions in
-# contract-spec.json.
+# contract-spec.json. Fails on any access level or coverage mismatch.
 #
 # Usage:
 #   bash scripts/check-access-control.sh [security_md_path] [spec_path]
 #
 # Defaults:
-#   SECURITY.md       (repo root)
+#   SECURITY.md        (repo root)
 #   contract-spec.json (repo root)
+#
+# Exit codes:
+#   0  All function access levels match between contract-spec.json and SECURITY.md.
+#   1  One or more mismatches or unclassified functions detected.
 
 set -euo pipefail
 
@@ -19,222 +23,200 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SECURITY_MD="${1:-$REPO_ROOT/SECURITY.md}"
 SPEC_JSON="${2:-$REPO_ROOT/contract-spec.json}"
 
-PASS=0
-FAIL=0
-WARN=0
-
-pass() { echo "  ✅ PASS: $1"; PASS=$((PASS + 1)); }
-fail() { echo "  ❌ FAIL: $1"; FAIL=$((FAIL + 1)); }
-warn() { echo "  ⚠️  WARN: $1"; WARN=$((WARN + 1)); }
-
 echo "=== ACCESS CONTROL TABLE ACCURACY CHECK ==="
-echo "SECURITY.md: $SECURITY_MD"
+echo "SECURITY.md:   $SECURITY_MD"
 echo "Contract spec: $SPEC_JSON"
 echo ""
 
-# ── 1. Parse the access control table from SECURITY.md ──────────────────────
-echo "1. Parsing access control table from SECURITY.md..."
+# Resolve Python 3 executable (cross-platform: Linux, macOS, Windows/Git Bash)
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)" >/dev/null 2>&1; then
+      PYTHON="$candidate"
+      break
+    fi
+  done
+  if [ -z "$PYTHON" ]; then
+    echo "❌ Error: Neither python3, python, nor py found with Python 3 support" >&2
+    exit 1
+  fi
+fi
 
-# Extract the markdown table rows between the header separator lines.
-# The table format is:
-# | function_name | ✅ or - | ✅ or - | ✅ or - | ✅ or - |
-# Columns: Function | Owner | Agent | User | Anyone
+export PYTHONIOENCODING=utf-8
 
-# Use Python to parse the markdown table into a mapping
-SECURITY_ACCESS=$(python3 - "$SECURITY_MD" <<'PYEOF'
-import re
+CHECK_EXIT=0
+"$PYTHON" - "$SECURITY_MD" "$SPEC_JSON" <<'PYEOF' || CHECK_EXIT=$?
+import io
+import json
+import os
 import sys
 
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    content = f.read()
+# Ensure UTF-8 output on all platforms
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
-# Find the access control table between the header row and the next section
+security_md_path = sys.argv[1]
+spec_json_path = sys.argv[2]
+
+if not os.path.exists(security_md_path):
+    print(f"❌ Error: SECURITY.md not found at {security_md_path}", file=sys.stderr)
+    sys.exit(1)
+
+if not os.path.exists(spec_json_path):
+    print(f"❌ Error: contract-spec.json not found at {spec_json_path}", file=sys.stderr)
+    sys.exit(1)
+
+# 1. Parse the access control table from SECURITY.md
+with open(security_md_path, encoding="utf-8") as f:
+    sec_content = f.read()
+
 in_table = False
-table_lines = []
-for line in content.splitlines():
+security_funcs = {}
+for line in sec_content.splitlines():
     stripped = line.strip()
     if stripped.startswith("| Function"):
         in_table = True
         continue
     if in_table:
         if stripped.startswith("|---") or stripped.startswith("| ---"):
-            continue  # skip separator
+            continue  # skip markdown separator
         if stripped.startswith("|") and not stripped.startswith("| Function"):
-            table_lines.append(stripped)
+            cells = [c.strip() for c in stripped.split("|")]
+            cells = [c for c in cells if c]
+            if len(cells) < 5:
+                continue
+            func_name = cells[0].strip().replace("`", "")
+            owner = "yes" if cells[1].strip() in ("yes", "✅") else "no"
+            agent = "yes" if cells[2].strip() in ("yes", "✅") else "no"
+            user = "yes" if cells[3].strip() in ("yes", "✅") else "no"
+            anyone = cells[4].strip() if cells[4].strip() not in ("-", "no", "") else ""
+
+            # Determine canonical access level
+            if anyone in ("pending owner", "pending-owner"):
+                access = "pending-owner"
+            elif anyone == "anyone":
+                access = "anyone"
+            elif owner == "yes":
+                access = "owner"
+            elif agent == "yes":
+                access = "agent"
+            elif user == "yes":
+                access = "user"
+            else:
+                access = "unknown"
+
+            security_funcs[func_name] = access
         else:
-            break  # end of table
+            break
 
-# Parse each table row
-functions = {}
-for line in table_lines:
-    cells = [c.strip() for c in line.split("|")]
-    cells = [c for c in cells if c]  # remove empty strings from leading/trailing |
-    if len(cells) < 5:
-        continue
-    func_name = cells[0].strip()
-    owner = "yes" if cells[1].strip() in ("yes", "✅") else "no"
-    agent = "yes" if cells[2].strip() in ("yes", "✅") else "no"
-    user = "yes" if cells[3].strip() in ("yes", "✅") else "no"
-    anyone = cells[4].strip() if cells[4].strip() not in ("-", "no", "") else ""
+print(f"1. Parsed {len(security_funcs)} function(s) from SECURITY.md access control table.")
 
-    # Determine the canonical access level
-    if anyone == "pending owner":
-        access = "pending-owner"
-    elif anyone == "anyone":
-        access = "anyone"
-    elif owner == "yes":
-        access = "owner"
-    elif agent == "yes":
-        access = "agent"
-    elif user == "yes":
-        access = "user"
-    else:
-        access = "unknown"
+# 2. Parse contract-spec.json
+with open(spec_json_path, encoding="utf-8") as f:
+    spec_data = json.load(f)
 
-    functions[func_name] = access
-
-import json
-print(json.dumps(functions))
-PYEOF
-)
-
-echo "  Found $(echo "$SECURITY_ACCESS" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0) functions in SECURITY.md table"
-
-# ── 2. Parse contract-spec.json ─────────────────────────────────────────────
-echo ""
-echo "2. Parsing contract-spec.json..."
-
-SPEC_ACCESS=$(python3 - "$SPEC_JSON" <<'PYEOF'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    spec = json.load(f)
-
-# Only check state-changing functions (queries are implicitly public/read-only
-# and don't need access control rows).
-# Also skip "initialize" since it's a one-time function with special semantics.
 SKIP_NAMES = {"initialize"}
 
-functions = {}
-for fn in spec.get("functions", []):
+spec_funcs = {}
+for fn in spec_data.get("functions", []):
     name = fn["name"]
     if name in SKIP_NAMES:
         continue
-    if not fn.get("state_changing", False):
-        continue  # skip query-only functions
 
     raw_access = fn.get("access", "unknown")
     requires_auth = fn.get("requires_auth", True)
 
     # Map spec access to canonical form
-    if raw_access == "owner-only":
+    if raw_access in ("owner-only", "owner"):
         access = "owner"
-    elif raw_access == "agent-only":
+    elif raw_access in ("agent-only", "agent"):
         access = "agent"
-    elif raw_access == "pending-owner-only":
+    elif raw_access in ("pending-owner-only", "pending-owner"):
         access = "pending-owner"
+    elif raw_access in ("user-only", "user"):
+        access = "user"
     elif raw_access == "public":
-        # "public" in the spec means anyone can call it.
-        # Distinguish between auth-required and permissionless.
+        # "public" in spec: distinguish between auth-required (user) and permissionless (anyone)
         if requires_auth:
-            access = "user"  # requires user's signature
+            access = "user"
         else:
-            access = "anyone"  # no auth needed
+            access = "anyone"
+    elif raw_access in ("anyone", "permissionless"):
+        access = "anyone"
     else:
         access = raw_access
 
-    functions[name] = access
+    spec_funcs[name] = {
+        "access": access,
+        "state_changing": fn.get("state_changing", False),
+        "requires_auth": requires_auth,
+    }
 
-print(json.dumps(functions))
-PYEOF
-)
+print(f"2. Parsed {len(spec_funcs)} function(s) from contract-spec.json.")
 
-echo "  Found $(echo "$SPEC_ACCESS" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0) functions in contract-spec.json"
+# 3. Cross-reference tables
+print("\n3. Cross-referencing tables...")
 
-# ── 3. Cross-reference ──────────────────────────────────────────────────────
-echo ""
-echo "3. Cross-referencing tables..."
-
-python3 - "$SECURITY_ACCESS" "$SPEC_ACCESS" <<'PYEOF'
-import json
-import sys
-
-security = json.loads(sys.argv[1])
-spec = json.loads(sys.argv[2])
-
-missing_in_security = []
 access_mismatches = []
-extra_in_security = []
+missing_in_security = []
+missing_in_spec = []
+matches = []
 
-# Check: every state-changing function in spec should be in SECURITY.md
-for func_name, spec_access in sorted(spec.items()):
-    if func_name not in security:
-        missing_in_security.append((func_name, spec_access))
+# Check functions in SECURITY.md against contract-spec.json
+for func_name, sec_access in sorted(security_funcs.items()):
+    if func_name not in spec_funcs:
+        missing_in_spec.append((func_name, sec_access))
     else:
-        sec_access = security[func_name]
-        if sec_access != spec_access:
+        spec_access = spec_funcs[func_name]["access"]
+        if spec_access != sec_access:
             access_mismatches.append((func_name, spec_access, sec_access))
+        else:
+            matches.append((func_name, sec_access))
 
-# Check: every function in SECURITY.md should be in spec
-for func_name in sorted(security.keys()):
-    if func_name not in spec:
-        extra_in_security.append(func_name)
+# Check state-changing functions in contract-spec.json that are missing from SECURITY.md
+for func_name, fn_info in sorted(spec_funcs.items()):
+    if fn_info["state_changing"] and func_name not in security_funcs:
+        missing_in_security.append((func_name, fn_info["access"]))
 
-# Report results
-if missing_in_security:
-    print("MISSING FROM SECURITY.md:")
-    for name, access in missing_in_security:
-        print(f"  - {name} (spec access: {access})")
-    print()
+# 4. Report results
+for name, access in matches:
+    print(f"  ✅ PASS: {name} ({access})")
 
 if access_mismatches:
-    print("ACCESS LEVEL MISMATCHES:")
+    print(f"\n  ❌ ACCESS LEVEL MISMATCHES ({len(access_mismatches)}):")
     for name, spec_acc, sec_acc in access_mismatches:
-        print(f"  - {name}: spec={spec_acc}, SECURITY.md={sec_acc}")
-    print()
+        print(f"     • {name}: contract-spec.json='{spec_acc}' != SECURITY.md='{sec_acc}'")
 
-if extra_in_security:
-    print("EXTRA IN SECURITY.md (not in spec):")
-    for name in extra_in_security:
-        print(f"  - {name}")
-    print()
+if missing_in_security:
+    print(f"\n  ❌ MISSING FROM SECURITY.md ({len(missing_in_security)}):")
+    for name, spec_acc in missing_in_security:
+        print(f"     • {name} (spec access: '{spec_acc}')")
 
-# Exit code
-if missing_in_security or access_mismatches:
+if missing_in_spec:
+    print(f"\n  ❌ MISSING FROM contract-spec.json ({len(missing_in_spec)}):")
+    for name, sec_acc in missing_in_spec:
+        print(f"     • {name} (SECURITY.md access: '{sec_acc}')")
+
+total_failures = len(access_mismatches) + len(missing_in_security) + len(missing_in_spec)
+
+print(f"\n=== Summary ===")
+print(f"  Passed:   {len(matches)}")
+print(f"  Failed:   {total_failures}")
+print(f"  Warnings: 0")
+
+if total_failures > 0:
+    print(f"\n❌ ACCESS CONTROL CHECK FAILED: {total_failures} mismatch(es) detected.")
+    print("   The access control documentation does not match contract-spec.json.")
+    print("   Update the metadata in contract-spec.json or SECURITY.md to resolve.")
     sys.exit(1)
 else:
-    print("All state-changing functions match.")
+    print(f"\n✅ ACCESS CONTROL CHECK PASSED: All {len(matches)} function access levels match.")
     sys.exit(0)
 PYEOF
 
-CHECK_EXIT=$?
-
-# ── 4. Summary stats ────────────────────────────────────────────────────────
-echo ""
-echo "4. Statistics..."
-
-SPEC_TOTAL=$(echo "$SPEC_ACCESS" | python3 -c "import json, sys; print(len(json.loads(sys.stdin.read())))" 2>/dev/null || echo "?")
-SEC_TOTAL=$(echo "$SECURITY_ACCESS" | python3 -c "import json, sys; print(len(json.loads(sys.stdin.read())))" 2>/dev/null || echo "?")
-echo "  State-changing functions in spec: $SPEC_TOTAL"
-echo "  Functions in SECURITY.md table:  $SEC_TOTAL"
-
-# ── Summary ─────────────────────────────────────────────────────────────────
-echo ""
-echo "=== Summary ==="
-echo "  Passed: $PASS"
-echo "  Failed: $FAIL"
-echo "  Warnings: $WARN"
-echo ""
-
-if [ "$CHECK_EXIT" -ne 0 ] || [ "$FAIL" -gt 0 ]; then
-  echo "❌ ACCESS CONTROL CHECK FAILED"
-  echo "   The SECURITY.md access control table is stale or inaccurate."
-  echo "   Update the table to match contract-spec.json, or update the spec."
-  exit 1
-else
-  echo "✅ ACCESS CONTROL CHECK PASSED"
-  exit 0
-fi
+exit "$CHECK_EXIT"

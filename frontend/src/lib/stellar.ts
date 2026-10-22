@@ -1,5 +1,19 @@
-import { Account, Address, Contract, rpc, scValToNative, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Account, Address, Contract, nativeToScVal, rpc, scValToNative, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { getBrowserTestHarness } from './browserTestHarness';
+import { signWithFreighter, classifyWalletError } from './freighter';
+import {
+  EMPTY_VAULT_STATE,
+  deriveVaultState,
+  shortenAddress as shortenSharedAddress,
+  type VaultState,
+} from '../../../packages/vault-client/src/stellar';
+
+export type { VaultState };
+export { EMPTY_VAULT_STATE };
+
+export type VaultStateResult =
+  | { ok: true; state: VaultState }
+  | { ok: false; error: string };
 
 function requirePublicEnv(name: string): string {
   const value = process.env[name];
@@ -17,19 +31,6 @@ export const server = new rpc.Server(RPC_URL, {
   allowHttp: process.env.NEXT_PUBLIC_E2E_TESTS === 'true',
 });
 export const networkPassphrase = NETWORK_PASSPHRASE;
-
-export interface VaultState {
-  balance: number;
-  strategy: 'Conservative' | 'Balanced' | 'Growth';
-  exchangeRate: number;
-  apy: number;
-}
-
-const STRATEGY_MAP: Record<string, VaultState['strategy']> = {
-  conservative: 'Conservative',
-  balanced: 'Balanced',
-  growth: 'Growth',
-};
 
 export async function simulateContractCall(
   method: string,
@@ -56,9 +57,9 @@ export async function simulateContractCall(
   return scValToNative(sim.result.retval);
 }
 
-export async function fetchVaultState(userAddress?: string): Promise<VaultState> {
+export async function fetchVaultState(userAddress?: string): Promise<VaultStateResult> {
   if (!userAddress) {
-    return { balance: 0, strategy: 'Balanced', exchangeRate: 1.0, apy: 0 };
+    return { ok: true, state: { ...EMPTY_VAULT_STATE } };
   }
 
   try {
@@ -72,26 +73,83 @@ export async function fetchVaultState(userAddress?: string): Promise<VaultState>
       simulateContractCall('get_total_shares', [], userAddress),
     ]);
 
-    const balance = balanceRes.status === 'fulfilled' ? Number(balanceRes.value) / 1e7 : 0;
-    const rawStrategy = strategyRes.status === 'fulfilled' ? String(strategyRes.value).toLowerCase() : '';
-    const strategy = STRATEGY_MAP[rawStrategy] || 'Balanced';
-    const exchangeRateRaw = exchangeRateRes.status === 'fulfilled' ? Number(exchangeRateRes.value) / 1e7 : 0;
-    const totalAssets = totalAssetsRes.status === 'fulfilled' ? Number(totalAssetsRes.value) / 1e7 : 0;
-    const totalShares = totalSharesRes.status === 'fulfilled' ? Number(totalSharesRes.value) / 1e7 : 0;
+    const failedCall = [balanceRes, strategyRes, exchangeRateRes, totalAssetsRes, totalSharesRes]
+      .find((result) => result.status === 'rejected');
+    if (failedCall?.status === 'rejected') {
+      throw failedCall.reason;
+    }
 
-    const exchangeRate = exchangeRateRaw > 0 ? exchangeRateRaw : (totalShares > 0 ? totalAssets / totalShares : 1.0);
-    const apy = totalAssets > 0 && totalShares > 0
-      ? Number((((totalAssets / totalShares - 1) * 365 * 100).toFixed(2)))
-      : 0;
-
-    return { balance, strategy, exchangeRate, apy };
+    return { ok: true, state: deriveVaultState({
+      balance: balanceRes.status === 'fulfilled' ? Number(balanceRes.value) / 1e7 : 0,
+      rawStrategy: strategyRes.status === 'fulfilled' ? String(strategyRes.value) : '',
+      exchangeRateRaw: exchangeRateRes.status === 'fulfilled' ? Number(exchangeRateRes.value) / 1e7 : 0,
+      totalAssets: totalAssetsRes.status === 'fulfilled' ? Number(totalAssetsRes.value) / 1e7 : 0,
+      totalShares: totalSharesRes.status === 'fulfilled' ? Number(totalSharesRes.value) / 1e7 : 0,
+    }) };
   } catch (err) {
     console.warn('Failed to fetch vault state from Soroban RPC:', err);
-    return { balance: 0, strategy: 'Balanced', exchangeRate: 1.0, apy: 0 };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Unable to fetch vault state from Soroban RPC.',
+    };
   }
 }
 
 export function shortenAddress(address: string, chars = 4): string {
-  if (!address) return '';
-  return `${address.substring(0, chars + 2)}...${address.substring(address.length - chars)}`;
+  return shortenSharedAddress(address, chars);
+}
+
+export async function setUserStrategy(
+  userAddress: string,
+  strategy: 'Conservative' | 'Balanced' | 'Growth',
+): Promise<{ ok: boolean; hash?: string; error?: string }> {
+  const testHarness = getBrowserTestHarness();
+  const rawStrategy = strategy.toLowerCase();
+
+  try {
+    if (testHarness) {
+      return { ok: true, hash: 'test-strategy-hash' };
+    }
+
+    const account = await server.getAccount(userAddress);
+    const contract = new Contract(VAULT_CONTRACT_ID);
+    const tx = new TransactionBuilder(account, {
+      fee: '100',
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        contract.call(
+          'set_user_strategy',
+          new Address(userAddress).toScVal(),
+          nativeToScVal(rawStrategy, { type: 'symbol' }),
+        ),
+      )
+      .setTimeout(300)
+      .build();
+
+    const prepared = await server.prepareTransaction(tx);
+    const signedXdr = await signWithFreighter(prepared.toXDR(), NETWORK_PASSPHRASE);
+    const sendResult = await server.sendTransaction(
+      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE),
+    );
+
+    if (sendResult.status === 'ERROR' || sendResult.status === 'TRY_AGAIN_LATER') {
+      return { ok: false, error: 'Transaction failed to submit to the Stellar network.' };
+    }
+
+    const confirmation = await server.pollTransaction(sendResult.hash, { attempts: 10 });
+    if (confirmation.status === 'SUCCESS') {
+      return { ok: true, hash: sendResult.hash };
+    }
+    return { ok: false, error: 'Transaction execution failed on-chain.' };
+  } catch (err) {
+    const kind = classifyWalletError(err);
+    if (kind === 'user_rejected') {
+      return { ok: false, error: 'Transaction signature was rejected.' };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Failed to update strategy.',
+    };
+  }
 }

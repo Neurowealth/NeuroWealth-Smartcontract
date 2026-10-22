@@ -44,7 +44,7 @@ fn setup_all_in_blend(
     mint_and_deposit(env, &client, &usdc_token, &user, amount);
 
     // Rebalance: vault idle → Blend
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Sanity: all USDC is now in the pool
     assert_eq!(token_client.balance(&contract_id), 0);
@@ -140,7 +140,7 @@ fn test_update_total_assets_partial_blend_deployment_succeeds() {
     let blend_limit = 20_000_000_i128;
     blend_client.set_max_supply_limit(&blend_limit);
 
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let idle = token_client.balance(&contract_id);
     let deployed = token_client.balance(&blend_pool);
@@ -182,7 +182,7 @@ fn test_update_total_assets_partial_blend_plus_yield_succeeds() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_total);
 
     blend_client.set_max_supply_limit(&20_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Yield: 1 USDC minted to pool
     let yield_amount = 1_000_000_i128;
@@ -235,7 +235,7 @@ fn test_update_total_assets_rejects_inflation_beyond_partial_deployment() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_total);
 
     blend_client.set_max_supply_limit(&20_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Available = 10 + 20 = 30; reporting 31 must fail
     let over_total = deposit_total + 1_i128;
@@ -307,7 +307,7 @@ fn test_update_total_assets_after_rebalance_to_none_uses_idle() {
         setup_all_in_blend(&env, deposit);
 
     // Rebalance back to none (all funds return to vault)
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     assert_eq!(token_client.balance(&contract_id), deposit);
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));

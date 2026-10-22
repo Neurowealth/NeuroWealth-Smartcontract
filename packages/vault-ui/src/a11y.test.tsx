@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
 import App from './App';
@@ -87,11 +87,17 @@ describe('WCAG 2.1 AA accessibility', () => {
 
   it('has no axe violations on earnings and notification views', async () => {
     const { container } = render(<App />);
-    screen.getByRole('button', { name: 'Earnings History' }).click();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Earnings History' }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Earnings History' })).toBeInTheDocument();
+    });
     expect(await axe(container, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).toHaveNoViolations();
 
-    screen.getByRole('button', { name: 'Notifications' }).click();
-    expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Notifications' })).toBeInTheDocument();
+    });
     expect(await axe(container, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).toHaveNoViolations();
   });
 });

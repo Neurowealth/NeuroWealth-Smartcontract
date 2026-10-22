@@ -151,6 +151,26 @@ describe('redactErrorMessage', () => {
 });
 
 describe('applyDeliveryStatus', () => {
+  test('does not write an oversized or malformed callback', async () => {
+    const overSid = 'S'.repeat(129);
+    const over = await applyDeliveryStatus({ messageSid: overSid, status: 'queued' });
+    assert.deepEqual(over, { applied: false, reason: 'rejected_input' });
+    assert.equal(table.has(overSid), false);
+
+    const exactSid = 'E'.repeat(128);
+    const exact = await applyDeliveryStatus({ messageSid: exactSid, status: 'queued' });
+    assert.deepEqual(exact, { applied: true, created: true });
+    assert.equal(table.has(exactSid), true);
+
+    const malformed = await applyDeliveryStatus({
+      messageSid: 'SM-malformed',
+      status: 'failed',
+      errorMessage: 'x\uD800',
+    });
+    assert.deepEqual(malformed, { applied: false, reason: 'rejected_input' });
+    assert.equal(table.has('SM-malformed'), false);
+  });
+
   test('ignores a callback with no MessageSid', async () => {
     const result = await applyDeliveryStatus({ messageSid: '', status: 'sent' });
     assert.deepEqual(result, { applied: false, reason: 'missing_message_sid' });

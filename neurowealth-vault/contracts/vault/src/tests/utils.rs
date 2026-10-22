@@ -10,8 +10,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, Address, BytesN, Env, Symbol,
-    TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, testutils::Address as _, Address, BytesN, Env, Map,
+    Symbol, TryFromVal, Val, Vec,
 };
 
 // Re-export so each submodule only needs `use super::utils::*;`
@@ -40,6 +40,12 @@ enum BlendMockDataKey {
     /// Override the return value of submit_with_allowance without changing the
     /// actual transferred amount. Used to test balance-delta accounting.
     ReportedSupplyOverride,
+    /// The asset most recently supplied via `submit_with_allowance`, so
+    /// `get_reserve`/`get_positions` can report real Blend-shaped data for
+    /// it instead of needing an explicit asset parameter (real Blend keys
+    /// reserves by asset; this mock only ever tracks one at a time, which
+    /// matches every test's actual usage).
+    TrackedAsset,
 }
 
 #[derive(Clone)]
@@ -233,6 +239,10 @@ pub mod blend {
                 request.amount
             };
 
+            env.storage()
+                .persistent()
+                .set(&BlendMockDataKey::TrackedAsset, &request.address);
+
             if actual_amount > 0 {
                 token_client.transfer_from(
                     &env.current_contract_address(),
@@ -280,14 +290,20 @@ pub mod blend {
         }
 
         /// Sets a max withdraw limit to simulate withdrawal failures/stuck funds.
-        /// 0 = no limit (default behavior)
+        /// 0 = no limit; negative = reject all withdrawals.
         pub fn set_max_withdraw_limit(env: Env, limit: i128) {
             env.storage()
                 .persistent()
                 .set(&BlendMockDataKey::MaxWithdrawLimit, &limit);
         }
 
-        pub fn submit(env: Env, from: Address, to: Address, requests: Vec<crate::BlendRequest>) {
+        pub fn submit(
+            env: Env,
+            from: Address,
+            _spender: Address,
+            to: Address,
+            requests: Vec<crate::BlendRequest>,
+        ) {
             from.require_auth();
 
             assert_eq!(requests.len(), 1, "expected one request");
@@ -308,7 +324,9 @@ pub mod blend {
                         .get(&BlendMockDataKey::MaxWithdrawLimit)
                         .unwrap_or(0);
 
-                    let actual_withdraw = if max_withdraw_limit > 0 {
+                    let actual_withdraw = if max_withdraw_limit < 0 {
+                        0
+                    } else if max_withdraw_limit > 0 {
                         core::cmp::min(amount_to_withdraw, max_withdraw_limit)
                     } else {
                         amount_to_withdraw
@@ -354,8 +372,66 @@ pub mod blend {
             actual_to_return
         }
 
-        pub fn balance(env: Env, asset: Address, _user: Address) -> i128 {
-            TestTokenClient::new(&env, &asset).balance(&env.current_contract_address())
+        /// Real Blend has no `balance(asset, user)` function at all — reading
+        /// a position requires `get_reserve(asset)` (for the b-rate/index)
+        /// plus `get_positions(user)` (for the b-token amount), per #986's
+        /// research against blend-capital/blend-contracts-v2. This mock
+        /// mirrors that shape; see `blend_pool_balance` below for the
+        /// combined read helper tests should call instead of a direct
+        /// `balance`.
+        pub fn get_reserve(_env: Env, asset: Address) -> crate::BlendReserve {
+            crate::BlendReserve {
+                asset,
+                config: crate::BlendReserveConfig {
+                    index: 0,
+                    decimals: 7,
+                    c_factor: 0,
+                    l_factor: 0,
+                    util: 0,
+                    max_util: 0,
+                    r_base: 0,
+                    r_one: 0,
+                    r_two: 0,
+                    r_three: 0,
+                    reactivity: 0,
+                    supply_cap: 0,
+                    enabled: true,
+                },
+                data: crate::BlendReserveData {
+                    d_rate: crate::BLEND_RATE_SCALAR,
+                    b_rate: crate::BLEND_RATE_SCALAR,
+                    ir_mod: 0,
+                    b_supply: 0,
+                    d_supply: 0,
+                    backstop_credit: 0,
+                    last_time: 0,
+                },
+                scalar: 10_000_000,
+            }
+        }
+
+        /// Reports the mock's actual token balance as the user's full
+        /// b-token "supply" position at index 0 (this mock only ever tracks
+        /// one asset/one position at a time, via `TrackedAsset`). Falls
+        /// back to empty maps when no asset has ever been supplied yet —
+        /// `set_blend_pool` probes this at configuration time, before any
+        /// real supply has happened, and must not panic.
+        pub fn get_positions(env: Env, _user: Address) -> crate::BlendPositions {
+            let tracked_asset: Option<Address> = env
+                .storage()
+                .persistent()
+                .get(&BlendMockDataKey::TrackedAsset);
+            let mut supply = Map::new(&env);
+            if let Some(asset) = tracked_asset {
+                let pool_balance =
+                    TestTokenClient::new(&env, &asset).balance(&env.current_contract_address());
+                supply.set(0u32, pool_balance);
+            }
+            crate::BlendPositions {
+                liabilities: Map::new(&env),
+                collateral: Map::new(&env),
+                supply,
+            }
         }
 
         pub fn supplied(env: Env, asset: Address) -> i128 {
@@ -631,6 +707,28 @@ pub fn mint_and_deposit(
     let token_client = TestTokenClient::new(env, token_address);
     token_client.mint(user, &amount);
     vault_client.deposit(user, &amount);
+}
+
+/// Reads a user's underlying-asset balance in the mock Blend pool the same
+/// way the real `BlendPoolClient::get_balance` does (#986): combine
+/// `get_reserve` (for the b-rate/index) with `get_positions` (for the
+/// b-token amount), then convert. Tests should call this instead of a
+/// direct `balance` call, which no longer exists on either the real Blend
+/// pool or this mock.
+pub fn blend_pool_balance(
+    env: &Env,
+    pool_address: &Address,
+    asset: &Address,
+    user: &Address,
+) -> i128 {
+    let pool_client = blend::MockBlendPoolClient::new(env, pool_address);
+    let reserve = pool_client.get_reserve(asset);
+    let positions = pool_client.get_positions(user);
+    let b_tokens = positions.supply.get(reserve.config.index).unwrap_or(0);
+    if b_tokens == 0 {
+        return 0;
+    }
+    b_tokens * reserve.data.b_rate / crate::BLEND_RATE_SCALAR
 }
 
 // ============================================================================

@@ -83,7 +83,11 @@ export class AlertEngine {
     current: HealthMetrics,
     previous: HealthMetrics,
   ): Alert | null {
-    if (current.sharePrice < previous.sharePrice * 0.99) {
+    if (previous.sharePrice <= 0) {
+      return null;
+    }
+
+    if (current.sharePrice <= previous.sharePrice * 0.99) {
       return this.createAlert(
         "share_price_decrease",
         "critical",

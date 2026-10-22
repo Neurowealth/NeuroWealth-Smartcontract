@@ -1,3 +1,5 @@
+import { getStateStore } from './stateStore';
+
 export enum UserState {
   UNVERIFIED = 'UNVERIFIED',
   AWAITING_OTP = 'AWAITING_OTP',
@@ -11,87 +13,43 @@ export interface ConversationSession {
   rateLimitWindowStart: number;
 }
 
-const MAX_IN_MEMORY_SESSIONS = parseInt(process.env.WHATSAPP_MAX_SESSIONS || '10000', 10);
 const SESSION_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SESSION_TIMEOUT_MS || '900000', 10); // 15 minutes default
 const RATE_LIMIT_MAX_MESSAGES = parseInt(process.env.WHATSAPP_RATE_LIMIT_MAX_MESSAGES || '10', 10);
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.WHATSAPP_RATE_LIMIT_WINDOW_MS || '60000', 10); // 1 minute default
 
-const sessions = new Map<string, ConversationSession>();
-
-function sweepStaleSessions(): void {
-  const now = Date.now();
-  for (const [hash, session] of sessions.entries()) {
-    if (now - session.lastMessageTime > SESSION_TIMEOUT_MS) {
-      sessions.delete(hash);
-    }
-  }
-}
+// Sessions are persisted in Postgres (see stateStore.ts) so a restart or a
+// request landing on another replica sees the same conversation state.
 
 /**
  * Retrieves session for phone hash, resetting if timed out.
  */
-export function getSession(phoneHash: string): ConversationSession {
-  const now = Date.now();
-  let session = sessions.get(phoneHash);
-
-  // Session timeout check
-  if (session && now - session.lastMessageTime > SESSION_TIMEOUT_MS) {
-    sessions.delete(phoneHash);
-    session = undefined;
-  }
-
-  if (!session) {
-    if (sessions.size >= MAX_IN_MEMORY_SESSIONS) {
-      sweepStaleSessions();
-      if (sessions.size >= MAX_IN_MEMORY_SESSIONS) {
-        const firstKey = sessions.keys().next().value;
-        if (firstKey) {
-          sessions.delete(firstKey);
-        }
-      }
-    }
-
-    session = {
-      state: UserState.UNVERIFIED,
-      lastMessageTime: now,
-      messageCount: 0,
-      rateLimitWindowStart: now
-    };
-    sessions.set(phoneHash, session);
-    return session;
-  }
-
-  session.lastMessageTime = now;
-  
-  // Maintain LRU order
-  sessions.delete(phoneHash);
-  sessions.set(phoneHash, session);
-  
-  return session;
+export async function getSession(phoneHash: string): Promise<ConversationSession> {
+  const session = await getStateStore().touchSession(phoneHash, Date.now(), SESSION_TIMEOUT_MS);
+  return { ...session, state: session.state as UserState };
 }
 
 /**
  * Updates user state in session.
  */
-export function updateState(phoneHash: string, newState: UserState): void {
-  const session = getSession(phoneHash);
-  session.state = newState;
-  sessions.set(phoneHash, session);
+export async function updateState(phoneHash: string, newState: UserState): Promise<void> {
+  await getStateStore().setSessionState(phoneHash, newState, Date.now());
 }
 
 /**
  * Enforces per-phone rate limiting.
  */
-export function checkRateLimit(phoneHash: string): boolean {
+export async function checkRateLimit(phoneHash: string): Promise<boolean> {
   const now = Date.now();
-  const session = getSession(phoneHash);
+  // Touching first applies the inactivity reset, as before.
+  await getStateStore().touchSession(phoneHash, now, SESSION_TIMEOUT_MS);
+  const count = await getStateStore().bumpMessageCount(phoneHash, now, RATE_LIMIT_WINDOW_MS);
+  return count <= RATE_LIMIT_MAX_MESSAGES;
+}
 
-  if (now - session.rateLimitWindowStart > RATE_LIMIT_WINDOW_MS) {
-    session.rateLimitWindowStart = now;
-    session.messageCount = 1;
-    return true;
-  }
-
-  session.messageCount += 1;
-  return session.messageCount <= RATE_LIMIT_MAX_MESSAGES;
+/**
+ * Deletes sessions idle past the timeout and expired OTP challenges.
+ * Replaces the old in-memory size cap; safe to run from every replica.
+ */
+export async function purgeExpiredState(): Promise<void> {
+  await getStateStore().purgeExpired(Date.now(), SESSION_TIMEOUT_MS);
 }

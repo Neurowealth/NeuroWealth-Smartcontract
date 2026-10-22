@@ -75,3 +75,12 @@ export {
 // Event listener
 export { VaultEventListener } from './event-listener';
 export type { EventListenerOptions, EventHandler } from './event-listener';
+
+// Shared vault reads (no frontend dependency)
+export {
+  EMPTY_VAULT_STATE,
+  deriveVaultState,
+  mapVaultStrategy,
+  shortenAddress,
+} from './stellar';
+export type { VaultState, VaultStateReadings } from './stellar';

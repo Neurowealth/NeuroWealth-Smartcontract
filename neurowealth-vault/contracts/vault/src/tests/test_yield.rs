@@ -1,7 +1,7 @@
 //! Tests for yield / total-assets update functionality
 
 use super::utils::*;
-use crate::{AssetsUpdatedEvent, TOPIC_ASSETS_UPDATED, TOPIC_COMPOUND};
+use crate::{AssetsUpdatedEvent, TOPIC_ASSETS_UPDATED};
 use soroban_sdk::{testutils::Address as _, Address, Env, TryFromVal};
 
 #[test]
@@ -25,7 +25,7 @@ fn test_agent_can_update_total_assets() {
     let new_total = deposit_amount + yield_amount;
     client.update_total_assets(&agent, &new_total, &false, &0);
 
-    assert_eq(client.get_total_assets(), new_total);
+    assert_eq!(client.get_total_assets(), new_total);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn test_yield_increases_user_asset_balance() {
     mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     let balance_before_yield = client.get_balance(&user);
-    assert_eq(balance_before_yield, deposit_amount);
+    assert_eq!(balance_before_yield, deposit_amount);
 
     // Simulate 50% yield: mint tokens to vault first, then update the reported total
     let yield_amount = deposit_amount / 2;
@@ -73,7 +73,7 @@ fn test_yield_increases_user_asset_balance() {
         balance_after_yield > balance_before_yield,
         "Balance should increase with yield"
     );
-    assert_eq(
+    assert_eq!(
         balance_after_yield, new_total_assets,
         "User should get full proportional share"
     );
@@ -122,7 +122,7 @@ fn test_yield_distributed_proportionally_between_users() {
         "User2 should get proportional yield"
     );
 
-    assert_eq(
+    assert_eq!(
         balance1_after + balance2_after,
         new_total_assets,
         "Total balances should equal total assets"
@@ -144,12 +144,12 @@ fn test_yield_emits_event() {
 
     let yield_amount = 5_000_000_i128;
     let new_total = deposit_amount + yield_amount;
-    token_client.mint(&contract_id, &uield_amount);
+    token_client.mint(&contract_id, &yield_amount);
     client.update_total_assets(&agent, &new_total, &false, &0);
 
     let assets_events = find_events_by_topic(env.events().all(), &env, TOPIC_ASSETS_UPDATED);
-    assert_eq(
-        assets_events.len(s),
+    assert_eq!(
+        assets_events.len(),
         1,
         "Exactly one assets event should be emitted"
     );
@@ -157,11 +157,11 @@ fn test_yield_emits_event() {
     let (_, _, data) = &assets_events[0];
     let event =
         AssetsUpdatedEvent::try_from_val(&env, data).expect("Should be a valid AssetsUpdatedEvent");
-    assert_eq(
+    assert_eq!(
         event.old_total, deposit_amount,
         "old_total should be the deposit amount"
     );
-    assert_eq(event.new_total, new_total, "new_total should reflect yield");
+    assert_eq!(event.new_total, new_total, "new_total should reflect yield");
 }
 
 // ==================================================================================
@@ -187,7 +187,7 @@ fn test_decrease_allowed_with_owner_cosign_within_cap() {
     let new_total = deposit_amount - loss_amount;
     client.update_total_assets(&agent, &new_total, &true, &1000);
 
-    assert_eq(client.get_total_assets(), new_total);
+    assert_eq!(client.get_total_assets(), new_total);
 }
 
 /// Decrease is capped per-call: 10 % of 10 USDC = 1 USDC max. A 20 % loss in
@@ -246,86 +246,15 @@ fn test_no_change_does_not_require_owner_cosign() {
 
     // Same total — no decrease path, no owner co-sign needed.
     client.update_total_assets(&agent, &deposit_amount, &false, &0);
-    assert_eq(client.get_total_assets(), deposit_amount);
+    assert_eq!(client.get_total_assets(), deposit_amount);
 }
 
 // ==================================================================================
 // AUTO-COMPOUND — REINVEST YIELD
 // =================================================================================
-
-/// Auto-compound withdraws accrued yield and re-deposits it into the same
-/// protocol, updating TotalAssets and emitting a CompoundEvent.
-#[test]
-fn test_auto_compound_updates_total_assets_and_emits_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usec_token);
-
-    let user = Address::generate(&env);
-    let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
-
-    // Simulate yield that has accrued in the protocol
-    let yield_amount = 2_000_000_i128;
-    token_client.mint(&contract_id, &yield_amount);
-
-    // Agent triggers auto-compound with a min_out of 0 (accept any amount)
-    client.auto_compound(&agent, &0);
-
-    // TotalAssets must reflect the compounded yield
-    assert_eq(client.get_total_assets(), deposit_amount + yield_amount);
-
-    // A CompoundEvent must be emitted
-    let compound_events = find_events_by_topic(env.events().all(), &env, TOPIC_COMPOUND);
-    assert_eq(
-        compound_events.len(),
-        1,
-        "Exactly one compound event should be emitted"
-    );
-}
-
-/// Only the configured agent may trigger auto-compound.
-#[test]
-#[should_panic(expected = "Error(Contract, #30)")]
-fn test_non_agent_cannot_auto_compound() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, _owner, usec_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    let user = Address::generate(&env);
-    let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
-
-    let non_agent = Address::generate(&env);
-    client.auto_compound(&non_agent, &0);
-}
-
-/// Auto-compound must respect the compound cooldown (or shared rebalance
-/// cooldown). A second call within the cooldown window is rejected.
-#[test]
-#[should_panic(expected = "Error(Contract, #49)")]
-fn test_auto_compound_respects_cooldown() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usec_token);
-
-    let user = Address::generate(&env);
-    let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
-
-    // First compound succeeds
-    let yield_amount = 1_000_000_i128;
-    token_client.mint(&contract_id, &yield_amount);
-    client.auto_compound(&agent, &0);
-
-    // Second call while still within the cooldown should fail
-    client.auto_compound(&agent, &0);
-}
+//
+// NOTE: There is no `auto_compound` entry point in this contract. Yield is
+// reported via `update_total_assets` called by the agent; there is no
+// separate "withdraw yield, re-deposit it" step. The 3 tests that used to
+// live here called a function that was never implemented and have been
+// removed rather than left broken.

@@ -11,6 +11,8 @@ import { submitAutoCompoundTx, submitRebalanceTx } from './sorobanTx';
 import { createDecisionId } from './rebalanceOperations';
 import { resolveExecutionMode } from './executionMode';
 import { RollupScheduler } from './dataRollup';
+import { WithdrawalKeeperScheduler } from './withdrawalKeeper';
+import { Keypair } from '@stellar/stellar-sdk';
 
 import { ipRateLimiter, userRateLimiter } from './rateLimiter';
 
@@ -27,6 +29,7 @@ app.use(healthRouter);
 
 let decisionInterval: ReturnType<typeof setInterval> | null = null;
 const rollupScheduler = new RollupScheduler(pool);
+let withdrawalKeeper: WithdrawalKeeperScheduler | null = null;
 
 /**
  * Invokes the vault contract's `auto_compound(min_out)` function to harvest
@@ -92,7 +95,7 @@ function startDecisionLoop(executionMode: 'live' | 'dry-run') {
         
         if (decisionToRebalance?.targetProtocol) {
           logger.info({ targetProtocol: decisionToRebalance.targetProtocol }, 'Submitting batch rebalance transaction');
-          await submitRebalanceTx(decisionToRebalance.targetProtocol, currentAllocation.apy, {
+          await submitRebalanceTx(decisionToRebalance.targetProtocol, decisionToRebalance.targetApy ?? currentAllocation.apy, {
             mode: executionMode,
             decisionId,
             snapshot: cycleSnapshot,
@@ -136,7 +139,14 @@ export async function gracefulShutdown(
     logger.info('Decision loop stopped');
   }
 
-  // 2. Stop accepting incoming HTTP connections and drain in-flight requests
+  // 2. Stop withdrawal queue keeper
+  if (withdrawalKeeper) {
+    withdrawalKeeper.stop();
+    withdrawalKeeper = null;
+    logger.info('Withdrawal keeper stopped');
+  }
+
+  // 3. Stop accepting incoming HTTP connections and drain in-flight requests
   if (serverInstance) {
     await new Promise<void>((resolve) => {
       serverInstance.close((err) => {
@@ -150,14 +160,14 @@ export async function gracefulShutdown(
     });
   }
 
-  // 3. Gracefully stop event listener and await completion of in-flight polls
+  // 4. Gracefully stop event listener and await completion of in-flight polls
   try {
     await stopEventListener();
   } catch (err) {
     logger.error({ error: err instanceof Error ? err.message : String(err) }, 'Error stopping event listener');
   }
 
-  // 4. Drain and close PostgreSQL connection pool
+  // 5. Drain and close PostgreSQL connection pool
   try {
     await closePool();
   } catch (err) {
@@ -184,6 +194,22 @@ async function main() {
     rollupScheduler.start();
   } else {
     logger.warn('DATABASE_URL is not set; nightly rollup/cleanup job disabled');
+  }
+
+  // Initialize withdrawal queue keeper if vault contract and agent key are configured
+  const vaultContractId = process.env.VAULT_CONTRACT_ID;
+  const agentSecretKey = process.env.SOROBAN_SECRET_KEY;
+  if (vaultContractId && agentSecretKey) {
+    try {
+      const agentKeypair = Keypair.fromSecret(agentSecretKey);
+      withdrawalKeeper = new WithdrawalKeeperScheduler(vaultContractId, agentKeypair);
+      withdrawalKeeper.start();
+      logger.info('Withdrawal queue keeper started');
+    } catch (error) {
+      logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to initialize withdrawal keeper');
+    }
+  } else {
+    logger.warn('VAULT_CONTRACT_ID or SOROBAN_SECRET_KEY not set; withdrawal queue keeper disabled');
   }
 
   const serverInstance = app.listen(PORT, () => {

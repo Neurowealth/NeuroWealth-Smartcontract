@@ -64,7 +64,10 @@ fn test_add_supported_asset_registers_and_emits_event() {
     assert_eq!(config.deposit_limit, 1_000_000_000);
     assert_eq!(config.tvl_cap, 500_000_000_000);
 
-    assert_eq!(client.get_asset_tvl_cap(&asset(&env, USDC)), 500_000_000_000);
+    assert_eq!(
+        client.get_asset_tvl_cap(&asset(&env, USDC)),
+        500_000_000_000
+    );
 
     let events = find_events_by_topic(env.events().all(), &env, TOPIC_SUPPORTED_ASSETS_UPDATED);
     assert_eq!(events.len(), 1);
@@ -206,7 +209,10 @@ fn test_deposit_asset_mints_independent_shares() {
     let user2 = Address::generate(&env);
     usdc_client.mint(&user2, &amount);
     client.deposit_asset(&user2, &asset(&env, USDC), &amount);
-    assert_eq!(client.get_total_assets_by_asset(&asset(&env, USDC)), amount * 2);
+    assert_eq!(
+        client.get_total_assets_by_asset(&asset(&env, USDC)),
+        amount * 2
+    );
     assert_eq!(client.get_total_assets_by_asset(&asset(&env, USDT)), amount);
     assert_eq!(client.get_balance_asset(&user2, &asset(&env, USDT)), 0);
 
@@ -276,8 +282,12 @@ fn test_deposit_asset_respects_deposit_limit_and_minimum() {
 
     // Exactly at the limit works.
     client.deposit_asset(&user, &asset(&env, USDC), &50_000_000);
-    assert_eq!(client.get_balance_asset(&user, &asset(&env, USDC)), 50_000_000);
-}#[test]
+    assert_eq!(
+        client.get_balance_asset(&user, &asset(&env, USDC)),
+        50_000_000
+    );
+}
+#[test]
 fn test_withdraw_asset_burns_shares_and_transfers() {
     let env = Env::default();
     env.mock_all_auths();
@@ -298,9 +308,15 @@ fn test_withdraw_asset_burns_shares_and_transfers() {
 
     client.withdraw_asset(&user, &asset(&env, USDC), &40_000_000);
 
-    assert_eq!(client.get_balance_asset(&user, &asset(&env, USDC)), 60_000_000);
+    assert_eq!(
+        client.get_balance_asset(&user, &asset(&env, USDC)),
+        60_000_000
+    );
     assert_eq!(client.get_balance_asset(&user, &asset(&env, USDT)), amount);
-    assert_eq!(client.get_total_assets_by_asset(&asset(&env, USDC)), 60_000_000);
+    assert_eq!(
+        client.get_total_assets_by_asset(&asset(&env, USDC)),
+        60_000_000
+    );
     assert_eq!(client.get_total_assets_by_asset(&asset(&env, USDT)), amount);
     assert_eq!(usdc_client.balance(&user), 40_000_000);
 
@@ -331,7 +347,10 @@ fn test_withdraw_asset_more_than_balance_panics() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.withdraw_asset(&user, &asset(&env, USDC), &(amount + 1));
     }));
-    assert!(res.is_err(), "withdrawing more than the per-asset balance must panic");
+    assert!(
+        res.is_err(),
+        "withdrawing more than the per-asset balance must panic"
+    );
 }
 
 #[test]
@@ -343,7 +362,12 @@ fn test_update_asset_limits_changes_caps() {
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     client.add_supported_asset(&asset(&env, USDC), &usdc_token, &0, &0, &0);
 
-    client.update_asset_limits(&asset(&env, USDC), &1_000_000, &1_000_000_000, &100_000_000_000);
+    client.update_asset_limits(
+        &asset(&env, USDC),
+        &1_000_000,
+        &1_000_000_000,
+        &100_000_000_000,
+    );
 
     let config: Option<AssetConfig> = client.get_asset_config(&asset(&env, USDC));
     let config = config.expect("config should exist");
@@ -362,7 +386,8 @@ fn test_update_asset_limits_changes_caps() {
         client.deposit_asset(&user, &asset(&env, USDC), &1);
     }));
     assert!(res.is_err(), "deposit past lowered TVL cap must panic");
-}#[test]
+}
+#[test]
 fn test_remove_supported_asset_requires_empty_pool() {
     let env = Env::default();
     env.mock_all_auths();
@@ -381,7 +406,10 @@ fn test_remove_supported_asset_requires_empty_pool() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.remove_supported_asset(&asset(&env, USDC));
     }));
-    assert!(res.is_err(), "removing a supported asset with an open pool must panic");
+    assert!(
+        res.is_err(),
+        "removing a supported asset with an open pool must panic"
+    );
 
     // After a full withdrawal the pool is empty and removal succeeds.
     client.withdraw_asset(&user, &asset(&env, USDC), &amount);

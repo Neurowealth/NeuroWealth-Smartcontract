@@ -1,49 +1,42 @@
 #!/usr/bin/env python3
 """
-Detect drift between the Supabase migrations (source of truth), the
-standalone db/schema.sql copy, and the db/types.ts TypeScript interfaces.
+Detect drift between Supabase migrations (source of truth) and db/types.ts.
 
 Checks performed:
-  1. Every table created across supabase/migrations/*.sql exists in
-     db/schema.sql.
-  2. Every table in db/schema.sql has a corresponding exported interface in
-     db/types.ts (matched by convention: `foo_bar` -> `FooBarRecord`).
+  1. Every table created across supabase/migrations/*.sql exists as an exported
+     interface and Database table in db/types.ts.
+  2. Every column defined in migrations exists with matching types in db/types.ts.
+  3. db/types.ts matches the canonical deterministic output of scripts/generate-db-types.py.
 
 Usage (local):
     python3 scripts/check-schema-drift.py
 
 Exit codes:
     0: No drift detected
-    1: Drift detected — db/schema.sql and/or db/types.ts must be updated
+    1: Drift detected — db/types.ts must be updated
 """
 
 from __future__ import annotations
 
-import re
+import importlib.util
 import sys
 from pathlib import Path
-from typing import Set
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATIONS_DIR = ROOT / "supabase" / "migrations"
-SCHEMA_COPY = ROOT / "db" / "schema.sql"
-TYPES_FILE = ROOT / "db" / "types.ts"
+GENERATE_SCRIPT = ROOT / "scripts" / "generate-db-types.py"
 
-TABLE_RE = re.compile(
-    r"CREATE TABLE(?:\s+IF NOT EXISTS)?\s+(\w+)", re.IGNORECASE
-)
-INTERFACE_RE = re.compile(r"export interface (\w+)")
+spec = importlib.util.spec_from_file_location("generate_db_types", GENERATE_SCRIPT)
+if not spec or not spec.loader:
+    print(f"Error: could not load {GENERATE_SCRIPT}", file=sys.stderr)
+    sys.exit(1)
+gen_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gen_mod)
 
-
-def tables_in(sql_text: str) -> Set[str]:
-    return {match.group(1).lower() for match in TABLE_RE.finditer(sql_text)}
-
-
-def to_record_interface(table_name: str) -> str:
-    """`yield_snapshots` -> `YieldSnapshotRecord` (naive singularization: drop a trailing 's')."""
-    singular = table_name[:-1] if table_name.endswith("s") else table_name
-    pascal = "".join(part.capitalize() for part in singular.split("_"))
-    return f"{pascal}Record"
+MIGRATIONS_DIR = gen_mod.MIGRATIONS_DIR
+TYPES_FILE = gen_mod.TYPES_FILE
+generate_typescript_code = gen_mod.generate_typescript_code
+parse_migrations = gen_mod.parse_migrations
+to_record_interface = gen_mod.to_record_interface
 
 
 def main() -> int:
@@ -52,54 +45,37 @@ def main() -> int:
     if not MIGRATIONS_DIR.is_dir():
         print(f"missing migrations directory: {MIGRATIONS_DIR}", file=sys.stderr)
         return 1
-    if not SCHEMA_COPY.exists():
-        print(f"missing schema copy: {SCHEMA_COPY}", file=sys.stderr)
-        return 1
     if not TYPES_FILE.exists():
         print(f"missing types file: {TYPES_FILE}", file=sys.stderr)
         return 1
 
-    migration_tables: Set[str] = set()
-    for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        migration_tables |= tables_in(migration.read_text(encoding="utf-8"))
+    tables = parse_migrations(MIGRATIONS_DIR)
+    expected_code = generate_typescript_code(tables)
+    current_code = TYPES_FILE.read_text(encoding="utf-8")
 
-    schema_copy_tables = tables_in(SCHEMA_COPY.read_text(encoding="utf-8"))
-    declared_interfaces = set(
-        INTERFACE_RE.findall(TYPES_FILE.read_text(encoding="utf-8"))
-    )
-
-    missing_from_schema_copy = migration_tables - schema_copy_tables
-    if missing_from_schema_copy:
-        failures.append(
-            "db/schema.sql is missing tables defined in supabase/migrations/: "
-            + ", ".join(sorted(missing_from_schema_copy))
-        )
-
-    stale_in_schema_copy = schema_copy_tables - migration_tables
-    if stale_in_schema_copy:
-        failures.append(
-            "db/schema.sql has tables no longer present in supabase/migrations/: "
-            + ", ".join(sorted(stale_in_schema_copy))
-        )
-
-    for table in sorted(migration_tables):
-        expected_interface = to_record_interface(table)
-        if expected_interface not in declared_interfaces:
+    # Check for table interfaces
+    for table_name in sorted(tables.keys()):
+        expected_iface = to_record_interface(table_name)
+        if f"export interface {expected_iface} " not in current_code:
             failures.append(
-                f"db/types.ts is missing `{expected_interface}` for table `{table}`"
+                f"db/types.ts is missing `{expected_iface}` for table `{table_name}`"
             )
+
+    # Check for overall file drift
+    if current_code.strip() != expected_code.strip():
+        failures.append("db/types.ts contents diverge from generated migration schema")
 
     if failures:
         print("Schema drift check failed:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         print(
-            "\nUpdate db/schema.sql and db/types.ts to match supabase/migrations/.",
+            "\nRun `python3 scripts/generate-db-types.py` to regenerate db/types.ts.",
             file=sys.stderr,
         )
         return 1
 
-    print("No schema drift detected: migrations, db/schema.sql, and db/types.ts agree.")
+    print("No schema drift detected: supabase/migrations/ and db/types.ts agree.")
     return 0
 
 

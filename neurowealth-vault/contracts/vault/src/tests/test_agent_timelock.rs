@@ -12,6 +12,16 @@
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env};
 
+/// Keeps storage entries alive across the large ledger jumps these tests make
+/// (mirrors the helper in `test_share_locking.rs`).
+fn keep_storage_alive(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+}
+
 /// A successful propose stores the pending agent and emits the proposal event.
 #[test]
 fn test_propose_agent_stores_pending_and_emits_event() {
@@ -78,7 +88,9 @@ fn test_confirm_before_timelock_rejected() {
 #[test]
 fn test_confirm_after_timelock_applies_update() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
+    keep_storage_alive(&env);
 
     let (contract_id, _old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -108,7 +120,9 @@ fn test_confirm_after_timelock_applies_update() {
 #[test]
 fn test_new_proposal_allowed_after_confirm() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
+    keep_storage_alive(&env);
 
     let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -220,7 +234,9 @@ fn test_get_pending_agent_update_none_initially() {
 #[test]
 fn test_confirm_agent_update_long_after_expiry_succeeds() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
+    keep_storage_alive(&env);
 
     let (contract_id, _old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -318,7 +334,9 @@ fn test_confirm_after_cancel_rejected() {
 #[test]
 fn test_ownership_transfer_preserves_pending_agent_update() {
     let env = Env::default();
+    keep_storage_alive(&env);
     env.mock_all_auths();
+    keep_storage_alive(&env);
 
     let (contract_id, old_agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);

@@ -9,9 +9,6 @@ on:
   schedule:
     - cron: "0 3 * * 0"
 
-permissions:
-  contents: write
-
 env:
   # Maximum allowed size in bytes for the optimised contract WASM.
   # Raise this in the same PR as any deliberate feature addition that grows
@@ -31,9 +28,12 @@ jobs:
       contents: read
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+
+      - name: Ensure no committed node_modules (#909)
+        run: bash scripts/check-no-committed-node-modules.sh
 
       - name: Env templates & key files policy (#766)
         run: python3 scripts/check-env-templates.py
@@ -58,11 +58,79 @@ jobs:
           gitleaks version
 
       - name: Run gitleaks (full history)
-        run: gitleaks git --redact -v --config .gitleaks.toml .
+        run: gitleaks git --redact -v --config .gitleaks.toml --gitleaks-ignore-path .gitleaksignore .
+
+  # Public function auth gate (#908): verifies that every public Soroban
+  # contract entrypoint enforces an explicit authorization check or is documented
+  # as an unauthenticated/read-only query.
+  pub-fn-auth-gate:
+    name: Public Function Auth Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.11'
+
+      - name: Verify public function authorization gate (#908)
+        run: bash scripts/check-pub-fn-auth.sh
+
+  # Lockfile integrity check (#918): enforces that package-lock.json matches
+  # package.json exactly across all packages in the repository.
+  lockfile-integrity:
+    name: Lockfile Integrity (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Root"
+            dir: "."
+            lockfile: "package-lock.json"
+          - name: "Frontend"
+            dir: "frontend"
+            lockfile: "frontend/package-lock.json"
+          - name: "Agent"
+            dir: "agent"
+            lockfile: "agent/package-lock.json"
+          - name: "WhatsApp"
+            dir: "whatsapp"
+            lockfile: "whatsapp/package-lock.json"
+          - name: "Vault Client"
+            dir: "packages/vault-client"
+            lockfile: "packages/vault-client/package-lock.json"
+          - name: "Vault UI"
+            dir: "packages/vault-ui"
+            lockfile: "packages/vault-ui/package-lock.json"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+
+      - name: Verify lockfile integrity (npm ci) (#918)
+        working-directory: ${{ matrix.dir }}
+        run: npm ci --ignore-scripts
+
+
 
   ci-matrix:
     name: CI Matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -85,8 +153,8 @@ jobs:
           - name: "Vault UI Accessibility & Notifications"
             step: "vault-ui-test"
             working_directory: "packages/vault-ui"
-          - name: "Frontend Lint"
-            step: "frontend-lint"
+          - name: "Frontend Typecheck, Lint, Test & Build"
+            step: "frontend-check"
             working_directory: "frontend"
           - name: "Agent Typecheck, Lint & Tests"
             step: "agent-check"
@@ -94,6 +162,15 @@ jobs:
           - name: "WhatsApp Typecheck & Tests"
             step: "whatsapp-check"
             working_directory: "whatsapp"
+          - name: "Bridge Typecheck & Tests"
+            step: "bridge-check"
+            working_directory: "packages/bridge"
+          - name: "Monitoring Typecheck & Tests"
+            step: "monitoring-check"
+            working_directory: "packages/monitoring"
+          - name: "Admin Panel Lint & Build"
+            step: "admin-panel-check"
+            working_directory: "packages/admin-panel"
           - name: "Build WASM"
             step: "build-wasm"
             working_directory: "neurowealth-vault"
@@ -106,7 +183,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Read Stellar CLI version
         id: cli-version
@@ -115,18 +192,18 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain with components
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: neurowealth-vault
 
       - name: Cache cargo registry and tooling
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/bin/
@@ -173,17 +250,20 @@ jobs:
               RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
               ;;
             vault-client-typecheck)
-              npm ci
-              npm run typecheck
-              npm run test
+              npm ci --prefix ../..
+              npm run typecheck --prefix ../.. --workspace=@neurowealth/vault-client
+              npm test --prefix ../.. --workspace=@neurowealth/vault-client
               ;;
             vault-ui-test)
-              npm install
-              npm run test
+              npm ci --prefix ../..
+              npm test --prefix ../.. --workspace=@neurowealth/vault-ui
               ;;
-            frontend-lint)
+            frontend-check|frontend-lint)
               npm ci
+              npm run typecheck
               npm run lint
+              npm test
+              npm run build
               ;;
             agent-check)
               npm ci
@@ -195,6 +275,28 @@ jobs:
             whatsapp-check)
               npm ci
               npm test
+              ;;
+            bridge-check)
+              # Depends on @neurowealth/vault-client via a file: reference
+              # (#998), so its dist/ must exist before `npm ci` here can
+              # resolve real type declarations rather than failing module
+              # resolution.
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            monitoring-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            admin-panel-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run lint
+              npm run build
               ;;
             build-wasm)
               RUSTFLAGS="-C target-cpu=mvp" cargo build \
@@ -297,11 +399,49 @@ jobs:
 
       - name: Upload optimised WASM artifact
         if: matrix.step == 'build-wasm'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: neurowealth-vault-wasm
           path: ${{ env.WASM_FILE }}
           retention-days: 14
+
+  package-checks:
+    name: Package checks (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: admin-panel
+            workspace: "@neurowealth/admin-panel"
+          - package: bridge
+            workspace: "@neurowealth/bridge"
+          - package: monitoring
+            workspace: "@neurowealth/monitoring"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build vault-client workspace
+        run: npm run build --workspace=@neurowealth/vault-client
+
+      - name: Typecheck ${{ matrix.package }}
+        run: npm run typecheck --workspace=${{ matrix.workspace }}
+
+      - name: Test ${{ matrix.package }}
+        run: npm test --workspace=${{ matrix.workspace }}
 
   frontend-e2e:
     name: Frontend Vault Journey Smoke
@@ -311,10 +451,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: npm
@@ -336,7 +476,7 @@ jobs:
 
       - name: Upload browser diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: frontend-vault-journey-failure-artifacts
           path: frontend/test-results/
@@ -347,35 +487,34 @@ jobs:
     name: Kani Share-Accounting Proofs
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Run Kani proofs
-        uses: model-checking/kani-github-action@v1.1
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f
         with:
           args: --manifest-path neurowealth-vault/Cargo.toml -p share-math
 
   cargo-deny:
     name: Dependency Audit (cargo-deny)
     runs-on: ubuntu-latest
-    # The workflow-level weekly cron (Sunday 03:00 UTC) re-runs this job
-    # against a fresh RustSec advisory database, so advisories published
-    # against pinned dependencies surface without waiting for a PR.
     permissions:
       contents: read
       issues: write
+    # The workflow-level weekly cron (Sunday 03:00 UTC) re-runs this job
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@10d8902cf9225c404574ce39c45d5d26c3047464
         with:
           command: check
           # The vault workspace manifest drives the dependency graph.
           manifest-path: ./neurowealth-vault/Cargo.toml
-          # Policy lives in deny.toml at the repo root.
-          command-arguments: "--config deny.toml"
+          # Policy lives in deny.toml at the repo root (auto-discovered by cargo-deny).
           # Respect the [graph] settings in deny.toml instead of forcing
           # --all-features (the action's default).
           arguments: ""
@@ -385,7 +524,7 @@ jobs:
         # already visible on the PR itself, while a scheduled failure has no
         # PR to surface it and would otherwise go unnoticed.
         if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             const title = 'Scheduled cargo-deny audit is failing (dependency advisory drift)';
@@ -430,21 +569,15 @@ jobs:
     name: Reproducible Build Check
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Two clean uncached builds are expensive, so this runs where an
-    # attestation matters — weekly, on demand, and on pushes to main —
-    # rather than on every PR.
-    if: |
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     permissions:
       contents: read
+    # Two clean uncached builds are expensive, so this runs where an
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           targets: wasm32-unknown-unknown
 
@@ -459,19 +592,41 @@ jobs:
   readme-check:
     name: README Validation
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Validate README
         run: bash scripts/check-readme.sh .
 
+  # i18n key parity (#932): every frontend locale catalog (en, es, fr, ja, pt,
+  # zh) must define exactly the keys in messages/en.json, and the locale lists
+  # in i18n/request.ts and middleware.ts must match the catalogs on disk.
+  i18n-parity:
+    name: Frontend i18n Key Parity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Check locale catalogs for missing/extra keys
+        run: python3 scripts/check-i18n-parity.py
+
   security-audit:
     name: Security Documentation Audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate contract specification (#919)
+        run: python3 scripts/validate-spec.py
 
       - name: Verify access control table accuracy (spec)
         run: bash scripts/check-access-control.sh
@@ -479,24 +634,32 @@ jobs:
       - name: Verify auth matrix against source (lib.rs)
         run: python3 scripts/check-auth-matrix.py
 
+      - name: Soroban pitfall lints (storage unwrap / init / auth)
+        run: python3 scripts/check-soroban-lints.py
+
       - name: Verify DataKey::Balance deprecation
         run: bash scripts/check-balance-deprecation.sh
 
       - name: Verify DataKey docs match lib.rs
         run: bash scripts/check-data-key-docs.sh
 
+      - name: Verify every test_*.rs file is registered in tests/mod.rs
+        run: bash scripts/check-test-registration.sh
+
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       contract: ${{ steps.filter.outputs.contract }}
       vault_src: ${{ steps.filter.outputs.vault_src }}
       share_math: ${{ steps.filter.outputs.share_math }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Check for contract changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
         id: filter
         with:
           filters: |
@@ -511,7 +674,13 @@ jobs:
     name: Fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     needs: [changes]
+    # Note: All 9 fuzz targets run in CI. Runtime considerations:
+    # - PR: 9 targets × 120s = ~18 minutes total (parallelized)
+    # - Scheduled: 9 targets × 300s = ~45 minutes total (parallelized)
+    # The timeout-minutes: 10 applies per target, not per matrix.
     if: |
       github.event_name == 'schedule' ||
       (github.event_name == 'pull_request' && needs.changes.outputs.vault_src == 'true')
@@ -524,15 +693,19 @@ jobs:
           - rounding_boundaries
           - share_accounting_invariants
           - agent_update_timelock
+          - admin_timelock_interleaved
+          - harvest_sequence
+          - upgrade_timelock
+          - user_strategy
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: neurowealth-vault
 
@@ -556,6 +729,8 @@ jobs:
     name: Fuzz withdrawal_queue_invariants
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     needs: [changes]
     if: |
       github.event_name == 'schedule' ||
@@ -563,13 +738,13 @@ jobs:
       (github.event_name == 'pull_request' && needs.changes.outputs.share_math == 'true')
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: neurowealth-vault/share-math/fuzz
 
@@ -594,6 +769,8 @@ jobs:
     name: E2E Devnet Validation
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     needs: [ci-matrix, changes]
     # Trigger e2e-devnet on manual dispatch, weekly schedule, or PRs with 'run-e2e' label or contract modifications
     if: |
@@ -613,7 +790,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Read Stellar CLI version
         id: cli-version
@@ -622,12 +799,12 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           targets: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: neurowealth-vault
 
@@ -676,7 +853,7 @@ jobs:
 
       - name: Upload E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: e2e-devnet-artifacts
           path: scripts/e2e-artifacts/
@@ -732,16 +909,18 @@ jobs:
   arithmetic-guard:
     name: Arithmetic overflow guard
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           components: clippy
 
       - name: Cache cargo registry & build artefacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 
       # Layer (a): Clippy forbids bare integer arithmetic operators.
       # -D turns the lint into a hard error; the build fails if any violation

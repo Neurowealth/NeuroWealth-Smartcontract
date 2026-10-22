@@ -7,13 +7,15 @@
     "build": "tsc",
     "test": "ts-node --transpile-only src/cryptoUtils.test.ts && ts-node --transpile-only src/intentParser.test.ts && ts-node --transpile-only src/otpService.test.ts && ts-node --transpile-only src/stateManager.test.ts && ts-node --transpile-only src/walletService.test.ts && ts-node --transpile-only src/webhook.test.ts",
     "start": "node dist/index.js",
+    "rotate-keys": "node dist/rotateKeys.js",
     "dev": "ts-node src/index.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "test": "tsc && node --test \"dist/__tests__/*.test.js\""
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^13.0.0",
+    "@neurowealth/vault-client": "file:../packages/vault-client",
+    "@stellar/stellar-sdk": "^16.1.0",
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

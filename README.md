@@ -21,7 +21,7 @@ Traditional savings accounts offer near-zero interest. Traditional DeFi is too c
 | 🤖 AI Agent | Autonomous 24/7 yield optimization across Stellar DeFi |
 | 💬 Natural Language | Chat to deposit, withdraw, and check balances |
 | 📈 Auto-Rebalancing | Agent shifts funds to best opportunities automatically |
-| 🔐 Non-Custodial | Your funds live in audited Soroban smart contracts |
+| 🔐 Non-Custodial | Your funds live in non-custodial Soroban smart contracts |
 | ⚡ Instant Withdrawals | No lock-ups, no penalties, withdraw anytime |
 | 📱 WhatsApp Ready | Full functionality through WhatsApp chat interface |
 | 🌍 Global Access | No geographic restrictions, no bank account required |
@@ -59,11 +59,11 @@ Security: OpenZeppelin-equivalent patterns (Pausable, Access Control) and strict
 
 ### Backend / AI Agent
 
-Runtime: Node.js or Python
+Runtime: Node.js
 Stellar SDK: @stellar/stellar-sdk
-AI: Claude API / OpenAI for natural language intent parsing
+AI: OpenAI intent parsing in `agent/`. The WhatsApp bot uses a keyword/regex parser. Claude is not integrated
 Database: PostgreSQL / Supabase for user position tracking
-Queue: Bull / Redis for reliable transaction processing
+Scheduling: In-memory priority queue with gas awareness (RebalanceScheduler)
 
 ### Frontend
 
@@ -82,6 +82,8 @@ Price Feeds: Stellar anchor price feeds
 
 ```text
 NeuroWealth-Smartcontract/
+├── package.json                    # npm workspace and aggregate package tests
+├── agent/                          # AI agent backend (implemented; see agent/README.md)
 ├── neurowealth-vault/              # Soroban smart contracts workspace
 │   ├── Cargo.toml
 │   ├── Cargo.lock
@@ -164,6 +166,17 @@ The repository now contains the production workspaces rather than planned placeh
 | Monitoring package | `packages/monitoring/` | Operations and alerting integration surface | Package workspace |
 | Admin panel package | `packages/admin-panel/` | Operator-facing administrative UI surface | Package workspace |
 
+Install package workspace dependencies and run their tests from the repository root:
+
+```bash
+npm ci
+npm test
+```
+
+`npm test` runs tests across `packages/*`; admin-panel currently reports an
+explicit no-tests-yet gate. For `agent/`, `frontend/`, and `whatsapp/`, install
+dependencies and run tests from the respective directory.
+
 ## Getting Started
 ### Prerequisites
 
@@ -226,7 +239,7 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 | [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) | DEX strategy behaviour, integration assumptions, and liquidity routing |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](docs/BLEND_INTEGRATION_RESEARCH.md) | Blend protocol supply/withdraw design and cross-contract call patterns |
 | [`docs/LEAST_PRIVILEGE_AGENT.md`](docs/LEAST_PRIVILEGE_AGENT.md) | Least-privilege evaluation: separate rebalancer vs reporter agent roles (Issue #606) |
-| [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) | Guardian-key design: second signature for `execute_upgrade` (Issue #607) |
+| [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) | Guardian-key evaluation: second signature for `execute_upgrade` (Issues #607, #922 — formally deferred) |
 
 | [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md) | Kani proofs and share-accounting properties (Issue #672) |
 | [`docs/ACCESSIBILITY.md`](docs/ACCESSIBILITY.md) | WCAG 2.1 AA statement, axe-core CI, and screen-reader checklist (Issue #668) |
@@ -533,21 +546,29 @@ The deployment script will:
 
 ### Testnet
 
+There is no dedicated testnet script. `scripts/deploy-devnet.sh` is the only
+non-mainnet deployment script; it reads `SOROBAN_RPC_URL` and
+`SOROBAN_NETWORK_PASSPHRASE` from the environment, so point those at the
+testnet endpoints to deploy there:
+
 ```bash
-# Deploy everything to Stellar testnet
-./scripts/deploy.sh --network testnet
+# Run `./scripts/deploy-devnet.sh --help` for all options
+export SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+export SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+./scripts/deploy-devnet.sh
 ```
 
 ### Mainnet
 ⚠️ **CRITICAL:** Before deploying to Stellar mainnet, you must complete and sign off on all items in the [Mainnet Deployment Checklist](docs/MAINNET_CHECKLIST.md) (including separate keys setup, TVL limits, Blend pool verification, pause drills, and multisig governance plans).
 
 ```bash
-# Ensure all tests pass first
+# Ensure contract and npm package workspace tests pass first
 cargo test
+npm ci
 npm test
 
 # Deploy to mainnet
-./scripts/deploy.sh --network mainnet
+./scripts/deploy-mainnet.sh
 ```
 ## Infrastructure (Recommended)
 
@@ -562,8 +583,8 @@ Webhook: Same server as agent, or a separate serverless function
 ### Phase 1 — Foundation (Current)
 
  Soroban vault contract (deposit, withdraw, rebalance)
- Basic AI agent with Blend protocol integration
- Natural language intent parsing
+ Basic AI agent with Blend protocol integration (`agent/` is implemented, not a planned placeholder)
+ OpenAI intent parsing in the agent, and keyword/regex parsing in the WhatsApp bot
  Web frontend with portfolio dashboard
   WhatsApp bot MVP
 
@@ -593,7 +614,7 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
    git push origin feature/your-feature-name
    ```
 2. **Open a Pull Request** against the `main` branch.
-3. Please make sure to run `cargo test` and `npm test` before submitting.
+3. Please make sure to run `cargo test` (in `neurowealth-vault/`) and `npm test` (in each package you changed, e.g. `agent/` or `whatsapp/`) before submitting.
 
 
 ### On-chain rate limits
@@ -607,3 +628,6 @@ buckets. `batch_deposit` is also bounded by `set_max_batch_size` (default 50
 entries). See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
 [`SECURITY.md`](SECURITY.md) for defaults, storage, events, and operational
 guidance.
+
+
+--

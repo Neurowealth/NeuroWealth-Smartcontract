@@ -13,6 +13,7 @@ extern crate std;
 
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
+use std::vec::Vec;
 
 /// Resets the env budget to zero, runs `f`, and returns (cpu, mem).
 fn measure<F: FnOnce()>(env: &Env, f: F) -> (u64, u64) {
@@ -90,7 +91,9 @@ fn test_index_pruning_keeps_size_bounded() {
     let (users, _) = client.get_users_with_shares(&0, &1000);
     let index_size = users.len() as u32;
 
-    std::println!("[pruning] After {cycle_count} deposit+withdraw_all cycles: index size = {index_size}");
+    std::println!(
+        "[pruning] After {cycle_count} deposit+withdraw_all cycles: index size = {index_size}"
+    );
 
     // With pruning working, the index should have 0 entries (all users withdrawn).
     // Without pruning, it would have 100 entries of dead users.
@@ -115,7 +118,7 @@ fn test_index_tracks_active_users_only() {
     let deposit_amount = 10_000_000_i128;
 
     // Phase 1: Create 50 users with active shares
-    let mut active_users = Vec::new();
+    let mut active_users: std::vec::Vec<Address> = std::vec::Vec::new();
     for _ in 0..50 {
         let token_client = TestTokenClient::new(&env, &usdc_token);
         let user = Address::generate(&env);
@@ -125,7 +128,10 @@ fn test_index_tracks_active_users_only() {
     }
 
     let (users_phase1, _) = client.get_users_with_shares(&0, &1000);
-    std::println!("[pruning] After 50 deposits: index size = {}", users_phase1.len());
+    std::println!(
+        "[pruning] After 50 deposits: index size = {}",
+        users_phase1.len()
+    );
     assert_eq!(users_phase1.len(), 50, "Index should have 50 active users");
 
     // Phase 2: Have 25 of them fully withdraw (prune should remove them)
@@ -134,7 +140,10 @@ fn test_index_tracks_active_users_only() {
     }
 
     let (users_phase2, _) = client.get_users_with_shares(&0, &1000);
-    std::println!("[pruning] After 25 withdraw_all: index size = {}", users_phase2.len());
+    std::println!(
+        "[pruning] After 25 withdraw_all: index size = {}",
+        users_phase2.len()
+    );
     assert_eq!(
         users_phase2.len(),
         25,
@@ -288,15 +297,18 @@ fn test_partial_withdraw_does_not_prune() {
 
     // User should still be in the index
     let (users, _) = client.get_users_with_shares(&0, &1000);
-    let found = users.iter().any(|(addr, _)| addr == &user);
-    assert!(found, "User should remain in index after partial withdrawal");
+    let found = users.iter().any(|(addr, _)| addr == user);
+    assert!(
+        found,
+        "User should remain in index after partial withdrawal"
+    );
 
     // Full withdraw
     client.withdraw_all(&user);
 
     // User should now be pruned
     let (users_after, _) = client.get_users_with_shares(&0, &1000);
-    let found_after = users_after.iter().any(|(addr, _)| addr == &user);
+    let found_after = users_after.iter().any(|(addr, _)| addr == user);
     assert!(
         !found_after,
         "User should be pruned from index after full withdrawal"

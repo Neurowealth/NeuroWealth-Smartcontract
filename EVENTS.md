@@ -163,14 +163,16 @@ pub struct RebalanceFailedEvent {
 ### 4c. HarvestEvent
 **Topic:** `"harvest"` (`TOPIC_HARVEST`)
 
-Emitted when the AI agent compounds accrued yield via `harvest()`. The
-function withdraws from the active protocol and immediately re-supplies,
-so the vault balance returns to the same position with compounded yield.
+Emitted when the AI agent performs a compounding round-trip via `harvest()`.
+The function withdraws the active position and re-supplies it according to the
+active protocol or stored multi-protocol allocation. Harvest does not update
+`TotalAssets`; the event reports the amount actually resupplied, not yield
+realized or the full amount withdrawn.
 
 ```rust
 pub struct HarvestEvent {
-    pub protocol: Symbol,       // The protocol harvested from ("blend" or "dex")
-    pub amount_harvested: i128, // Amount withdrawn and re-deposited
+    pub protocol: Symbol,     // The protocol harvested from ("blend", "dex", or "multi")
+    pub amount_cycled: i128,  // Amount actually resupplied; not a yield amount
 }
 ```
 
@@ -1016,4 +1018,3 @@ pub struct QueueConfigUpdatedEvent {
 | `new_max_size` | `u32` | Maximum number of pending requests the queue can hold |
 | `new_ttl` | `u64` | Expiration time-to-live in seconds before an unfulfilled request expires |
 | `owner` | `Address` | Address of the admin who applied the new configuration |
-

@@ -17,7 +17,7 @@ const CREDENTIAL_PATTERN_REGEX =
 const SENSITIVE_QUERY_PARAM_REGEX = /[?&](?:token|key|secret|password|auth|api_key)=[^&\s]+/gi;
 
 // Matches local filesystem absolute paths or webpack internal paths
-const FILE_PATH_REGEX = /(?:\/[\w\.\-]+)+(?:\.[\w]+)?(?::\d+:\d+)?/g;
+const FILE_PATH_REGEX = /(?:\/[\w\.\-]+)+(?:\.[\w]+)?(?::\d+:\d+)?/;
 
 export interface SanitizedErrorInfo {
   title: string;

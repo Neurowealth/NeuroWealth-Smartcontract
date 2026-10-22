@@ -1,3 +1,5 @@
+import { isMockModeEnabled } from './mockMode';
+
 export interface BrowserTestHarness {
   connectWallet(): Promise<string | null>;
   getNetworkDetails(): Promise<{ networkPassphrase: string }>;
@@ -15,6 +17,6 @@ declare global {
 }
 
 export function getBrowserTestHarness(): BrowserTestHarness | null {
-  if (process.env.NEXT_PUBLIC_E2E_TESTS !== 'true' || typeof window === 'undefined') return null;
+  if (!isMockModeEnabled() || typeof window === 'undefined') return null;
   return window.__NEUROWEALTH_E2E__ ?? null;
 }

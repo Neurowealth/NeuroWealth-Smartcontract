@@ -214,7 +214,9 @@ fn call_schedule_upgrade(env: &Env, contract_id: &Address, agent: &Address) -> b
         "schedule_upgrade",
         (agent.clone(), fake_hash.clone()).into_val(env),
     );
-    let accepted = client.try_schedule_upgrade(&agent.clone(), &fake_hash).is_ok();
+    let accepted = client
+        .try_schedule_upgrade(&agent.clone(), &fake_hash)
+        .is_ok();
     env.mock_all_auths();
     accepted
 }

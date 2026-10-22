@@ -24,6 +24,7 @@ require.cache[messageDeliveryServicePath] = {
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleDeliveryStatusCallback } from '../statusWebhook';
+import { INPUT_LIMITS } from '../inputBounds';
 
 function makeRes() {
   const res: any = {
@@ -75,6 +76,38 @@ describe('handleDeliveryStatusCallback', () => {
 
     assert.equal(res.statusCode, 200);
     assert.equal(res.sent, true);
+  });
+
+  test('forwards a callback field exactly at the limit and drops one byte over before persistence', async () => {
+    const exact = 'S'.repeat(INPUT_LIMITS.providerCallback);
+    const res = makeRes();
+    await handleDeliveryStatusCallback({
+      body: { MessageSid: exact, MessageStatus: 'sent' },
+    } as any, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].messageSid, exact);
+
+    calls.length = 0;
+    const over = `${exact}X`;
+    const payload = `boom-${over}`;
+    await handleDeliveryStatusCallback({
+      body: { MessageSid: 'SM1', MessageStatus: 'failed', ErrorMessage: payload },
+    } as any, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(calls.length, 0);
+  });
+
+  test('drops a malformed provider field before persistence', async () => {
+    const res = makeRes();
+    await handleDeliveryStatusCallback({
+      body: { MessageSid: 'SM1', MessageStatus: 'sent', ErrorMessage: 'bad\uD800' },
+    } as any, res);
+
+    assert.equal(calls.length, 0);
+    assert.equal(res.statusCode, 200);
   });
 
   test('tolerates a missing body', async () => {

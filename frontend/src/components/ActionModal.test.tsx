@@ -108,7 +108,7 @@ describe('ActionModal', () => {
       <ActionModal isOpen onClose={onClose} type="deposit" userPublicKey="GUSER" balance={250} exchangeRate={1.25} />,
     );
 
-    const dialog = screen.getByRole('dialog', { name: 'deposit USDC' });
+    const dialog = screen.getByRole('dialog', { name: /deposit usdc/i });
     expect(dialog).toHaveAttribute('aria-describedby', 'transaction-modal-description');
     expect(document.activeElement).toBe(screen.getByLabelText('Amount (USDC)'));
     expect(document.body.firstElementChild).toHaveAttribute('aria-hidden', 'true');
@@ -317,7 +317,7 @@ describe('ActionModal', () => {
     expect(screen.queryByText(/tx-hash/i)).not.toBeInTheDocument();
   });
 
-  it('keeps an unresolved submitted transaction pending and preserves its hash', async () => {
+  it('keeps an unresolved submitted transaction pending and preserves its hash with a dismiss affordance', async () => {
     sendTransactionMock.mockResolvedValue({ status: 'PENDING', hash: 'tx-hash-still-pending' });
     pollTransactionMock.mockResolvedValue({ status: 'NOT_FOUND' });
 
@@ -328,6 +328,15 @@ describe('ActionModal', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent(/tx-hash-st/i);
     expect(screen.getByRole('button', { name: /confirming transaction/i })).toBeDisabled();
+
+    // Verify "Check status later" affordance exists and clicking it dismisses the locked state
+    const dismissBtn = screen.getByRole('button', { name: /check status later/i });
+    expect(dismissBtn).toBeInTheDocument();
+
+    fireEvent.click(dismissBtn);
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /confirm deposit/i })).toBeInTheDocument();
   });
 
   it('does not show a transaction hash when the network rejects the submission outright', async () => {

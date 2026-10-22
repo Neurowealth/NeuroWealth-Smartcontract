@@ -36,10 +36,19 @@ for migration in supabase/migrations/*.sql; do
 done
 ```
 
-### Schema Deprecation Notice
+### TypeScript Database Types & Verification
 
-`db/schema.sql` is **deprecated** and kept only for reference. It will be removed in a future release.
-Do not edit `db/schema.sql` — all changes must be made as new migrations.
+Canonical TypeScript database types and the Supabase `Database` interface are located in `db/types.ts` and generated deterministically from `supabase/migrations/*.sql`.
+
+To regenerate TypeScript types after adding or updating migrations:
+```bash
+python3 scripts/generate-db-types.py
+```
+
+To verify that checked-in types are in sync and detect schema drift (as run in CI):
+```bash
+python3 scripts/check-schema-drift.py
+```
 
 ## Database Tables
 1. `users`: Stores user Stellar address, hashed phone number (PII encrypted), strategy preference, and creation timestamp.
@@ -50,7 +59,10 @@ Do not edit `db/schema.sql` — all changes must be made as new migrations.
 6. `earnings_history`: Daily aggregated earnings per user.
 7. `audit_logs`: Automatic audit log table populated via PostgreSQL trigger on writes.
 8. `agent_state`: Agent key/value state (event listener cursor, state backups; see agent/src/ledgerCursor.ts).
-9. `whatsapp_wallets`: WhatsApp custodial wallet storage.
+9. `vault_events`: Historical record of processed on-chain ledger events.
+10. `whatsapp_wallets`: WhatsApp custodial wallet storage.
+11. `whatsapp_message_deliveries`: Delivery tracking and retry ledger for outbound WhatsApp notifications.
+12. `agent_rebalance_operations`: Execution state and idempotency tracking for AI rebalance decisions.
 
 ## Security & Compliance
 - **PII Encryption**: Phone numbers are hashed using SHA-256 with a salt before storing in `phone_hash`.

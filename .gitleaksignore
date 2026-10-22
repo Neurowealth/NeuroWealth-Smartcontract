@@ -3,3 +3,8 @@
 # ETHEREUM_USDC_TOKEN_ADDRESS in packages/bridge/.env.example is the PUBLIC
 # mainnet USDC token contract address — not a credential.
 9e8ebfde99bbdb7bfe977aecfcc2617ad63a2cd0:packages/bridge/.env.example:generic-api-key:13
+
+# WhatsApp bot crypto utilities unit test fixtures: dummy encryption keys and salts for testing encryption/decryption routines.
+c8d70b94b685449b4d9709b9abd2e953c1619db1:whatsapp/src/__tests__/cryptoUtils.test.ts:generic-api-key:5
+whatsapp/src/__tests__/cryptoUtils.test.ts:generic-api-key:5
+

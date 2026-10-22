@@ -1,0 +1,10 @@
+# See https://pre-commit.com for more information
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks-secret-scan
+        name: Secret Scan & Env Policy (gitleaks)
+        entry: bash scripts/pre-commit-gitleaks.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-commit]

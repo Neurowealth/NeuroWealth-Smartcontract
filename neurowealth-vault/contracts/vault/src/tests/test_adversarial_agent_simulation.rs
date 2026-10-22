@@ -649,7 +649,7 @@ fn test_agent_rebalance_mutates_only_allowlisted_fields() {
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let before = snapshot_vault_state(&client, &[agent.clone()]);
 
-    client.rebalance(&symbol_short!("none"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
 
     let after = snapshot_vault_state(&client, &[agent.clone()]);
     let changed = diff_vault_state(&before, &after);

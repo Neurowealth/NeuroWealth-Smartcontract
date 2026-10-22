@@ -1,0 +1,11 @@
+{
+  "name": "neurowealth-smartcontract",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "frontend"
+  ],
+  "scripts": {
+    "test": "npm run build --workspace=@neurowealth/vault-client && npm run test --workspaces --if-present"
+  }
+}

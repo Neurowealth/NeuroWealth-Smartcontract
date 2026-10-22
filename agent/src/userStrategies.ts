@@ -28,6 +28,8 @@ export interface CurrentAllocation {
 export interface RebalanceDecision {
   shouldRebalance: boolean;
   targetProtocol?: string;
+  /** APY (percent points) the target protocol is expected to yield. */
+  targetApy?: number;
 }
 
 export type EvaluateYield = (

@@ -21,17 +21,17 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
     <div className="glass-panel rounded-2xl p-6 relative">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h3 className="text-lg font-bold text-white tracking-tight">Portfolio Growth & Yield</h3>
-          <p className="text-xs text-slate-400">Autonomous Soroban vault growth over time</p>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">Portfolio Growth & Yield</h3>
+          <p className="text-xs text-slate-600 dark:text-slate-400">Autonomous Soroban vault growth over time</p>
         </div>
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-            <span className="text-slate-300">Portfolio Value (USDC)</span>
+            <span className="text-slate-700 dark:text-slate-300 font-medium">Portfolio Value (USDC)</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-indigo-500" />
-            <span className="text-slate-300">Accrued Yield</span>
+            <span className="text-slate-700 dark:text-slate-300 font-medium">Accrued Yield</span>
           </div>
         </div>
       </div>
@@ -49,7 +49,7 @@ export const PortfolioChart: React.FC<PortfolioChartProps> = ({ data }) => {
                 <stop offset="95%" stopColor="#6366f1" stopOpacity={0.0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(100, 116, 139, 0.2)" vertical={false} />
             <XAxis dataKey="date" stroke="#64748b" fontSize={12} tickLine={false} />
             <YAxis stroke="#64748b" fontSize={12} tickLine={false} domain={['auto', 'auto']} />
             <Tooltip

@@ -6,21 +6,23 @@ import { MetricsCollector } from "./metrics-collector";
 import { MonitoringConfig, HealthMetrics } from "./types";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+const mockVaultClient = {
+  get_total_assets: jest.fn(),
+  get_total_shares: jest.fn(),
+  get_total_deposits: jest.fn(),
+  is_paused: jest.fn(),
+  get_current_protocol: jest.fn(),
+  get_owner: jest.fn(),
+  get_agent: jest.fn(),
+  get_tvl_cap: jest.fn(),
+  get_user_deposit_cap: jest.fn(),
+  get_pending_upgrade: jest.fn(),
+  get_pending_agent_update: jest.fn(),
+};
+
 // Mock the VaultClient
 jest.mock("@neurowealth/vault-client", () => ({
-  VaultClient: jest.fn(function (config) {
-    this.get_total_assets = jest.fn();
-    this.get_total_shares = jest.fn();
-    this.get_total_deposits = jest.fn();
-    this.is_paused = jest.fn();
-    this.get_current_protocol = jest.fn();
-    this.get_owner = jest.fn();
-    this.get_agent = jest.fn();
-    this.get_tvl_cap = jest.fn();
-    this.get_user_deposit_cap = jest.fn();
-    this.get_pending_upgrade = jest.fn();
-    this.get_pending_agent_update = jest.fn();
-  }),
+  VaultClient: jest.fn(() => mockVaultClient),
   DECIMAL_PLACES: 7,
 }));
 
@@ -52,7 +54,6 @@ jest.mock("pino", () => {
 describe("MetricsCollector", () => {
   let collector: MetricsCollector;
   let mockConfig: MonitoringConfig;
-  let mockVaultClient: any;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -72,8 +73,7 @@ describe("MetricsCollector", () => {
     };
 
     collector = new MetricsCollector(mockConfig);
-    mockVaultClient = (require("@neurowealth/vault-client").VaultClient as jest.Mock)
-      .mock.results[0].value;
+    Object.values(mockVaultClient).forEach((mockFn: any) => mockFn.mockReset());
   });
 
   describe("collectMetrics", () => {

@@ -90,7 +90,10 @@ fn assert_accounting_invariants(
     let total_shares = client.get_total_shares();
     let (idle, deployed) = client.get_asset_breakdown();
 
-    assert!(idle >= 0, "{checkpoint}: idle balance must never be negative");
+    assert!(
+        idle >= 0,
+        "{checkpoint}: idle balance must never be negative"
+    );
     assert!(
         deployed >= 0,
         "{checkpoint}: deployed balance must never be negative"
@@ -109,7 +112,10 @@ fn assert_accounting_invariants(
     for user in users.iter() {
         let shares = client.get_shares(user);
         let balance = client.get_balance(user);
-        assert!(shares >= 0, "{checkpoint}: user shares must never be negative");
+        assert!(
+            shares >= 0,
+            "{checkpoint}: user shares must never be negative"
+        );
         assert!(
             balance >= 0,
             "{checkpoint}: user balance must never be negative"
@@ -160,11 +166,12 @@ fn event_topic_fingerprint(env: &Env) -> soroban_sdk::Vec<Symbol> {
     fingerprint
 }
 
-fn assert_same_event_fingerprint(
-    a: &soroban_sdk::Vec<Symbol>,
-    b: &soroban_sdk::Vec<Symbol>,
-) {
-    assert_eq!(a.len(), b.len(), "event stream length must be deterministic");
+fn assert_same_event_fingerprint(a: &soroban_sdk::Vec<Symbol>, b: &soroban_sdk::Vec<Symbol>) {
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "event stream length must be deterministic"
+    );
     for i in 0..a.len() {
         assert_eq!(
             a.get(i).unwrap(),
@@ -174,9 +181,9 @@ fn assert_same_event_fingerprint(
     }
 }
 
-fn fingerprint_contains(topics: &soroban_sdk::Vec<Symbol>, needle: Symbol) -> bool {
+fn fingerprint_contains(topics: &soroban_sdk::Vec<Symbol>, needle: &Symbol) -> bool {
     for i in 0..topics.len() {
-        if topics.get(i).unwrap() == needle {
+        if topics.get(i).unwrap() == *needle {
             return true;
         }
     }
@@ -204,13 +211,21 @@ fn setup_multi_venue(env: &Env) -> (Address, Address, Address, Address, Address,
 fn setup_deployed_blend(
     env: &Env,
     amount: i128,
-) -> (Address, Address, Address, Address, Address, Address, Address) {
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
     let (vault_id, owner, agent, usdc_token, blend_pool, dex_pool) = setup_multi_venue(env);
     let client = NeuroWealthVaultClient::new(env, &vault_id);
 
     let user = Address::generate(env);
     mint_and_deposit(env, &client, &usdc_token, &user, amount);
-    client.rebalance(&symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
     (
         vault_id, owner, agent, usdc_token, blend_pool, dex_pool, user,
@@ -254,7 +269,7 @@ fn run_full_lifecycle(env: &Env) -> soroban_sdk::Vec<Symbol> {
     assert_accounting_invariants(&client, &users, "after deposit");
 
     // ── 2. Deployment (rotate funds into Blend) ───────────────────────────
-    client.rebalance(&symbol_short!("blend"), &850_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &850_i128, &0_i128);
 
     let after_deploy = snapshot(&client, &alice);
     assert_eq!(after_deploy.current_protocol, symbol_short!("blend"));
@@ -285,7 +300,10 @@ fn run_full_lifecycle(env: &Env) -> soroban_sdk::Vec<Symbol> {
     client.withdraw(&alice, &PARTIAL_EXIT);
 
     let after_partial = snapshot(&client, &alice);
-    assert_eq!(after_partial.total_assets, reported_with_yield - PARTIAL_EXIT);
+    assert_eq!(
+        after_partial.total_assets,
+        reported_with_yield - PARTIAL_EXIT
+    );
     assert_eq!(after_partial.deployed, reported_with_yield - PARTIAL_EXIT);
     assert_eq!(after_partial.idle, 0);
     assert!(
@@ -300,15 +318,37 @@ fn run_full_lifecycle(env: &Env) -> soroban_sdk::Vec<Symbol> {
         after_partial.user_balance < after_yield.user_balance,
         "the exiting user's claim must shrink"
     );
-    assert_eq!(blend.supplied(&usdc), reported_with_yield - PARTIAL_EXIT);
+    // NOTE: `blend.supplied(&usdc)` is the mock's own principal-only ledger —
+    // it is incremented/decremented solely by `submit_with_allowance`/`submit`
+    // (supply/withdraw) calls, and step 3's `token.mint(&blend_pool, &YIELD)`
+    // simulates yield by minting raw tokens directly into the pool, bypassing
+    // that ledger entirely (the real contract's own `deployed` accounting,
+    // asserted above via `get_asset_breakdown`, DOES include the yield — it
+    // reads the pool's live token balance, not this principal-only counter).
+    // So after this withdrawal the ledger reflects principal only:
+    // DEPOSIT_TOTAL minus the amount actually pulled out, not
+    // reported_with_yield minus PARTIAL_EXIT.
+    assert_eq!(blend.supplied(&usdc), DEPOSIT_TOTAL - PARTIAL_EXIT);
     assert_accounting_invariants(&client, &users, "after partial exit");
 
     // ── 5. Rotation: Blend → DEX ──────────────────────────────────────────
-    client.rebalance(&symbol_short!("dex"), &900_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &900_i128, &0_i128);
 
     let after_rotation = snapshot(&client, &alice);
     assert_eq!(after_rotation.current_protocol, symbol_short!("dex"));
-    assert_eq!(blend.supplied(&usdc), 0, "rotation must fully exit the old venue");
+    // As in step 4 above, `blend.supplied(&usdc)` is the mock's
+    // principal-only ledger: it never saw the `YIELD` that step 3's
+    // `token.mint(&blend_pool, &YIELD)` added directly to the pool's raw
+    // token balance. A full exit withdraws that real (yield-inclusive)
+    // balance — which is what `after_rotation.deployed`/`dex.balance` below
+    // confirm landed correctly in DEX — so the principal-only ledger is left
+    // exactly `YIELD` below zero, not at zero.
+    assert_eq!(
+        blend.supplied(&usdc),
+        -YIELD,
+        "rotation must fully exit the old venue (mock ledger reflects \
+         principal minus the yield it never tracked)"
+    );
     assert_eq!(dex.balance(&usdc, &vault_id), after_partial.deployed);
     assert_eq!(after_rotation.idle, 0);
     assert_eq!(after_rotation.deployed, after_partial.deployed);
@@ -320,7 +360,7 @@ fn run_full_lifecycle(env: &Env) -> soroban_sdk::Vec<Symbol> {
     assert_accounting_invariants(&client, &users, "after blend->dex rotation");
 
     // ── 6. Rotation: DEX → idle ───────────────────────────────────────────
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     let after_exit = snapshot(&client, &alice);
     assert_eq!(after_exit.current_protocol, symbol_short!("none"));
@@ -365,7 +405,7 @@ fn test_full_rotation_lifecycle_preserves_accounting_invariants() {
         symbol_short!("rebalance"),
     ] {
         assert!(
-            fingerprint_contains(&fingerprint, topic),
+            fingerprint_contains(&fingerprint, &topic),
             "lifecycle must emit the {topic:?} topic"
         );
     }
@@ -396,7 +436,7 @@ fn test_failed_rotation_entry_leg_rolls_back_all_accounting() {
     env.mock_all_auths();
 
     let amount = 100_000_000_i128;
-    let (vault_id, _owner, _agent, usdc, blend_pool, dex_pool, user) =
+    let (vault_id, _owner, agent, usdc, blend_pool, dex_pool, user) =
         setup_deployed_blend(&env, amount);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend = MockBlendPoolClient::new(&env, &blend_pool);
@@ -409,8 +449,11 @@ fn test_failed_rotation_entry_leg_rolls_back_all_accounting() {
 
     // Negative supply limit makes the mock reject the whole supply.
     dex.set_max_supply_limit(&-1_i128);
-    let result = client.try_rebalance(&symbol_short!("dex"), &850_i128, &1_i128);
-    assert!(result.is_err(), "a blocked DEX entry must fail the rotation");
+    let result = client.try_rebalance(&agent, &symbol_short!("dex"), &850_i128, &1_i128);
+    assert!(
+        result.is_err(),
+        "a blocked DEX entry must fail the rotation"
+    );
 
     assert_eq!(
         snapshot(&client, &user),
@@ -435,7 +478,7 @@ fn test_failed_rotation_exit_leg_rolls_back_all_accounting() {
     env.mock_all_auths();
 
     let amount = 100_000_000_i128;
-    let (vault_id, _owner, _agent, usdc, blend_pool, dex_pool, user) =
+    let (vault_id, _owner, agent, usdc, blend_pool, dex_pool, user) =
         setup_deployed_blend(&env, amount);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend = MockBlendPoolClient::new(&env, &blend_pool);
@@ -449,7 +492,7 @@ fn test_failed_rotation_exit_leg_rolls_back_all_accounting() {
     // The Blend bug/illiquidity scenario: only 40 USDC of a 100 USDC exit can
     // be realized, below the caller's 50 USDC floor.
     blend.set_max_withdraw_limit(&40_000_000_i128);
-    let result = client.try_rebalance(&symbol_short!("dex"), &850_i128, &50_000_000_i128);
+    let result = client.try_rebalance(&agent, &symbol_short!("dex"), &850_i128, &50_000_000_i128);
     assert!(
         result.is_err(),
         "an under-filled exit below min_out must fail the rotation"

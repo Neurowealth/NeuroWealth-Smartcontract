@@ -2,10 +2,11 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { X, ArrowDownLeft, ArrowUpRight, Loader2, CheckCircle2, ShieldAlert, ExternalLink } from 'lucide-react';
 import { ErrorBoundary } from './ErrorBoundary';
 import { signWithFreighter, WalletSigningError, type WalletErrorKind } from '@/lib/freighter';
 import { getBrowserTestHarness } from '@/lib/browserTestHarness';
+import { useTranslations } from 'next-intl';
 import {
   rpc,
   Contract,
@@ -36,13 +37,6 @@ interface ActionSubmission {
 
 type ActionSubmissions = Record<ActionType, ActionSubmission>;
 
-const TX_ERROR_COPY: Record<TxErrorKind, string> = {
-  wrong_network: 'Wrong network. Switch Freighter to the required Stellar network, then try again.',
-  wallet_disconnected: 'Wallet not connected. Reconnect Freighter and grant this app access, then try again.',
-  submission_failed: 'Transaction failed. Please try again.',
-  unknown: 'Transaction failed. Please try again.',
-};
-
 interface ActionModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -64,6 +58,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   onOptimisticBalanceChange,
   onTransactionConfirmed,
 }) => {
+  const t = useTranslations('ActionModal');
   const [amount, setAmount] = useState<string>('');
   const activeSubmissions = useRef<Record<ActionType, string | null>>({ deposit: null, withdraw: null });
   const [submissions, setSubmissions] = useState<ActionSubmissions>({
@@ -179,7 +174,13 @@ export const ActionModal: React.FC<ActionModalProps> = ({
           return;
         }
         const kind = err instanceof WalletSigningError && err.kind !== 'user_rejected' ? err.kind : 'unknown';
-        setTxError({ kind, message: TX_ERROR_COPY[kind] });
+        const errorMessages: Record<TxErrorKind, string> = {
+          wrong_network: t('wrongNetwork'),
+          wallet_disconnected: t('walletDisconnected'),
+          submission_failed: t('submissionFailed'),
+          unknown: t('transactionFailed'),
+        };
+        setTxError({ kind, message: errorMessages[kind] });
         canRetry = true;
         return;
       }
@@ -194,7 +195,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         : await server!.sendTransaction(TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE));
 
       if (sendResult.status === 'ERROR' || sendResult.status === 'TRY_AGAIN_LATER') {
-        setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
+        setTxError({ kind: 'submission_failed', message: t('submissionFailed') });
         canRetry = true;
         return;
       }
@@ -217,11 +218,12 @@ export const ActionModal: React.FC<ActionModalProps> = ({
       } else if (confirmation.status === 'FAILED') {
         setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
         onOptimisticBalanceChange?.(-optimisticBalanceDelta);
+        setTxError({ kind: 'submission_failed', message: t('submissionFailed') });
         canRetry = true;
       }
     } catch (err) {
       console.error('Transaction execution failed:', err);
-      setTxError({ kind: 'unknown', message: TX_ERROR_COPY.unknown });
+      setTxError({ kind: 'unknown', message: t('transactionFailed') });
       canRetry = !submissionStarted;
     } finally {
       if (canRetry && activeSubmissions.current[actionType] === requestId) {
@@ -232,6 +234,18 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         }));
       }
     }
+  };
+
+  const handleDismissPending = () => {
+    activeSubmissions.current[type] = null;
+    setSubmissions((current) => ({
+      ...current,
+      [type]: { phase: 'idle', requestId: null },
+    }));
+    setAmount('');
+    setTxHash('');
+    setTxSuccess(false);
+    setTxError(null);
   };
 
   const handleResetAndClose = () => {
@@ -273,12 +287,12 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             first?.focus();
           }
         }}
-        className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200"
+        className="glass-panel w-full max-w-md rounded-2xl p-6 relative border border-slate-200 dark:border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200"
       >
         <button
           onClick={handleResetAndClose}
           aria-label="Close transaction dialog"
-          className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+          className="absolute top-4 right-4 text-slate-400 hover:text-slate-800 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
         >
           <X size={20} />
         </button>
@@ -289,21 +303,21 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
               <CheckCircle2 size={36} />
             </div>
-            <h3 id="transaction-modal-title" className="text-xl font-bold text-white mb-2">
-              {type === 'deposit' ? 'Deposit Successful!' : 'Withdrawal Successful!'}
+            <h3 id="transaction-modal-title" className="text-xl font-bold text-slate-900 dark:text-white mb-2">
+              {type === 'deposit' ? t('depositSuccessful') : t('withdrawalSuccessful')}
             </h3>
-            <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">Transaction confirmed.</p>
-            <p id="transaction-modal-description" className="text-sm text-slate-400 mb-4 font-mono">
-              Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+            <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{t('transactionConfirmed')}</p>
+            <p id="transaction-modal-description" className="text-sm text-slate-600 dark:text-slate-400 mb-4 font-mono">
+              {t('transactionHash')} {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
             </p>
             <p className="text-xs text-emerald-400 bg-emerald-500/10 py-2 px-3 rounded-lg border border-emerald-500/20 mb-6">
-              Confirmed on Stellar network
+              {t('confirmedOnNetwork')}
             </p>
             <button
               onClick={handleResetAndClose}
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold py-3 rounded-xl transition-all"
             >
-              Done
+              {t('done')}
             </button>
           </div>
         ) : (
@@ -319,19 +333,19 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 </div>
               )}
               <div>
-                <h3 id="transaction-modal-title" className="text-lg font-bold text-white capitalize">
-                  {type} USDC
+                <h3 id="transaction-modal-title" className="text-lg font-bold text-slate-900 dark:text-white capitalize">
+                  {type === 'deposit' ? t('depositUsdc') : t('withdrawUsdc')}
                 </h3>
-                <p id="transaction-modal-description" className="text-xs text-slate-400">
-                  {type === 'deposit' ? 'Mint shares in Soroban vault' : 'Burn shares & withdraw USDC'}
+                <p id="transaction-modal-description" className="text-xs text-slate-600 dark:text-slate-400">
+                  {type === 'deposit' ? t('mintShares') : t('burnShares')}
                 </p>
               </div>
             </div>
 
             <div className="mb-4">
-              <div className="flex justify-between text-xs text-slate-400 mb-1.5 font-medium">
-                <label htmlFor="transaction-amount">Amount (USDC)</label>
-                <span>Available: {balance.toFixed(2)} USDC</span>
+              <div className="flex justify-between text-xs text-slate-600 dark:text-slate-400 mb-1.5 font-medium">
+                <label htmlFor="transaction-amount">{t('amountLabel')}</label>
+                <span>{t('available')} {balance.toFixed(2)} USDC</span>
               </div>
               <div className="relative">
                 <input
@@ -346,31 +360,31 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                   placeholder="0.00"
                   aria-invalid={Boolean(txError)}
                   aria-describedby={txError ? 'transaction-amount-error' : undefined}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl py-3 px-4 text-white font-mono text-lg focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl py-3 px-4 text-slate-900 dark:text-white font-mono text-lg focus:outline-none focus:border-emerald-500 transition-colors"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setAmount(type === 'withdraw' ? balance.toString() : '100')}
-                  className="absolute right-3 top-3 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded"
+                  className="absolute right-3 top-3 text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 dark:hover:text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded"
                 >
-                  MAX
+                  {t('max')}
                 </button>
               </div>
             </div>
 
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-300">
+            <div className="bg-slate-100 dark:bg-slate-900/80 p-3 rounded-xl border border-slate-200 dark:border-slate-800 text-xs space-y-2 mb-6 font-mono text-slate-700 dark:text-slate-300">
               <div className="flex justify-between">
-                <span className="text-slate-400">Exchange Rate:</span>
-                <span>{exchangeRate.toFixed(4)} USDC / Share</span>
+                <span className="text-slate-600 dark:text-slate-400">{t('exchangeRate')}</span>
+                <span>{exchangeRate.toFixed(4)} {t('usdcPerShare')}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Estimated Shares:</span>
-                <span className="text-emerald-400">{estimatedShares} NV-SHARES</span>
+                <span className="text-slate-600 dark:text-slate-400">{t('estimatedShares')}</span>
+                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{estimatedShares} {t('nvShares')}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-400">Network Fee:</span>
-                <span className="text-slate-400">&lt; 0.00001 XLM</span>
+                <span className="text-slate-600 dark:text-slate-400">{t('networkFee')}</span>
+                <span className="text-slate-600 dark:text-slate-400">&lt; 0.00001 XLM</span>
               </div>
             </div>
 
@@ -392,11 +406,31 @@ export const ActionModal: React.FC<ActionModalProps> = ({
             )}
 
             {loading && submission.phase === 'confirming' && txHash && (
-              <div role="status" className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-4">
-                <p>Transaction submitted; confirmation is still pending.</p>
-                <p className="mt-1 font-mono text-amber-200/80">
-                  Transaction Hash: {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
-                </p>
+              <div role="status" className="text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-4 space-y-2">
+                <div>
+                  <p className="font-semibold">{t('transactionSubmitted')}</p>
+                  <p className="mt-1 font-mono text-amber-800 dark:text-amber-200/80">
+                    {t('transactionHash')} {txHash.substring(0, 12)}...{txHash.substring(txHash.length - 8)}
+                  </p>
+                </div>
+                <div className="flex items-center justify-between pt-2 border-t border-amber-500/20">
+                  <a
+                    href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[11px] text-amber-700 dark:text-amber-200 hover:underline flex items-center gap-1"
+                  >
+                    <span>View on Explorer</span>
+                    <ExternalLink size={10} />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleDismissPending}
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-800 dark:text-amber-200 rounded-lg transition-colors"
+                  >
+                    {t('checkStatusLater')}
+                  </button>
+                </div>
               </div>
             )}
 
@@ -414,13 +448,13 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 <>
                   <Loader2 className="animate-spin" size={18} />
                   <span>
-                    {submission.phase === 'preparing' && 'Preparing transaction...'}
-                    {submission.phase === 'signing' && 'Signing with Freighter...'}
-                    {submission.phase === 'confirming' && 'Confirming transaction...'}
+                    {submission.phase === 'preparing' && t('preparingTransaction')}
+                    {submission.phase === 'signing' && t('signingWithFreighter')}
+                    {submission.phase === 'confirming' && t('confirmingTransaction')}
                   </span>
                 </>
               ) : (
-                <span>Confirm {type === 'deposit' ? 'Deposit' : 'Withdrawal'}</span>
+                <span>{type === 'deposit' ? t('confirmDeposit') : t('confirmWithdrawal')}</span>
               )}
             </button>
           </form>

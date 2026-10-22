@@ -1,0 +1,267 @@
+name: Post-Upgrade Smoke Test (Devnet)
+
+on:
+  # 1. Scheduled run against devnet (daily at 04:00 UTC)
+  schedule:
+    - cron: "0 4 * * *"
+
+  # 2. Post-deploy: trigger automatically when main branch receives contract changes
+  push:
+    branches:
+      - main
+    paths:
+      - 'neurowealth-vault/contracts/**'
+      - 'scripts/post-upgrade-smoke.sh'
+      - 'scripts/e2e-devnet.sh'
+      - '.stellar-version'
+
+  # 3. Post-deploy: trigger automatically after the primary CI workflow finishes on main
+  workflow_run:
+    workflows: ["CI"]
+    branches: ["main"]
+    types: [completed]
+
+  # 4. Manual execution with optional parameters
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Stellar Network to test against (testnet/devnet)"
+        required: false
+        default: "testnet"
+      contract_id:
+        description: "Vault Contract ID (optional; leave empty to deploy fresh to devnet)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  post-upgrade-smoke:
+    name: Post-Upgrade Smoke Validation (Devnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # If triggered by workflow_run, only run if the parent CI succeeded
+    if: |
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+      SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Read Stellar CLI version
+        id: cli-version
+        run: |
+          VERSION=$(cat .stellar-version | tr -d '[:space:]')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: 🦀 Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: ⚡ Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: neurowealth-vault
+
+      - name: 🛠️ Install Stellar CLI
+        run: |
+          VERSION="${{ steps.cli-version.outputs.version }}"
+          if [[ -x "$HOME/.local/bin/stellar" ]]; then
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            stellar --version
+            exit 0
+          fi
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${VERSION}/stellar-cli-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz
+          mv stellar "$HOME/.local/bin/stellar"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          stellar --version
+
+      - name: 🔧 Install wasm-opt
+        run: cargo install wasm-opt --locked
+
+      - name: 🏗️ Build contract WASM (MVP-compatible)
+        working-directory: neurowealth-vault
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/neurowealth-target
+        run: |
+          RUSTFLAGS="-C target-cpu=mvp" cargo build \
+            -p neurowealth-vault \
+            --target wasm32-unknown-unknown \
+            --release
+
+          WASM_DIR="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release"
+          WASM_FILE="$WASM_DIR/neurowealth_vault.wasm"
+          wasm-opt --strip-target-features \
+            "$WASM_FILE" \
+            -o "$WASM_FILE"
+
+      - name: 🔑 Make scripts executable
+        run: chmod +x scripts/*.sh scripts/*.py
+
+      - name: 🧪 Execute post-upgrade smoke validation
+        id: smoke-sweep
+        run: |
+          mkdir -p scripts/e2e-artifacts
+          TARGET_CID="${{ inputs.contract_id }}"
+          TARGET_NET="${{ inputs.network || 'testnet' }}"
+
+          if [[ -n "$TARGET_CID" ]]; then
+            echo "::group::Running post-upgrade smoke test against existing contract: $TARGET_CID ($TARGET_NET)"
+            if ! stellar keys address e2e-deployer &>/dev/null; then
+              echo "Generating identity for read-only getter invocations..."
+              stellar keys generate e2e-deployer --network "$TARGET_NET" --fund 2>/dev/null || true
+            fi
+            ./scripts/post-upgrade-smoke.sh \
+              --mode verify \
+              --contract-id "$TARGET_CID" \
+              --network "$TARGET_NET" \
+              --source e2e-deployer \
+              --output scripts/e2e-artifacts/post_upgrade_smoke.txt
+            echo "::endgroup::"
+          else
+            echo "::group::E2E Devnet Deployment & Upgrade Validation"
+            ./scripts/e2e-devnet.sh 2>&1 | tee scripts/e2e-artifacts/full_output.log
+            echo "::endgroup::"
+
+            echo "::group::Post-Upgrade Getter Smoke Sweep Verification"
+            if [[ -f scripts/e2e-artifacts/contract_id.txt ]]; then
+              CID=$(cat scripts/e2e-artifacts/contract_id.txt | tr -d '[:space:]')
+              echo "Verifying getter invariants for deployed vault: $CID"
+              ./scripts/post-upgrade-smoke.sh \
+                --mode verify \
+                --contract-id "$CID" \
+                --network "$TARGET_NET" \
+                --source e2e-deployer \
+                --output scripts/e2e-artifacts/post_upgrade_smoke.txt
+            else
+              echo "❌ ERROR: contract_id.txt was not produced during deployment" >&2
+              exit 1
+            fi
+            echo "::endgroup::"
+          fi
+
+      - name: 📤 Upload smoke test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-upgrade-smoke-artifacts
+          path: scripts/e2e-artifacts/
+          retention-days: 14
+
+      - name: 📋 Report failure to Step Summary
+        if: failure()
+        run: |
+          echo "## ❌ Devnet Post-Upgrade Smoke Test Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The post-upgrade smoke validation sweep detected getter errors or state inconsistencies." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ -f scripts/e2e-artifacts/post_upgrade_smoke.txt ]]; then
+            echo "### Smoke Sweep Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat scripts/e2e-artifacts/post_upgrade_smoke.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [[ -f scripts/e2e-artifacts/contract_id.txt ]]; then
+            CID=$(cat scripts/e2e-artifacts/contract_id.txt | tr -d '[:space:]')
+            echo "### References" >> $GITHUB_STEP_SUMMARY
+            echo "- **Contract ID:** \`$CID\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Explorer:** [View on StellarExpert](https://stellar.expert/explorer/testnet/contract/$CID)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🚨 Notify maintainers on failure
+        # Acceptance criteria: Failures notify maintainers
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 Devnet post-upgrade smoke test failure';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const trigger = context.eventName;
+
+            let failureSnippet = '';
+            const fs = require('fs');
+            const reportPath = 'scripts/e2e-artifacts/post_upgrade_smoke.txt';
+            if (fs.existsSync(reportPath)) {
+              const content = fs.readFileSync(reportPath, 'utf8');
+              const lines = content.split('\n').filter(l => l.includes('[FAIL]') || l.includes('ERROR'));
+              if (lines.length > 0) {
+                failureSnippet = '\n\n**Failed checks:**\n```\n' + lines.slice(0, 15).join('\n') + '\n```';
+              }
+            }
+
+            let contractId = 'N/A';
+            const cidPath = 'scripts/e2e-artifacts/contract_id.txt';
+            if (fs.existsSync(cidPath)) {
+              contractId = fs.readFileSync(cidPath, 'utf8').trim();
+            }
+
+            const body = [
+              '## Post-Upgrade Smoke Test Failure Detected on Devnet',
+              '',
+              `The post-upgrade smoke test sweep failed during a **${trigger}** run.`,
+              '',
+              `- **Run URL:** ${runUrl}`,
+              `- **Trigger:** \`${trigger}\``,
+              `- **Contract ID:** \`${contractId}\``,
+              failureSnippet,
+              '',
+              '### Action Required',
+              '1. Inspect the run logs and downloaded `post-upgrade-smoke-artifacts`.',
+              '2. Verify whether a recent upgrade broke storage layout, modified getter return types, or introduced contract regressions.',
+              '3. Reproduce locally using `./scripts/post-upgrade-smoke.sh --mode verify --contract-id <ID>`.',
+              '',
+              '/cc @maintainers'
+            ].join('\n');
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const existing = issues.find((issue) => issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `⚠️ Still failing as of latest run: ${runUrl} (trigger: ${trigger}):\n${failureSnippet}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['bug', 'ci'],
+              });
+            }
+
+      - name: ✅ Report success to Step Summary
+        if: success()
+        run: |
+          echo "## ✅ Devnet Post-Upgrade Smoke Test Passed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All read-only vault getters responded without trapping and returned valid, consistent state." >> $GITHUB_STEP_SUMMARY
+          if [[ -f scripts/e2e-artifacts/contract_id.txt ]]; then
+            CID=$(cat scripts/e2e-artifacts/contract_id.txt | tr -d '[:space:]')
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Verified Contract ID:** \`$CID\`" >> $GITHUB_STEP_SUMMARY
+          fi

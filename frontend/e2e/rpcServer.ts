@@ -10,11 +10,45 @@ export interface RpcRequestRecord {
 export interface LocalRpcServer {
   url: string;
   requests: RpcRequestRecord[];
+  /**
+   * Simulates the agent submitting an on-chain rebalance for a scenario
+   * (#934). The agent calls Soroban directly, never through the browser
+   * wallet, so tests drive this the same way instead of going through the
+   * page.
+   */
+  rebalance(scenario: string, params: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
 }
 
+interface ContractState {
+  strategy: string;
+  exchangeRate: number;
+  totalAssets: number;
+  totalShares: number;
+}
+
+const DEFAULT_CONTRACT_STATE: ContractState = {
+  strategy: 'balanced',
+  exchangeRate: 12_500_000,
+  totalAssets: 1_250_000_000,
+  totalShares: 1_000_000_000,
+};
+
 export async function startLocalRpcServer(): Promise<LocalRpcServer> {
   const requests: RpcRequestRecord[] = [];
+  // Per-scenario mutable contract state, so a scenario can simulate the
+  // agent submitting an on-chain rebalance between a deposit and a
+  // withdrawal (#934) without affecting other scenarios/tests.
+  const contractState = new Map<string, ContractState>();
+  const stateFor = (scenario: string): ContractState => {
+    let state = contractState.get(scenario);
+    if (!state) {
+      state = { ...DEFAULT_CONTRACT_STATE };
+      contractState.set(scenario, state);
+    }
+    return state;
+  };
+
   const server: Server = createServer((request, response) => {
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('Access-Control-Allow-Headers', 'content-type');
@@ -41,14 +75,25 @@ export async function startLocalRpcServer(): Promise<LocalRpcServer> {
           response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'User rejected signature' }));
           return;
         } else if (method === 'simulateContractCall') {
+          const state = stateFor(scenario);
           const values: Record<string, unknown> = {
             get_balance: 1_000_000_000,
-            get_user_strategy: 'balanced',
-            get_exchange_rate: 12_500_000,
-            get_total_assets: 1_250_000_000,
-            get_total_shares: 1_000_000_000,
+            get_user_strategy: state.strategy,
+            get_exchange_rate: state.exchangeRate,
+            get_total_assets: state.totalAssets,
+            get_total_shares: state.totalShares,
           };
           result = values[String(params.method)];
+        } else if (method === 'rebalance') {
+          // Simulates the agent submitting an on-chain rebalance directly
+          // against the sandbox RPC (the agent never goes through the
+          // browser wallet), updating the state subsequent contract reads
+          // observe for this scenario.
+          const state = stateFor(scenario);
+          if (typeof params.strategy === 'string') state.strategy = params.strategy;
+          if (typeof params.totalAssets === 'number') state.totalAssets = params.totalAssets;
+          if (typeof params.totalShares === 'number') state.totalShares = params.totalShares;
+          result = { status: 'SUCCESS' };
         } else if (method === 'simulateTransaction' && scenario === 'simulation-failed') {
           response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'Transaction simulation failed' }));
           return;
@@ -69,9 +114,19 @@ export async function startLocalRpcServer(): Promise<LocalRpcServer> {
 
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as AddressInfo;
+  const url = `http://127.0.0.1:${address.port}/rpc`;
   return {
-    url: `http://127.0.0.1:${address.port}/rpc`,
+    url,
     requests,
+    rebalance: async (scenario, params) => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: 'rebalance', params, scenario }),
+      });
+      const data = await response.json() as { error?: string };
+      if (data.error) throw new Error(data.error);
+    },
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }

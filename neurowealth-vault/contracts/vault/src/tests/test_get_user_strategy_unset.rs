@@ -54,10 +54,7 @@ fn test_get_user_strategy_after_deposit_without_set_returns_default() {
 
     // User still has shares (deposit was successful)
     let shares = client.get_shares(&user);
-    assert!(
-        shares > 0,
-        "user should have positive shares after deposit"
-    );
+    assert!(shares > 0, "user should have positive shares after deposit");
 
     // Verify token balance was transferred
     assert_eq!(

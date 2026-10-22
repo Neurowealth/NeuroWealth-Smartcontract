@@ -194,7 +194,8 @@ The AI agent can move funds between protocols via `rebalance()`, but is constrai
 The contract owner can upgrade the contract code. To protect against malicious or accidental instant code changes, upgrade risk is mitigated via a mandatory two-step timelock mechanism:
 - **Two-Step Timelock**: Upgrades must first be scheduled via `schedule_upgrade(new_wasm_hash)`, initiating a timelock delay before `execute_upgrade()` can be called.
 - **Cancellation Window**: During the timelock window, the owner or security monitoring can invoke `cancel_upgrade()` to abort a compromised or erroneous upgrade proposal.
-- **Owner Multi-Sig Recommended**: For mainnet deployment, owner authority should be held by a multi-sig account.
+- **Owner Multi-Sig Governance**: For mainnet deployment, owner authority must be held by a Stellar native multi-sig account (e.g. 2-of-3 threshold).
+- **Guardian Key Evaluation & Formal Deferral (Issues #607, #922)**: A contract-level second-signature pattern (`DataKey::Guardian` gating `execute_upgrade`) was evaluated in [`docs/GUARDIAN_KEY_DESIGN.md`](docs/GUARDIAN_KEY_DESIGN.md) and formally deferred in favor of native Stellar protocol multi-sig. Native multi-sig protects all owner actions at the ledger level rather than adding bespoke contract logic for upgrades alone.
 
 ### 5. State Rent & TTL Expiry
 
@@ -254,6 +255,57 @@ idle and are not supplied to or redeemed from the USDC-only Blend/DEX
 integrations. Protocol clients independently enforce the configured token
 before querying token balances or calling a pool.
 
+### 8. Yield Sniping Protection (Issue #975)
+
+**Threat**: Yield reaches the share price only when the agent calls `update_total_assets`,
+which can raise `TotalAssets` by any amount up to the real balance in one step.
+With `MinHoldingPeriod` defaulting to 0, anyone watching the mempool or the agent's
+schedule could deposit just before the update and withdraw right after, capturing
+yield accrued over a period they were not invested.
+
+**Mitigation**: The vault now initializes with a non-zero default `MinHoldingPeriod`
+of 120 ledgers (~10 minutes). This prevents same-block deposit/withdraw cycles
+that would allow yield sniping. The owner can adjust this period via `set_min_holding_period`
+if needed for operational reasons, but the default provides baseline protection.
+
+**Impact**: Attackers attempting to snipe yield must now wait at least 120 ledgers
+between deposit and withdrawal, making the attack unprofitable for typical yield
+reporting intervals.
+
+### 9. Decrease Cap Configuration (Issue #974)
+
+**Threat**: `update_total_assets(agent, new_total, allow_decrease, max_decrease_bps)`
+capped a loss report at `max(max_decrease_bps, 100)` bps of the old total. The cap
+was a caller-supplied argument, so the caller could pass `10_000` and report a 100%
+loss in one call. The only safeguard was the owner co-sign requirement.
+
+**Mitigation**: The decrease cap is now stored in owner-configured storage
+(`DataKey::MaxDecreaseBps`) with a sane default of 1000 bps (10%) and a hard
+ceiling of 10_000 bps (100%). The caller-supplied argument in `update_total_assets`
+is ignored. The owner can configure the cap via `set_max_decrease_bps`, but cannot
+exceed the hard ceiling.
+
+**Impact**: Even with owner co-sign, a single transaction cannot report a loss
+exceeding the configured cap (default 10%). Repeated calls cannot chain past the
+limit without additional owner authorization for each call.
+
+### 10. Zero-Assets-With-Shares Protection (Issue #973)
+
+**Threat**: `convert_to_shares_internal` used a bootstrap 1:1 rate when
+`total_shares == 0 || total_assets == 0`. If shares were outstanding but assets
+were zero (e.g., after a full loss report, or dust shares remaining after rounding),
+a new depositor would get `amount` shares while existing holders, whose shares were
+worth nothing, would immediately own a pro-rata slice of the new deposit.
+
+**Mitigation**: When `total_shares > 0 && total_assets == 0`, deposits are rejected
+with the typed error `VaultError::DepositRejectedZeroAssetsWithShares`. This prevents
+the dilution attack. The vault must be in a recovery mode (owner intervention) to
+accept new deposits in this state.
+
+**Impact**: New depositors cannot be diluted by existing worthless shares. The vault
+requires explicit recovery action (e.g., owner-initiated loss write-down or share
+restructuring) before accepting new deposits after a total loss event.
+
 ## Centralization-Risk Register
 
 This register documents every owner-only and agent-only capability, the blast radius if the corresponding key is compromised, and the existing mitigation status.
@@ -281,6 +333,8 @@ This register documents every owner-only and agent-only capability, the blast ra
 | update_agent | yes | - | - | - |
 | confirm_agent_update | yes | - | - | - |
 | cancel_agent_update | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
 | update_total_assets | - | yes | - | - |
 | deposit | - | - | yes | - |
 | withdraw | - | - | yes | - |
@@ -290,6 +344,7 @@ This register documents every owner-only and agent-only capability, the blast ra
 | pause | yes | - | - | - |
 | emergency_pause | yes | - | - | - |
 | unpause | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
 | set_caps | yes | - | - | - |
 | set_tvl_cap | yes | - | - | - |
 | set_user_deposit_cap | yes | - | - | - |
@@ -303,6 +358,10 @@ This register documents every owner-only and agent-only capability, the blast ra
 | cancel_upgrade | yes | - | - | - |
 | set_blend_pool | yes | - | - | - |
 | set_dex_pool | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| cancel_migration_target | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
@@ -311,12 +370,81 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |
 | submit_mev_report | - | yes | - | - |
-| get_mev_stats | - | - | - | anyone |
 | set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
-| get_apy_prediction | - | - | - | anyone |
-| get_vault_health_snapshot | - | - | - | anyone |
-| get_withdrawal_eligibility | - | - | - | anyone |
+| add_supported_asset | yes | - | - | - |
+| batch_deposit | - | - | yes | - |
+| cancel_migration_target | yes | - | - | - |
+| cancel_withdrawal_request | - | - | yes | - |
+| deposit_asset | - | - | yes | - |
+| emergency_harvest | yes | - | - | - |
+| emergency_withdraw | - | - | yes | - |
+| enable_multi_protocol | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| lock_shares | - | - | yes | - |
+| migrate_shares | - | - | yes | - |
+| process_withdrawal_queue | - | yes | - | - |
+| queue_withdrawal | - | - | yes | - |
+| rebalance_multi | - | yes | - | - |
+| receive_migration | - | - | - | anyone |
+| remove_supported_asset | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| set_batch_size_limit | yes | - | - | - |
+| set_max_batch_size | yes | - | - | - |
+| set_max_consecutive_failures | yes | - | - | - |
+| set_max_decrease_bps | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
+| set_protocol_apy | - | yes | - | - |
+| set_queue_config | yes | - | - | - |
+| set_rate_limit | yes | - | - | - |
+| set_rate_limit_config | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
+| unlock_shares | - | - | yes | - |
+| update_asset_limits | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| withdraw_asset | - | - | yes | - |
+
+
+### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)
+
+The table above names the caller for every privileged function, but not
+whether that call is delayed by a timelock or still reachable while the
+vault is paused. Both properties matter for an incident responder deciding
+whether a given function can be used to make the situation worse (or
+better) right now. The table below covers the functions added since the
+table above was last extended; `update_agent` and `switch_to_standby_agent`
+are included for contrast, since together they are the timelock gap this
+issue asks to be noted explicitly.
+
+| Function | Caller | Timelocked? | Allowed while paused? |
+|----------|--------|-------------|------------------------|
+| `update_agent` | Owner | **Yes** (`AGENT_TIMELOCK_LEDGERS`, step 1 of `update_agent`/`confirm_agent_update`) | Yes (no pause check) |
+| `update_standby_agent` | Owner | No | Yes (no pause check) |
+| `switch_to_standby_agent` | Owner | **No** — instant, by design (see function doc: "no timelock, no 24-hour wait") | Yes (no pause check) |
+| `schedule_migration_target` | Owner | Yes (`MIGRATION_TARGET_TIMELOCK_LEDGERS`, step 1 of 2) | Yes (no pause check) |
+| `execute_migration_target` | Owner | Yes (must wait for the scheduled delay to elapse) | Yes (no pause check) |
+| `cancel_migration_target` | Owner | No (cancels a pending timelock; not itself delayed) | Yes (no pause check) |
+| `set_migration_paused` | Owner | No | Yes (no pause check) |
+| `reset_circuit_breaker` | Owner | No | **Yes, deliberately** — its entire purpose is to clear `Paused` |
+| `process_withdrawal_queue` | Anyone (authenticated; the `agent` parameter is accepted but never checked against the stored agent address — see function doc, "kept for ABI compatibility") | No | Yes (no pause check) |
+| `set_min_holding_period` | Owner | No | Yes (no pause check) |
+| `set_rate_limit`, `set_rate_limit_config` | Owner | No | Yes (no pause check) |
+| `set_queue_config` | Owner | No | Yes (no pause check) |
+
+**The standby-agent timelock gap (tracked in #954, open).** `update_agent`
+(primary agent rotation) is timelocked specifically so a compromised owner
+key cannot instantly hand agent authority to an attacker-controlled address
+— the delay gives the real owner a window to notice and react via
+`cancel_agent_update`. `update_standby_agent` and `switch_to_standby_agent`
+provide no equivalent delay: an owner (or an attacker who has compromised
+the owner key) can set an arbitrary address as standby and instantly
+promote it to primary agent in two calls, with no timelock and no cooldown
+between them, which defeats the timelock users rely on to react to a
+malicious agent change. Until #954 is resolved, treat standby-agent
+rotation as carrying the same trust assumptions as an instant, undelayed
+owner action, not the delayed-and-cancellable guarantee `update_agent`
+provides.
 
 ### Emergency Harvest Fallback (Issue #506)
 
@@ -440,8 +568,12 @@ operators from assessing vault state.
 | `preview_withdraw` | 🟢 ALLOWED |
 | `convert_to_shares` | 🟢 ALLOWED |
 | `convert_to_assets` | 🟢 ALLOWED |
+| `get_min_holding_period` | 🟢 ALLOWED |
+| `get_mev_stats` | 🟢 ALLOWED |
+| `get_apy_prediction` | 🟢 ALLOWED |
 | `get_vault_health_snapshot` | 🟢 ALLOWED |
 | `get_withdrawal_eligibility` | 🟢 ALLOWED |
+
 
 ### Note on Withdrawal Semantics
 
@@ -824,6 +956,72 @@ codes, since an over-limit transaction itself is reverted by the host.
   cap, user deposit cap, fee policy, and authentication checks as the sybil
   resistance layer.
 
+## WhatsApp Custodial Key Custody Threat Model (Issue #944)
+
+The WhatsApp bot (`whatsapp/`) creates a custodial Stellar keypair per verified
+phone number and signs vault transactions on the user's behalf. Unlike the
+vault contract, these keys are held by the operator, so this section records
+what is protected, from whom, and what is explicitly **not** protected.
+Operational detail is in [docs/WHATSAPP_BOT.md](docs/WHATSAPP_BOT.md#custodial-key-custody-and-rotation-944).
+
+### Assets
+
+| Asset | Where it lives | Sensitivity |
+| --- | --- | --- |
+| User Stellar secret key | `whatsapp_wallets` (`encrypted_data`, `iv`, `tag`), AES-256-GCM encrypted | Critical: controls the user's vault position and any other funds in the account |
+| Data-encryption key (DEK), one per wallet | `whatsapp_wallets.wrapped_dek` wrapped by the KEK | Critical, but useless without the KEK |
+| Key-encryption key (KEK) | `ENCRYPTION_KEY` (+ `ENCRYPTION_KEY_RETIRED` during rotation) in the process environment / secret store | Critical: the single secret that unlocks every DEK |
+| Phone-hash salt | `PHONE_HASH_SALT` | Medium: protects phone-number privacy |
+| OTP challenges, sessions | `whatsapp_otps`, `whatsapp_sessions` | Medium: an exposed live OTP allows an account takeover for up to 5 minutes |
+
+### Design
+
+- **Envelope encryption.** Each secret has its own random DEK; the DEK is
+  wrapped with the KEK (AES-256-GCM, version label bound as AAD). Database
+  contents alone (dump, backup, SQL injection, replica access) reveal no
+  usable key material.
+- **KEK rotation without re-exposing secrets.** `npm run rotate-keys` re-wraps
+  DEKs under a new `ENCRYPTION_KEY_VERSION`; Stellar secrets are never
+  re-encrypted or logged. Old KEKs are kept only in `ENCRYPTION_KEY_RETIRED`
+  until rotation completes. Runbook: docs/WHATSAPP_BOT.md.
+- **Isolation seam for KMS/HSM.** KEK access is confined to `wrapDek` /
+  `unwrapDek`; a managed key service can replace the env-var KEK without
+  touching storage or callers.
+- **Fail-closed configuration.** The service refuses to boot with a missing,
+  short, placeholder or default secret (`src/envGuard.ts`), and CI forbids
+  source-level fallbacks (see the policy below).
+- **Plaintext handling.** The decrypted secret exists only inside
+  `getDecryptedSecretKey` for the duration of signing; it is never persisted,
+  returned to chat, or logged.
+
+### Adversaries and residual risk
+
+| # | Adversary / event | Outcome today | Mitigation / residual risk |
+| --- | --- | --- | --- |
+| 1 | Reads or steals the database (SQLi, leaked backup, over-broad replica access) | Gets ciphertext, wrapped DEKs, public keys, hashed phones. **Cannot** decrypt without the KEK | Protected, provided the KEK is stored separately from DB backups |
+| 2 | Reads the bot's environment (host compromise, leaked CI/deploy secrets, debug endpoint, crash dump) | Obtains the KEK and, with DB access, can unwrap **every** DEK | **Not mitigated by env-var custody.** Limit who can read the secret store, keep the KEK out of logs/CI, and move to KMS/HSM (non-exportable KEK, per-call audit, rate alarms) before holding material funds |
+| 3 | Full compromise of a running replica | Can call the signing path for any wallet while it runs | Not preventable at the application layer. Contain with network egress limits, short-lived credentials, per-user vault deposit caps (`VAULT_USER_DEPOSIT_CAP`), and incident response (docs/INCIDENT_RESPONSE.md) |
+| 4 | Operator / insider with both DB and secret-store access | Full custody of all users' keys | Inherent to custodial design. Separate duties between DB and secret-store admins; KMS/HSM audit logs; users should be told the wallet is custodial |
+| 5 | KEK exposure discovered later (leak, ex-employee) | Past DB copies remain decryptable by the leaked KEK | Rotate (runbook) to protect future copies. Wallets whose ciphertext was captured together with the KEK must be considered compromised: move funds to fresh wallets |
+| 6 | Loss of the KEK | Every custodial secret is permanently unrecoverable | Escrow the KEK (and retired KEKs until rotation completes) in a secret manager with backup and access review; test restores |
+| 7 | Tampering with `key_version` / ciphertext | Fails GCM authentication (version is AAD of the DEK wrap) | Detected; the wallet becomes unusable rather than signing with a wrong key |
+| 8 | Phone-number takeover (SIM swap) or interception of the OTP | Attacker verifies as the victim and gets that number's session | OTP is currently echoed in the chat reply and therefore proves nothing about phone control. Deliver the OTP out of band (SMS / Twilio Verify) before real funds |
+| 9 | OTP brute force across replicas | Attempts are counted atomically in Postgres, so parallel guesses cannot exceed the limit; 3 attempts / 5 minutes | Bounded |
+| 10 | Replayed or forged webhooks | Forged requests fail Twilio signature validation; replays are deduplicated by `MessageSid` and never re-run state-changing commands | Bounded; see docs/WHATSAPP_BOT.md |
+| 11 | Weak or placeholder secrets in a deployment | Service refuses to start (`envGuard`); legacy fixed-salt derivation is only used to read old rows and is upgraded by `rotate-keys` | Run `rotate-keys` once after deploying to retire the legacy format |
+
+### Out of scope
+
+Compromise of the Stellar network or the vault contract (covered by the vault
+threat model above), and endpoint security of users' own phones.
+
+### Rotation cadence and triggers
+
+Rotate the KEK at least every 12 months and immediately on: any suspected
+exposure of the secret store or a replica, departure of someone with access to
+it, or a change of secret-store provider. Record each rotation (date, old/new
+version, operator) in the operations log.
+
 ## Deployment Configuration Fail-Closed Policy
 
 Production-sensitive defaults must not be embedded in application source. The WhatsApp encryption key, phone hashing salt, and vault contract identifiers must come from deployment environment variables. If any of these values are missing, the affected service should fail during startup rather than silently falling back to a shared development secret or stale testnet contract id.
@@ -834,7 +1032,11 @@ Required fail-closed values:
 
 | Variable | Used by | Risk if defaulted |
 | --- | --- | --- |
-| `ENCRYPTION_KEY` | WhatsApp custodial secret encryption | Shared fallback key could decrypt every stored user signing secret |
+| `ENCRYPTION_KEY` | WhatsApp custodial key-encryption key (see [custody threat model](#whatsapp-custodial-key-custody-threat-model-issue-944)) | Shared fallback key could decrypt every stored user signing secret |
 | `PHONE_HASH_SALT` | WhatsApp phone-number hashing | Shared fallback salt weakens PII privacy and cross-environment isolation |
+| `DATABASE_URL` | WhatsApp wallet, OTP and session storage | A default `postgres:postgres@localhost` credential could point production at an unintended or weakly protected database |
+| `TWILIO_AUTH_TOKEN` | WhatsApp webhook signature validation | A default token would let anyone forge signed webhooks |
 | `VAULT_CONTRACT_ID` | WhatsApp vault routing | Bot could submit or simulate against a stale contract |
 | `NEXT_PUBLIC_VAULT_CONTRACT_ID` | Frontend vault reads | UI could display balances or submit flows against a stale contract |
+
+At runtime the WhatsApp service enforces the same policy: `whatsapp/src/bootstrapEnv.ts` (first import of every entry point) runs `assertEnv()` from `whatsapp/src/envGuard.ts` and aborts the boot with a list of every missing, too-short, placeholder or default value, and refuses `TWILIO_SKIP_SIGNATURE_VALIDATION=true` under `NODE_ENV=production` (Issue #945). `check-no-production-defaults.py` additionally fails CI if an entry point stops importing the guard.

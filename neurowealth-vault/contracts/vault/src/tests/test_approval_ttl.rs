@@ -15,13 +15,13 @@ fn setup_blend_position(
     Address,
     Address,
     Address,
+    Address,
     NeuroWealthVaultClient<'_>,
     TestTokenClient<'_>,
 ) {
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
-        setup_vault_with_token_and_blend(env);
+    let (contract_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
     let token_client = TestTokenClient::new(env, &usdc_token);
 
@@ -33,7 +33,14 @@ fn setup_blend_position(
     let user = Address::generate(env);
     mint_and_deposit(env, &client, &usdc_token, &user, 10_000_000_i128);
 
-    (contract_id, usdc_token, blend_pool, client, token_client)
+    (
+        contract_id,
+        agent,
+        usdc_token,
+        blend_pool,
+        client,
+        token_client,
+    )
 }
 
 /// Sets up a vault with a configured DEX pool, a funded user deposit, and an
@@ -45,12 +52,13 @@ fn setup_dex_position(
     Address,
     Address,
     Address,
+    Address,
     NeuroWealthVaultClient<'_>,
     TestTokenClient<'_>,
 ) {
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
     let token_client = TestTokenClient::new(env, &usdc_token);
 
@@ -62,18 +70,25 @@ fn setup_dex_position(
     let user = Address::generate(env);
     mint_and_deposit(env, &client, &usdc_token, &user, 10_000_000_i128);
 
-    (contract_id, usdc_token, dex_pool, client, token_client)
+    (
+        contract_id,
+        agent,
+        usdc_token,
+        dex_pool,
+        client,
+        token_client,
+    )
 }
 
 #[test]
 fn test_approval_expiry_uses_configured_ttl() {
     let env = Env::default();
     let configured_ttl = 2_500_u32;
-    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+    let (contract_id, agent, _usdc_token, blend_pool, client, token_client) =
         setup_blend_position(&env, Some(configured_ttl));
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);
     assert_eq!(expiration, sequence + configured_ttl);
@@ -83,11 +98,11 @@ fn test_approval_expiry_uses_configured_ttl() {
 fn test_approval_expiry_minimum_ttl_is_valid() {
     let env = Env::default();
     let minimum_ttl = 1_000_u32;
-    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+    let (contract_id, agent, _usdc_token, blend_pool, client, token_client) =
         setup_blend_position(&env, Some(minimum_ttl));
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);
     assert_eq!(expiration, sequence + minimum_ttl);
@@ -123,13 +138,13 @@ fn test_set_approval_ttl_requires_owner_auth() {
 #[test]
 fn test_default_approval_ttl_used_when_unconfigured() {
     let env = Env::default();
-    let (contract_id, _usdc_token, blend_pool, client, token_client) =
+    let (contract_id, agent, _usdc_token, blend_pool, client, token_client) =
         setup_blend_position(&env, None);
 
     assert_eq!(client.get_approval_ttl(), DEFAULT_APPROVAL_TTL);
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);
     assert_eq!(expiration, sequence + DEFAULT_APPROVAL_TTL);
@@ -243,7 +258,7 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -253,10 +268,12 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
     // Set initial approval TTL to a valid value
     client.set_blend_approval_ttl(&owner, &10_000_u32);
 
-    // Deposit funds and deploy them to Blend via rebalance
+    // Deposit funds and deploy them to Blend via rebalance. `expected_apy` is
+    // a basis-points value in 0..=10_000, purely informational for the
+    // emitted event — it does not affect how much is supplied.
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
-    client.rebalance(&symbol_short!("blend"), &5_000_000_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Verify funds are deployed (vault has less idle USDC)
     let vault_idle_balance = token_client.balance(&contract_id);
@@ -294,11 +311,11 @@ fn test_set_blend_approval_ttl_zero_with_deployed_funds_allows_withdrawal() {
 fn test_dex_approval_expiry_uses_configured_ttl() {
     let env = Env::default();
     let configured_ttl = 2_500_u32;
-    let (contract_id, _usdc_token, dex_pool, client, token_client) =
+    let (contract_id, agent, _usdc_token, dex_pool, client, token_client) =
         setup_dex_position(&env, Some(configured_ttl));
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &dex_pool);
     assert_eq!(expiration, sequence + configured_ttl);
@@ -308,11 +325,11 @@ fn test_dex_approval_expiry_uses_configured_ttl() {
 fn test_dex_approval_expiry_minimum_ttl_is_valid() {
     let env = Env::default();
     let minimum_ttl = 1_000_u32;
-    let (contract_id, _usdc_token, dex_pool, client, token_client) =
+    let (contract_id, agent, _usdc_token, dex_pool, client, token_client) =
         setup_dex_position(&env, Some(minimum_ttl));
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &dex_pool);
     assert_eq!(expiration, sequence + minimum_ttl);
@@ -322,12 +339,13 @@ fn test_dex_approval_expiry_minimum_ttl_is_valid() {
 #[test]
 fn test_default_approval_ttl_used_for_dex_supply() {
     let env = Env::default();
-    let (contract_id, _usdc_token, dex_pool, client, token_client) = setup_dex_position(&env, None);
+    let (contract_id, agent, _usdc_token, dex_pool, client, token_client) =
+        setup_dex_position(&env, None);
 
     assert_eq!(client.get_approval_ttl(), DEFAULT_APPROVAL_TTL);
 
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &dex_pool);
     assert_eq!(expiration, sequence + DEFAULT_APPROVAL_TTL);
@@ -336,7 +354,7 @@ fn test_default_approval_ttl_used_for_dex_supply() {
 #[test]
 fn test_dex_position_set_approval_ttl_rejects_below_minimum() {
     let env = Env::default();
-    let (_contract_id, _usdc_token, _dex_pool, client, _token_client) =
+    let (_contract_id, _agent, _usdc_token, _dex_pool, client, _token_client) =
         setup_dex_position(&env, None);
 
     let result = client.try_set_approval_ttl(&999_u32);
@@ -349,7 +367,7 @@ fn test_dex_position_set_approval_ttl_rejects_below_minimum() {
 #[test]
 fn test_dex_position_set_approval_ttl_rejects_above_maximum() {
     let env = Env::default();
-    let (_contract_id, _usdc_token, _dex_pool, client, _token_client) =
+    let (_contract_id, _agent, _usdc_token, _dex_pool, client, _token_client) =
         setup_dex_position(&env, None);
 
     let result = client.try_set_approval_ttl(&500_001_u32);
@@ -370,7 +388,7 @@ fn test_blend_approval_ttl_affects_supply_to_blend_approval_ledger() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -387,7 +405,7 @@ fn test_blend_approval_ttl_affects_supply_to_blend_approval_ledger() {
 
     // Trigger supply_to_blend via rebalance
     let sequence = env.ledger().sequence();
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     // Assert the approval expiration uses the custom TTL, not the default
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);

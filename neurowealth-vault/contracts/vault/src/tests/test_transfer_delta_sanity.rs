@@ -97,7 +97,7 @@ fn test_rebalance_transfer_delta_matches_deployed_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -113,7 +113,7 @@ fn test_rebalance_transfer_delta_matches_deployed_amount() {
     let pool_before = token_client.balance(&blend_pool);
     assert_eq!(vault_before, deposit_amount);
 
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // Every token that left the vault arrived at the pool: the deltas match
     // exactly and the pool's own accounting agrees with the physical

@@ -15,6 +15,15 @@ use soroban_sdk::{
     symbol_short, testutils::Address as _, testutils::Ledger, Address, BytesN, Env, TryFromVal,
 };
 
+/// Keeps storage entries alive across the large ledger jumps these tests make.
+fn keep_storage_alive(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
+}
+
 #[test]
 fn test_initialize_emits_init_event_with_correct_payload() {
     let env = Env::default();
@@ -435,12 +444,30 @@ fn test_set_caps_emits_caps_event_with_correct_payload() {
 fn test_update_agent_emits_agent_event_with_correct_payload() {
     let env = Env::default();
     env.mock_all_auths();
+    keep_storage_alive(&env);
+
+    // `TOPIC_AGENT_UPDATED` is emitted by `confirm_agent_update` once the
+    // timelock elapses, not by the `update_agent` proposal step itself
+    // (#317). The ledger jump needs the entry-TTL ceiling raised (mirrors
+    // `test_share_locking.rs`'s `keep_storage_alive`), or contract instance
+    // storage would be reported as archived.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1_000_000;
+        li.min_temp_entry_ttl = 1_000_000;
+        li.max_entry_ttl = 2_000_000;
+    });
 
     let (contract_id, old_agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
+    // update_agent only proposes (step 1 of 2, issue #317); AgentUpdatedEvent
+    // (TOPIC_AGENT_UPDATED) is only emitted by confirm_agent_update() for
+    // backward-compatible indexers, once the timelock has elapsed.
     let new_agent = Address::generate(&env);
     client.update_agent(&new_agent);
+    let (_, expiry) = client.get_pending_agent_update().unwrap();
+    env.ledger().set_sequence_number(expiry);
+    client.confirm_agent_update();
 
     let agent_events = find_events_by_topic(env.events().all(), &env, TOPIC_AGENT_UPDATED);
     assert!(
@@ -504,11 +531,11 @@ fn test_rebalance_emits_rebalance_event_with_correct_payload() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let expected_apy = 850_i128;
-    client.rebalance(&symbol_short!("none"), &expected_apy, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &expected_apy, &0_i128);
 
     let rebalance_events = find_events_by_topic(env.events().all(), &env, TOPIC_REBALANCE);
     assert!(
@@ -552,7 +579,7 @@ fn test_rebalance_with_blend_emits_correct_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -562,7 +589,7 @@ fn test_rebalance_with_blend_emits_correct_event() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     let expected_apy = 1200_i128;
-    client.rebalance(&symbol_short!("blend"), &expected_apy, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &expected_apy, &0_i128);
 
     let rebalance_events = find_events_by_topic(env.events().all(), &env, TOPIC_REBALANCE);
     let last_event_data = &rebalance_events.last().unwrap().2;
@@ -605,7 +632,7 @@ fn test_rebalance_with_blend_partial_fill_emits_correct_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -619,7 +646,7 @@ fn test_rebalance_with_blend_partial_fill_emits_correct_event() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     let expected_apy = 1200_i128;
-    client.rebalance(&symbol_short!("blend"), &expected_apy, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &expected_apy, &0_i128);
 
     let rebalance_events = find_events_by_topic(env.events().all(), &env, TOPIC_REBALANCE);
     let last_event_data = &rebalance_events.last().unwrap().2;
@@ -658,7 +685,7 @@ fn test_rebalance_with_blend_failed_fill_emits_correct_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -672,7 +699,7 @@ fn test_rebalance_with_blend_failed_fill_emits_correct_event() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     let expected_apy = 1200_i128;
-    client.rebalance(&symbol_short!("blend"), &expected_apy, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &expected_apy, &0_i128);
 
     let rebalance_events = find_events_by_topic(env.events().all(), &env, TOPIC_REBALANCE);
     let last_event_data = &rebalance_events.last().unwrap().2;
@@ -708,12 +735,12 @@ fn test_all_events_have_correct_topics() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, _usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, _usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.set_deposit_limits(&1_000_000_i128, &10_000_000_000_i128);
     client.set_caps(&10_000_000_i128, &100_000_000_i128);
-    client.rebalance(&symbol_short!("none"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &500_i128, &0_i128);
     client.pause(&owner);
     client.unpause(&owner);
     client.emergency_pause(&owner);
@@ -755,7 +782,7 @@ fn test_withdraw_all_partial_liquidity_emits_burned_shares() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -772,7 +799,7 @@ fn test_withdraw_all_partial_liquidity_emits_burned_shares() {
     let _total_shares_before = client.get_total_shares();
     let _total_assets_before = client.get_total_assets();
 
-    client.rebalance(&symbol_short!("blend"), &900_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &900_i128, &0_i128);
 
     // After rebalance: 90% in blend (9M), 10% in vault (1M)
     // Vault balance is 1,000,000
@@ -847,7 +874,7 @@ fn test_blend_supply_event_reports_actual_supplied_with_shortfall() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -863,7 +890,7 @@ fn test_blend_supply_event_reports_actual_supplied_with_shortfall() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Rebalance 90% to blend - vault tries to supply 9M, but pool only accepts 3M
-    client.rebalance(&symbol_short!("blend"), &900_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &900_i128, &0_i128);
 
     // Verify actual supplied was less than requested
     let pool_supplied = blend_client.supplied(&usdc_token);
@@ -907,7 +934,7 @@ fn test_blend_withdraw_event_reports_actual_withdrawn_with_shortfall() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -920,7 +947,7 @@ fn test_blend_withdraw_event_reports_actual_withdrawn_with_shortfall() {
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
     // Rebalance to blend - 100% of vault balance (10M) goes to pool
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // Verify pool has 10M (entire vault balance was supplied)
     assert_eq!(

@@ -10,6 +10,7 @@ pr.md
 
 # Node
 node_modules/
+**/node_modules/
 
 # Next.js build output
 .next/
@@ -78,6 +79,7 @@ Thumbs.db
 # TypeScript compiled output
 *.js.map
 *.d.ts.map
+*.tsbuildinfo
 
 # Coverage reports
 coverage/
@@ -99,3 +101,5 @@ yarn-error.log*
 
 # Agent local state (ledger cursor fallback)
 .agent-state/
+
+fix.md

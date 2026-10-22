@@ -137,14 +137,14 @@ fn withdrawal_and_withdraw_all_share_the_same_user_bucket() {
 fn rebalance_frequency_complements_the_existing_cooldown() {
     let env = Env::default();
     env.mock_all_auths();
-    let (contract_id, _agent, _owner) = setup_vault(&env);
+    let (contract_id, agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     set_limit(&client, RATE_LIMIT_REBALANCE, 1, 4);
-    client.rebalance(&symbol_short!("none"), &0, &0);
+    client.rebalance(&agent, &symbol_short!("none"), &0, &0);
     assert!(
         client
-            .try_rebalance(&symbol_short!("none"), &0, &0)
+            .try_rebalance(&agent, &symbol_short!("none"), &0, &0)
             .is_err(),
         "the global rebalance bucket must reject a second call"
     );
@@ -152,7 +152,7 @@ fn rebalance_frequency_complements_the_existing_cooldown() {
     let state = client.get_global_rate_limit_state(&RATE_LIMIT_REBALANCE);
     assert_eq!(state.calls, 1);
     env.ledger().set_sequence_number(state.window_start + 4);
-    client.rebalance(&symbol_short!("none"), &0, &0);
+    client.rebalance(&agent, &symbol_short!("none"), &0, &0);
     assert_eq!(
         client
             .get_global_rate_limit_state(&RATE_LIMIT_REBALANCE)

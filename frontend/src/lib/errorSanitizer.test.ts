@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   redactSensitiveData,
   sanitizeErrorMessage,
@@ -6,10 +6,8 @@ import {
 } from './errorSanitizer';
 
 describe('errorSanitizer', () => {
-  const originalEnv = process.env.NODE_ENV;
-
   afterEach(() => {
-    process.env.NODE_ENV = originalEnv;
+    vi.unstubAllEnvs();
   });
 
   describe('redactSensitiveData', () => {
@@ -61,7 +59,7 @@ describe('errorSanitizer', () => {
     });
 
     it('suppresses internal paths and stack dumps in production', () => {
-      process.env.NODE_ENV = 'production';
+      vi.stubEnv('NODE_ENV', 'production');
       const internalErr = new Error('ChunkLoadError: /home/finite/app/node_modules/next/dist/client.js failed');
       const result = sanitizeErrorMessage(internalErr);
 
@@ -69,7 +67,7 @@ describe('errorSanitizer', () => {
     });
 
     it('preserves user-facing message in non-production', () => {
-      process.env.NODE_ENV = 'development';
+      vi.stubEnv('NODE_ENV', 'development');
       const userErr = new Error('Network request timed out. Please check your internet connection.');
       const result = sanitizeErrorMessage(userErr);
 
@@ -96,7 +94,7 @@ describe('errorSanitizer', () => {
     });
 
     it('suppresses stack trace in production', () => {
-      process.env.NODE_ENV = 'production';
+      vi.stubEnv('NODE_ENV', 'production');
       const err = new Error('Some error');
       const info = getSanitizedErrorInfo(err, 'transactions');
 
@@ -105,7 +103,7 @@ describe('errorSanitizer', () => {
     });
 
     it('provides sanitized stack in development without exposing secrets', () => {
-      process.env.NODE_ENV = 'development';
+      vi.stubEnv('NODE_ENV', 'development');
       const secret = 'SD2H67AB2Z2XNJWOUJMYZKLX2R5R32NKV7F6O2V7J4OQ5OOU4N7X3U5D2H';
       const err = new Error(`Error with password=${secret}`);
       const info = getSanitizedErrorInfo(err, 'strategies');

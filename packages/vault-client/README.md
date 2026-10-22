@@ -108,7 +108,7 @@ await client.rebalance(
   agentKeypair,
   'blend',      // protocol: "blend" | "none"
   500_0000000n, // expected_apy: 500 bps * 10^7
-  990_0000000n, // min_out: slippage floor
+  50n,          // min_out: 0.5% tolerance, applied per leg
 );
 ```
 

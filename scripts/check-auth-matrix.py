@@ -15,6 +15,14 @@ import sys
 import re
 import os
 
+def is_readonly(func_name):
+    """Returns True if the function is a read-only getter or view query."""
+    return (
+        func_name.startswith("get_")
+        or func_name.startswith("preview_")
+        or func_name.startswith("convert_")
+        or func_name == "is_paused"
+    )
 
 def parse_security_md(filepath):
     """
@@ -57,7 +65,11 @@ def parse_security_md(filepath):
             continue
 
         func_name = cells[0].strip()
-        # Columns 2-4 are boolean-ish "yes"/"✅" checkmarks for each role.
+        
+        # Skip read-only getters; they are documented in Read-Only / View Functions
+        if is_readonly(func_name):
+            continue
+
         owner = cells[1].strip() in ("yes", "✅")
         agent = cells[2].strip() in ("yes", "✅")
         user = cells[3].strip() in ("yes", "✅")
@@ -107,12 +119,10 @@ def parse_lib_rs(filepath):
         if not match:
             continue
         func_name = match.group(1)
-
-        # Find the end of this function's body by counting braces from the
-        # first "{" until they balance back out to 0. This is a simple
-        # (non-syntax-aware) brace matcher — good enough for well-formatted
-        # Rust source, but can be thrown off by braces inside strings or
-        # comments.
+        
+        if func_name == "initialize" or is_readonly(func_name):
+            continue
+        
         brace_count = 0
         in_body = False
         body_end = 0
@@ -145,7 +155,7 @@ def parse_lib_rs(filepath):
                 access = "agent"
             elif var == "user":
                 access = "user"
-            elif var == "new_owner":
+            elif var in ("new_owner", "pending_owner"):
                 access = "pending-owner"
         elif "require_auth" in body:
             # require_auth() is called, but not in the simple "<var>.require_auth()"
@@ -161,9 +171,22 @@ def parse_lib_rs(filepath):
             # No require_auth() call at all — check for known helper
             # functions / custom error variants that imply a role-gated
             # permission check via a different mechanism.
-            if "Self::require_is_owner" in body or "OnlyOwner" in body or "VaultError::CallerIsNotOwner" in body:
+            if (
+                "Self::require_is_owner" in body
+                or "OnlyOwner" in body
+                or "VaultError::CallerIsNotOwner" in body
+                or "Self::set_rate_limit(" in body
+                or "Self::set_max_batch_size(" in body
+            ):
                 access = "owner"
-            elif "Self::require_is_agent" in body or "OnlyAgent" in body or "VaultError::OnlyAgentCanUpdateTotalAssets" in body:
+            elif (
+                "Self::require_is_agent" in body
+                or "OnlyAgent" in body
+                or "VaultError::OnlyAgentCanUpdateTotalAssets" in body
+                or "VaultError::UnauthorizedAgent" in body
+                or "Self::rebalance(" in body
+                or "Self::harvest(" in body
+            ):
                 access = "agent"
             elif "Self::require_is_pending_owner" in body or "CallerIsNotPendingOwner" in body:
                 access = "pending-owner"
@@ -171,19 +194,7 @@ def parse_lib_rs(filepath):
                 # Special-cased fallback for emergency_harvest, which may
                 # guard ownership a different way than the patterns above.
                 access = "owner"
-
-        # `initialize` is a one-time constructor-like function, not a
-        # regular state-changing function subject to the auth matrix —
-        # exclude it from the comparison entirely.
-        if func_name == "initialize":
-            continue
-
-        # Read-only / view-style functions (getters, previews, converters,
-        # pause-status check) aren't part of the state-changing auth
-        # matrix either, so skip them too.
-        if func_name.startswith("get_") or func_name.startswith("preview_") or func_name.startswith("convert_") or func_name == "is_paused":
-            continue
-
+            
         functions[func_name] = access
 
     return functions
@@ -205,6 +216,8 @@ def main():
     # the contract source and that the documented access level matches
     # what the code actually enforces.
     for func, sec_access in sec_funcs.items():
+        if is_readonly(func):
+            continue
         if func not in lib_funcs:
             print(f"FAIL: Function {func} is in SECURITY.md but not found as a state-changing function in lib.rs.")
             errors = True
@@ -223,3 +236,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

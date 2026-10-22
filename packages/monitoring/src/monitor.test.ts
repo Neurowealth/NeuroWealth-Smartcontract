@@ -42,9 +42,18 @@ describe("VaultMonitor", () => {
   let mockConfig: MonitoringConfig;
   let mockMetrics: HealthMetrics;
 
+  const getMetricsCollectorInstance = () => {
+    const { MetricsCollector } = require("./metrics-collector");
+    return (MetricsCollector as jest.Mock).mock.instances[0];
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    jest.spyOn(global, "setInterval").mockImplementation(((fn: (...args: any[]) => void) => {
+      return 1 as any;
+    }) as typeof setInterval);
+    jest.spyOn(global, "clearInterval").mockImplementation(() => undefined);
 
     mockConfig = {
       contractId: "test-contract-id",
@@ -86,12 +95,13 @@ describe("VaultMonitor", () => {
 
   afterEach(() => {
     jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
   describe("start", () => {
     it("should initialize monitoring system", async () => {
       const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -104,7 +114,7 @@ describe("VaultMonitor", () => {
 
     it("should set up polling interval", async () => {
       const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -112,13 +122,12 @@ describe("VaultMonitor", () => {
 
       await monitor.start();
 
-      // Verify interval was set (60 seconds)
       expect(setInterval).toHaveBeenCalledWith(expect.any(Function), mockConfig.pollIntervalSeconds * 1000);
     });
 
     it("should perform initial collection", async () => {
       const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -126,29 +135,25 @@ describe("VaultMonitor", () => {
 
       await monitor.start();
 
-      // The initial collection should have been called
       if (metricsCollectorInstance) {
         expect(metricsCollectorInstance.collectMetrics).toHaveBeenCalled();
       }
     });
 
     it("should handle collection errors gracefully", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockRejectedValue(new Error("Collection failed"));
       }
 
-      // Should not throw
       await expect(monitor.start()).rejects.toThrow();
     });
   });
 
   describe("stop", () => {
     it("should stop the monitoring interval", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -157,18 +162,15 @@ describe("VaultMonitor", () => {
       await monitor.start();
       await monitor.stop();
 
-      // clearInterval should have been called
       expect(clearInterval).toHaveBeenCalled();
     });
 
     it("should be safe to call stop when not started", async () => {
-      // Should not throw
       await expect(monitor.stop()).resolves.not.toThrow();
     });
 
     it("should prevent further collections after stop", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -178,16 +180,12 @@ describe("VaultMonitor", () => {
       await monitor.stop();
 
       jest.advanceTimersByTime(mockConfig.pollIntervalSeconds * 1000);
-
-      // Verify collectMetrics is not called during the interval after stop
-      // (it should only be called from the initial start)
     });
   });
 
   describe("Health Check", () => {
     it("should provide health check status", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -195,27 +193,20 @@ describe("VaultMonitor", () => {
       }
 
       await monitor.start();
-
-      // The monitor should track health status
-      // (specific implementation depends on monitor structure)
     });
 
     it("should report connected status when RPC is reachable", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
       }
 
       await monitor.start();
-
-      // Should indicate connection is healthy
     });
 
     it("should report disconnected status on RPC failure", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockRejectedValue(new Error("RPC unavailable"));
@@ -227,11 +218,9 @@ describe("VaultMonitor", () => {
 
   describe("Anomaly Detection Integration", () => {
     it("should detect anomalies on each collection", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
       const { AlertEngine } = require("./alert-engine");
-
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
-      const alertEngineInstance = AlertEngine.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
+      const alertEngineInstance = (AlertEngine as jest.Mock).mock.instances[0];
 
       if (metricsCollectorInstance && alertEngineInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
@@ -239,18 +228,14 @@ describe("VaultMonitor", () => {
       }
 
       await monitor.start();
-
-      // The alert engine should be called to detect anomalies
     });
 
     it("should dispatch alerts when anomalies detected", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
       const { AlertEngine } = require("./alert-engine");
       const { AlertDispatcher } = require("./alert-dispatcher");
-
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
-      const alertEngineInstance = AlertEngine.mock.results[0]?.value;
-      const alertDispatcherInstance = AlertDispatcher.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
+      const alertEngineInstance = (AlertEngine as jest.Mock).mock.instances[0];
+      const alertDispatcherInstance = (AlertDispatcher as jest.Mock).mock.instances[0];
 
       const testAlert = {
         id: "test-alert",
@@ -267,8 +252,6 @@ describe("VaultMonitor", () => {
       }
 
       await monitor.start();
-
-      // Dispatcher should be called for each alert
     });
   });
 
@@ -280,9 +263,7 @@ describe("VaultMonitor", () => {
       };
 
       const customMonitor = new VaultMonitor(customConfig);
-      const { MetricsCollector } = require("./metrics-collector");
-
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
       }
@@ -295,8 +276,7 @@ describe("VaultMonitor", () => {
 
   describe("State Management", () => {
     it("should track current and previous metrics", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       const metrics1 = { ...mockMetrics, ledgerSequence: 1000 };
       const metrics2 = { ...mockMetrics, ledgerSequence: 1001 };
@@ -308,24 +288,17 @@ describe("VaultMonitor", () => {
       }
 
       await monitor.start();
-
-      // Advance time to trigger next collection
       jest.advanceTimersByTime(mockConfig.pollIntervalSeconds * 1000);
-
-      // The monitor should maintain both current and previous metrics
     });
 
     it("should maintain active and resolved alerts", async () => {
-      const { MetricsCollector } = require("./metrics-collector");
-      const metricsCollectorInstance = MetricsCollector.mock.results[0]?.value;
+      const metricsCollectorInstance = getMetricsCollectorInstance();
 
       if (metricsCollectorInstance) {
         metricsCollectorInstance.collectMetrics.mockResolvedValue(mockMetrics);
       }
 
       await monitor.start();
-
-      // Monitor should track alert history
     });
   });
 });

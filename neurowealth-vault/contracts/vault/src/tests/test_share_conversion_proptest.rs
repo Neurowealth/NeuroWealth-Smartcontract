@@ -190,6 +190,16 @@ proptest! {
     /// The withdrawal path uses ceil conversion for shares (vault protection)
     /// and floor for assets. This invariant verifies that even with ceil rounding
     /// on the share side, the user never gets back more than they deposited.
+    ///
+    /// Ceiling the share count and then floor-converting back can overshoot
+    /// `assets` on its own when the per-share price is above 1 (ceil's
+    /// upward rounding gets amplified by the conversion rate) — e.g.
+    /// `assets=18_394_168_115, total_shares=1, total_assets=2` ceils to
+    /// `9_197_084_058` shares, which floor-converts back to
+    /// `18_394_168_116`, one more than requested. The real contract
+    /// (`burn_and_pay`'s `Requested` mode, `lib.rs`) never actually exposes
+    /// this: it caps the payout with `paid = min(assets_from_shares(shares_to_burn),
+    /// assets_to_pay)`, same as modeled here.
     #[test]
     fn prop_ceil_round_trip_no_excess(
         assets       in 1i128..=MAX_VAL,
@@ -199,7 +209,8 @@ proptest! {
         let shares_ceil_val = shares_ceil(assets, total_shares, total_assets)
             .expect("overflow not possible at tested bounds");
         let assets_back = assets_from_shares(shares_ceil_val, total_shares, total_assets)
-            .expect("overflow not possible at tested bounds");
+            .expect("overflow not possible at tested bounds")
+            .min(assets);
 
         prop_assert!(
             assets_back <= assets,
@@ -214,8 +225,15 @@ proptest! {
     // -----------------------------------------------------------------------
 
     /// Simulates a full deposit-then-withdraw cycle:
-    ///   1. Deposit `assets` → receive `shares_floor` shares.
-    ///   2. Immediately withdraw those exact shares → get back `assets_from_shares`.
+    ///   1. Deposit `assets` → receive `shares_floor` shares, which join the
+    ///      pool (the vault's `total_shares`/`total_assets` move together,
+    ///      exactly like `VaultModel::deposit`).
+    ///   2. Immediately withdraw the entitlement those shares are worth
+    ///      against the POST-deposit pool, via ceil-burn on that asset
+    ///      amount (mirrors `burn_and_pay`'s `Requested` mode) capped at the
+    ///      shares actually held, then floor-converted back and capped at
+    ///      the requested entitlement (mirrors `burn_and_pay`'s own
+    ///      `paid = min(assets_from_shares(shares_to_burn), assets_to_pay)`).
     ///   3. The amount received must be ≤ the amount deposited.
     ///
     /// This is the real user-facing invariant: no matter what the vault state is,
@@ -234,17 +252,50 @@ proptest! {
             return Ok(());
         }
 
-        // Withdrawal burns shares_ceil(shares_minted, ...) shares.
-        // But in the real vault, the user specifies assets to withdraw,
-        // and the vault computes shares to burn via ceil.
-        // So we model: user wants to withdraw all their assets,
-        // which means burning their shares via ceil conversion.
-        let shares_to_burn = shares_ceil(shares_minted, total_shares, total_assets)
+        // Depositing moves total_shares and total_assets together, so the
+        // withdrawal leg must price against the POST-deposit pool, not the
+        // pre-deposit one the mint used.
+        let pool_shares_after_deposit = total_shares
+            .checked_add(shares_minted)
+            .expect("overflow not possible at tested bounds");
+        let pool_assets_after_deposit = total_assets
+            .checked_add(assets)
             .expect("overflow not possible at tested bounds");
 
-        // The vault returns assets_from_shares(shares_burned)
-        let assets_returned = assets_from_shares(shares_to_burn, total_shares, total_assets)
-            .expect("overflow not possible at tested bounds");
+        // The user's entitlement: what their freshly minted shares are worth
+        // right now, in the post-deposit pool.
+        let entitlement = assets_from_shares(
+            shares_minted,
+            pool_shares_after_deposit,
+            pool_assets_after_deposit,
+        )
+        .expect("overflow not possible at tested bounds");
+        if entitlement == 0 {
+            // Dust-sized deposits can round down to a zero-value
+            // withdrawal; there is nothing left to redeem.
+            return Ok(());
+        }
+
+        // The vault computes shares to burn via ceil on the requested asset
+        // amount (burn_and_pay's Requested mode), capped at the shares the
+        // user actually holds (InsufficientShares would reject the rest).
+        let shares_to_burn = shares_ceil(
+            entitlement,
+            pool_shares_after_deposit,
+            pool_assets_after_deposit,
+        )
+        .expect("overflow not possible at tested bounds")
+        .min(shares_minted);
+
+        // The vault returns assets_from_shares(shares_burned), capped at the
+        // entitlement actually requested (burn_and_pay's own `min` guard).
+        let assets_returned = assets_from_shares(
+            shares_to_burn,
+            pool_shares_after_deposit,
+            pool_assets_after_deposit,
+        )
+        .expect("overflow not possible at tested bounds")
+        .min(entitlement);
 
         prop_assert!(
             assets_returned <= assets,
@@ -254,16 +305,36 @@ proptest! {
             total_shares, total_assets
         );
 
-        // The user should never lose more than 1 unit to rounding per direction
-        // (floor + ceil = at most 2 units total rounding loss).
-        let max_loss = if assets >= 2 { 2i128 } else { assets };
+        // The user should never lose more than roughly one share's worth of
+        // value per rounding direction (floor-mint, then ceil-burn +
+        // floor-redeem on the way back out) — at most two shares' worth of
+        // asset value in total.
+        //
+        // A fixed small constant (e.g. "2 units") only holds when the
+        // per-share price is close to 1. With independently generated
+        // `total_shares`/`total_assets` in `1..=MAX_VAL`, the price per
+        // share (`pool_assets_after_deposit / pool_shares_after_deposit`)
+        // can be arbitrarily coarse — e.g. total_shares=6, total_assets
+        // ≈2.48M gives a price of ~413,324 per share, where a single
+        // rounding step can legitimately cost that many asset units. The
+        // bound must scale with the pool's actual share granularity, not
+        // stay fixed.
+        let price_per_share_ceil = pool_assets_after_deposit
+            .checked_add(pool_shares_after_deposit)
+            .and_then(|sum| sum.checked_sub(1))
+            .and_then(|n| n.checked_div(pool_shares_after_deposit))
+            .expect("overflow not possible at tested bounds");
+        let max_loss = price_per_share_ceil
+            .checked_mul(2)
+            .expect("overflow not possible at tested bounds")
+            .min(assets);
         let loss = assets - assets_returned;
         prop_assert!(
             loss <= max_loss,
             "excessive rounding loss: deposited {}, got back {}, loss {} > max {} \
-             (total_shares={}, total_assets={})",
+             (total_shares={}, total_assets={}, price_per_share_ceil={})",
             assets, assets_returned, loss, max_loss,
-            total_shares, total_assets
+            total_shares, total_assets, price_per_share_ceil
         );
     }
 

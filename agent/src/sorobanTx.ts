@@ -1,8 +1,9 @@
-import { Keypair, TransactionBuilder, Networks, Contract, rpc, Account, TimeoutInfinite, xdr } from '@stellar/stellar-sdk';
+import { Keypair, TransactionBuilder, Networks, Contract, rpc, Account, Address, nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk';
 import logger from './logger';
 import { server } from './eventListener';
 import { pool } from './db';
 import { resolveExecutionMode, type ExecutionMode } from './executionMode';
+import { rawToUsdc } from './vaultEventPayload';
 import {
   executeRebalanceOperation,
   PostgresRebalanceOperationRepository,
@@ -13,6 +14,12 @@ import {
 const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE || Networks.TESTNET;
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID;
 const secretKey = process.env.SOROBAN_SECRET_KEY;
+
+// Configurable transaction timeout in seconds (default: 60 seconds)
+const TX_TIMEOUT_SECONDS = parseInt(process.env.TX_TIMEOUT_SECONDS || '60', 10);
+
+// Configurable inclusion fee in stroops (default: 100 stroops)
+const TX_INCLUSION_FEE = parseInt(process.env.TX_INCLUSION_FEE || '100', 10);
 
 let agentKeypair: Keypair | null = null;
 if (secretKey) {
@@ -58,9 +65,9 @@ async function submitVaultTransaction(
         const account = await loadAccount(sourcePublicKey);
         const contract = new Contract(VAULT_CONTRACT_ID);
         const op = contract.call(method, ...args);
-        tx = new TransactionBuilder(account, { fee: '100', networkPassphrase })
+        tx = new TransactionBuilder(account, { fee: String(TX_INCLUSION_FEE), networkPassphrase })
           .addOperation(op)
-          .setTimeout(TimeoutInfinite)
+          .setTimeout(TX_TIMEOUT_SECONDS)
           .build();
       }
       return tx;
@@ -89,6 +96,9 @@ async function submitVaultTransaction(
           throw new Error('A successful simulation is required before signing');
         }
         if (!agentKeypair) throw new Error('SOROBAN_SECRET_KEY is required in live mode');
+        // Use resource fee from simulation and add inclusion fee
+        const resourceFee = simulation.minResourceFee || 0;
+        const totalFee = resourceFee + TX_INCLUSION_FEE;
         const signedTx = rpc.assembleTransaction(unsignedTx, simulation).build();
         signedTx.sign(agentKeypair);
         const txHash = signedTx.hash().toString('hex');
@@ -181,35 +191,97 @@ async function submitVaultTransaction(
   }
 }
 
+/** Upper bound the vault accepts for `expected_apy` (basis points). */
+export const MAX_EXPECTED_APY_BPS = 10_000;
+
+/**
+ * Converts an APY in percent points (e.g. 5.25) into the basis-point integer
+ * the vault's `rebalance` entrypoint expects (e.g. 525). Returns null when the
+ * value is not finite or falls outside the contract's accepted 0..=10_000 range.
+ */
+export function toExpectedApyBps(apyPercent: number): number | null {
+  if (!Number.isFinite(apyPercent)) return null;
+  const bps = Math.round(apyPercent * 100);
+  if (bps < 0 || bps > MAX_EXPECTED_APY_BPS) return null;
+  return bps;
+}
+
+/**
+ * Builds the argument list for the vault's
+ * `rebalance(agent: Address, protocol: Symbol, expected_apy: i128, min_out: i128)`.
+ */
+export function buildRebalanceArgs(
+  agentPublicKey: string,
+  targetProtocol: string,
+  expectedApyBps: number,
+  minOut = 0,
+): xdr.ScVal[] {
+  return [
+    new Address(agentPublicKey).toScVal(),
+    nativeToScVal(targetProtocol, { type: 'symbol' }),
+    nativeToScVal(expectedApyBps, { type: 'i128' }),
+    nativeToScVal(minOut, { type: 'i128' }),
+  ];
+}
+
 /**
  * Submits a rebalance transaction to the vault.
  * Rebalances vault funds into the target protocol.
+ *
+ * `expectedApy` is in percent points (the unit the yield evaluator uses) and is
+ * converted to basis points before it is sent on chain.
  */
 export async function submitRebalanceTx(
   targetProtocol: string,
   expectedApy: number,
   options: VaultSubmissionOptions = {},
 ): Promise<OperationResult> {
-  // Map targetProtocol string to symbol. 
-  // Assuming the contract requires 'rebalance' method and args like (protocol: Symbol, expected_apy: i128, min_out: i128).
-  // Native to ScVal using nativeToScVal
-  const { nativeToScVal } = await import('@stellar/stellar-sdk');
-  
-  const args = [
-    nativeToScVal(targetProtocol, { type: 'symbol' }),
-    nativeToScVal(expectedApy, { type: 'i128' }), // Expected APY
-    nativeToScVal(0, { type: 'i128' }) // min_out
-  ];
+  const agentPublicKey = agentKeypair?.publicKey() || process.env.SOROBAN_PUBLIC_KEY;
+  if (!agentPublicKey) {
+    return rejectedResult('SOROBAN_PUBLIC_KEY or SOROBAN_SECRET_KEY is required to rebalance');
+  }
+  const expectedApyBps = toExpectedApyBps(expectedApy);
+  if (expectedApyBps === null) {
+    return rejectedResult(`Expected APY ${expectedApy}% is outside the vault's accepted range`);
+  }
 
+  const args = buildRebalanceArgs(agentPublicKey, targetProtocol, expectedApyBps);
   return submitVaultTransaction('rebalance', args, options);
+}
+
+/**
+ * Reads the vault's current total assets (in whole USDC) from chain via a
+ * read-only `get_total_assets` simulation. Returns null when the vault cannot
+ * be read, so callers never fall back to fabricated vault state.
+ */
+export async function fetchVaultTotalAssets(): Promise<number | null> {
+  const sourcePublicKey = agentKeypair?.publicKey() || process.env.SOROBAN_PUBLIC_KEY;
+  if (!VAULT_CONTRACT_ID || !sourcePublicKey) return null;
+
+  try {
+    const tx = new TransactionBuilder(new Account(sourcePublicKey, '0'), {
+      fee: String(TX_INCLUSION_FEE),
+      networkPassphrase,
+    })
+      .addOperation(new Contract(VAULT_CONTRACT_ID).call('get_total_assets'))
+      .setTimeout(TX_TIMEOUT_SECONDS)
+      .build();
+    const simulation = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result?.retval) {
+      logger.warn({ error: 'error' in simulation ? simulation.error : 'No retval' }, 'get_total_assets simulation failed');
+      return null;
+    }
+    return rawToUsdc(BigInt(scValToNative(simulation.result.retval)));
+  } catch (error) {
+    logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Failed to read vault total assets');
+    return null;
+  }
 }
 
 /**
  * Submits an auto_compound transaction to the vault.
  */
 export async function submitAutoCompoundTx(minOut: number = 0, mode?: ExecutionMode): Promise<OperationResult> {
-  const { nativeToScVal } = await import('@stellar/stellar-sdk');
-  
   const args = [
     nativeToScVal(minOut, { type: 'i128' })
   ];

@@ -64,7 +64,7 @@ fn test_after_rebalance_to_blend_deployed_grows_idle_shrinks() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -80,7 +80,7 @@ fn test_after_rebalance_to_blend_deployed_grows_idle_shrinks() {
     assert_eq!(client.get_deployed_assets(), 0_i128);
 
     // Rebalance: all vault USDC is transferred to MockBlendPool.
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // After rebalance the vault should hold no USDC locally.
     assert_eq!(
@@ -113,7 +113,7 @@ fn test_after_rebalance_to_dex_deployed_grows_idle_shrinks() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.set_dex_pool(&owner, &dex_pool);
@@ -125,7 +125,7 @@ fn test_after_rebalance_to_dex_deployed_grows_idle_shrinks() {
     assert_eq!(client.get_idle_balance(), deposit_amount);
     assert_eq!(client.get_deployed_assets(), 0_i128);
 
-    client.rebalance(&symbol_short!("dex"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
 
     assert_eq!(
         client.get_idle_balance(),
@@ -154,7 +154,7 @@ fn test_get_asset_breakdown_matches_individual_getters() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
@@ -178,7 +178,7 @@ fn test_get_asset_breakdown_matches_individual_getters() {
     );
 
     // Rebalance to Blend.
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // Check breakdown after rebalance.
     let (idle_after, deployed_after) = client.get_asset_breakdown();
@@ -209,7 +209,7 @@ fn test_get_asset_breakdown_matches_individual_getters_for_dex() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     client.set_dex_pool(&owner, &dex_pool);
@@ -230,7 +230,7 @@ fn test_get_asset_breakdown_matches_individual_getters_for_dex() {
         "breakdown.deployed should match get_deployed_assets before rebalance"
     );
 
-    client.rebalance(&symbol_short!("dex"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
 
     let (idle_after, deployed_after) = client.get_asset_breakdown();
     assert_eq!(
@@ -268,7 +268,7 @@ fn test_idle_plus_deployed_equals_total_across_rebalance_cycle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, blend_pool) =
+    let (contract_id, agent, owner, usdc_token, blend_pool) =
         setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let _blend_client = MockBlendPoolClient::new(&env, &blend_pool);
@@ -300,7 +300,7 @@ fn test_idle_plus_deployed_equals_total_across_rebalance_cycle() {
     assert_eq!(deployed, 0, "nothing should be deployed after deposit");
 
     // STEP 2: Rebalance to Blend
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
     let idle = client.get_idle_balance();
     let deployed = client.get_deployed_assets();
     let total = client.get_total_assets();
@@ -326,19 +326,22 @@ fn test_idle_plus_deployed_equals_total_across_rebalance_cycle() {
         total,
         "idle + deployed must equal total after partial withdraw"
     );
-    // After partial withdraw from Blend, funds should be pulled back to vault
+    // A partial withdrawal pulls only the shortfall needed to cover the
+    // requested amount from Blend (`burn_and_pay`'s `needed` calculation),
+    // leaving the remainder deployed and still earning yield, rather than
+    // unwinding the whole position back to idle.
     assert_eq!(
-        idle,
-        deposit_amount - withdraw_amount,
-        "remaining funds should be idle after partial withdraw"
+        idle, 0,
+        "a partial withdrawal must not leave idle residue once Blend covers it"
     );
     assert_eq!(
-        deployed, 0,
-        "nothing should be deployed after partial withdraw"
+        deployed,
+        deposit_amount - withdraw_amount,
+        "the remaining balance should stay deployed after a partial withdraw"
     );
 
     // STEP 4: Rebalance to DEX (different protocol)
-    client.rebalance(&symbol_short!("dex"), &800_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &800_i128, &0_i128);
     let idle = client.get_idle_balance();
     let deployed = client.get_deployed_assets();
     let total = client.get_total_assets();

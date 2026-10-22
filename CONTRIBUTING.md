@@ -85,7 +85,26 @@ To contribute to the smart contracts, you'll need the following installed:
   cargo install --locked stellar-cli --version "$STELLAR_VERSION" --features opt
   ```
   Using a different version than the pin is the most common cause of CI failures locally.
-- **Node.js & npm**: For agent and frontend development (LTS version recommended).
+- **Node.js & npm**: For package workspace, agent, frontend, and WhatsApp development (LTS version recommended).
+
+### Pre-Commit Secret Scanning Hook
+
+To catch committed secrets (Stellar secret seeds, `.env` contents, API keys) locally before pushing, wire up our pre-commit hook (`scripts/pre-commit-gitleaks.sh`):
+
+1. **Install gitleaks** (`brew install gitleaks` or download from [Gitleaks Releases](https://github.com/gitleaks/gitleaks/releases)).
+2. **Wire the git hook** using either method:
+   - Configure git hooks directory:
+     ```bash
+     git config core.hooksPath .githooks
+     ```
+   - Or symlink directly into `.git/hooks`:
+     ```bash
+     ln -sf ../../scripts/pre-commit-gitleaks.sh .git/hooks/pre-commit
+     ```
+   - Or if you use `pre-commit`:
+     ```bash
+     pre-commit install
+     ```
 
 ### Building the Contract
 
@@ -107,8 +126,22 @@ cargo test
 
 For frontend or agent changes, run:
 ```bash
+cd <package-directory>
+npm ci
 npm test
 ```
+
+For the npm package workspaces (`packages/*`), run from the repository root:
+
+```bash
+npm ci
+npm test
+```
+
+This runs every package workspace test script. The admin panel currently has
+no tests; its test command prints an explicit no-tests-yet gate. The
+`agent/`, `frontend/`, and `whatsapp/` projects are not root npm workspaces, so
+run their tests from their own directories.
 
 > **Touching share accounting?** If your change lands anywhere under
 > `neurowealth-vault/contracts/vault/src/`, CI also runs the deposit/withdraw
@@ -304,6 +337,20 @@ Occasionally a state-changing function is intentionally permissionless (for exam
 
 Both methods cause the gate to skip that function. Reserve this escape hatch for functions that genuinely have no meaningful access-control boundary — all owner-only, agent-only, and user-scoped functions must have a SECURITY.md row.
 
+### Soroban Pitfall Lints
+
+`scripts/check-soroban-lints.py` (run in the **Security Documentation Audit** CI job) parses the production vault sources and fails on three Soroban pitfalls:
+
+| Rule | Flags |
+|------|-------|
+| `unwrap-storage-get` | `env.storage().<tier>().get(..).unwrap()` / `.expect(..)` — a missing key aborts with an opaque host panic instead of a typed `VaultError`. Use `.unwrap_or(..)` or `.unwrap_or_else(\|\| panic_with_error!(..))`. |
+| `missing-require-initialized` | A `#[contractimpl]` `pub fn` that never reaches `require_initialized` (directly or through helpers like `require_is_owner`). |
+| `missing-require-auth` | A `#[contractimpl]` `pub fn` that writes storage or moves tokens (directly or through helpers) without reaching `require_auth` / `require_auth_for_args`. |
+
+Run it locally with `python3 scripts/check-soroban-lints.py`. To suppress a finding, either add `// soroban-lint: allow(<rule>) <reason>` on the offending line (or directly above the `pub fn`), or add the function with a justification to [`scripts/soroban-lints-allow.json`](scripts/soroban-lints-allow.json).
+
+Pre-existing storage unwraps are tracked as a per-function ratchet baseline in the same file: adding a new one fails CI, and removing one asks you to lower the count via `python3 scripts/check-soroban-lints.py --update-baseline`. Never raise a baseline count to make CI pass.
+
 ### Dependency Audit & Advisory Exceptions
 
 The dependency audit ([`EmbarkStudios/cargo-deny-action`](https://github.com/EmbarkStudios/cargo-deny-action)) enforces the license, advisory, and source policies defined in [`deny.toml`](deny.toml). To reproduce it locally:
@@ -324,9 +371,11 @@ License exceptions follow the same PR-based process but additionally require leg
 ## Coding Standards
 
 - **Error Messages**: All error messages must follow the [Error Message Style Guide](ERROR_STYLE_GUIDE.md).
+- **Linting & Code Style**: Follow the [Shared Linting Baseline](docs/LINTING.md) across all Node.js and TypeScript packages (`frontend`, `agent`, `whatsapp`, `packages/vault-ui`).
 - **Architecture**: Ensure changes align with the project [Architecture Documentation](ARCHITECTURE.md).
 - **Events**: Every state change should emit a corresponding event as defined in [EVENTS.md](EVENTS.md).
 - **Safety**: Always use `checked_*` arithmetic operations for financial calculations.
+
 
 ## Submitting a Pull Request
 

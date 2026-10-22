@@ -27,4 +27,6 @@ if ! command -v gitleaks >/dev/null 2>&1; then
 fi
 
 exec gitleaks git --pre-commit --staged --redact \
-  --config "$ROOT/.gitleaks.toml"
+  --config "$ROOT/.gitleaks.toml" \
+  --gitleaks-ignore-path "$ROOT/.gitleaksignore"
+
