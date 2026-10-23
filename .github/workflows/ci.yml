@@ -256,6 +256,7 @@ jobs:
               ;;
             vault-ui-test)
               npm ci --prefix ../..
+              npm run build --prefix ../.. --workspace=@neurowealth/vault-client
               npm test --prefix ../.. --workspace=@neurowealth/vault-ui
               ;;
             frontend-check|frontend-lint)
@@ -273,6 +274,7 @@ jobs:
               npm run build
               ;;
             whatsapp-check)
+              (cd ../packages/vault-client && npm ci && npm run build)
               npm ci
               npm test
               ;;

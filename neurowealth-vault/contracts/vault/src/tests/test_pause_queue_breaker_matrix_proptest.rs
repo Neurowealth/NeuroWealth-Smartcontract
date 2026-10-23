@@ -687,10 +687,10 @@ proptest! {
             }
             let elig = client.get_withdrawal_eligibility(&fresh_user);
             if is_paused {
-                assert_eq!(elig.eligible_now, false);
+                assert!(!elig.eligible_now);
                 assert_eq!(elig.reason, symbol_short!("paused"));
             } else {
-                assert_eq!(elig.eligible_now, true);
+                assert!(elig.eligible_now);
                 assert_eq!(elig.reason, symbol_short!(""));
             }
         }

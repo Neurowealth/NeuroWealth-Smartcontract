@@ -97,8 +97,8 @@ async function submitVaultTransaction(
         }
         if (!agentKeypair) throw new Error('SOROBAN_SECRET_KEY is required in live mode');
         // Use resource fee from simulation and add inclusion fee
-        const resourceFee = simulation.minResourceFee || 0;
-        const totalFee = resourceFee + TX_INCLUSION_FEE;
+        const resourceFee = Number(simulation.minResourceFee) || 0;
+        const _totalFee = resourceFee + TX_INCLUSION_FEE;
         const signedTx = rpc.assembleTransaction(unsignedTx, simulation).build();
         signedTx.sign(agentKeypair);
         const txHash = signedTx.hash().toString('hex');

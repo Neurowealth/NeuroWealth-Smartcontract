@@ -189,6 +189,7 @@ transaction, and a partially funded bump is clamped rather than rejected.
 
 ```rust
 pub enum DataKey {
+    Balance(Address),     // legacy user balance (deprecated, discriminant preservation)
     Shares(Address),       // user -> share balance
     TotalDeposits,        // total principal in vault
     TotalShares,          // total shares in circulation
@@ -200,51 +201,37 @@ pub enum DataKey {
     PendingOwner,         // pending owner for two-step transfer
     TvLCap,               // maximum TVL
     UserDepositCap,       // per-user deposit limit
-    ApprovalTtl,          // shared protocol approval lifetime
     MinDeposit,           // minimum transaction amount
     MaxDeposit,           // maximum transaction amount
     Version,              // contract version
     BlendPool,            // Blend pool contract address
-    DexPool,              // DEX liquidity pool contract address (#228)
     CurrentProtocol,      // summary symbol ("blend" | "dex" | "multi" | "none")
     MultiProtocolEnabled, // multi-protocol allocation mode flag (Phase 2)
-    BlendAllocationBps,   // target Blend weight in bps (Phase 2)
-    DexAllocationBps,     // target DEX weight in bps (Phase 2)
-    DeployedToBlend,      // tracked USDC deployed to Blend (Phase 2)
-    DeployedToDex,        // tracked USDC deployed to the DEX (Phase 2)
-    BlendApyBps,          // last reported Blend APY in bps (Phase 2)
-    DexApyBps,            // last reported DEX APY in bps (Phase 2)
-    UserStrategy(Address),// user -> strategy preference symbol
+    AllocationBps,        // target allocation split (blend_bps, dex_bps)
+    DeployedSplit,        // tracked deployed principal (blend, dex)
+    ProtocolApyBps,       // last reported APYs (blend_bps, dex_bps)
+    BlendApprovalTtl,     // legacy Blend approval TTL
+    Deployer,             // deployer address (init only)
     MinRebalanceInterval, // rebalance cooldown in ledgers (#59)
     LastRebalanceLedger,  // ledger of last successful rebalance (#59)
-    PendingAgent,         // agent awaiting timelock confirmation (#317)
-    AgentTimelockExpiry,  // ledger the pending agent update unlocks at (#317)
-    PendingUpgradeHash,   // WASM hash awaiting timelock execution (#316)
-    UpgradeTimelockExpiry,// ledger the pending upgrade unlocks at (#316)
-    Deployer,             // deployer address (init only)
-    BlendApprovalTtl,     // legacy Blend approval TTL (fallback for ApprovalTtl)
-    MaxConsecutiveFailures, // circuit-breaker trip threshold (#439)
-    ConsecutiveFailures,  // running count of failed rebalances (#439)
+    ApprovalTtl,          // shared protocol approval lifetime
+    DexPool,              // DEX liquidity pool contract address (#228)
+    UserStrategy(Address),// user -> strategy preference symbol
+    PendingAgentUpdate,   // pending agent update (new_agent, effective_ledger) (#317)
+    PendingUpgrade,       // pending upgrade (new_wasm_hash, effective_ledger) (#316)
+    PendingMigrationTarget, // pending migration target and unlock ledger (#969)
+    CircuitBreakerState,  // circuit breaker (max_failures, consecutive_failures) (#439)
     UserSharesIndex,      // append-only Vec<Address> of share holders (#440)
-    MigrationTarget,      // target vault for share migration (#637)
-    MigrationPaused,      // migration-only pause flag (#637)
-    LockedShares(Address),// user -> shares locked by the user (#636)
+    MigrationState,       // migration state (target, paused) (#637)
+    LockState(Address),   // user -> lock state (shares, expiry) (#636)
     ApyPrediction(Symbol),// protocol -> latest ML APY prediction (#650)
-    CumulativeMevLoss,    // total suspected MEV loss (#658)
-    MevIncidentCount,     // number of suspected MEV incidents (#658)
+    MevStats,             // MEV stats (cumulative_loss, incident_count) (#658)
     MaxAcceptableMevLoss, // per-rebalance MEV alert threshold (#658)
-    LockExpiry(Address),  // user -> ledger when locked shares unlock (#636)
     MinHoldingPeriod,     // flash-loan protection window in ledgers (#659)
     LastDepositLedger(Address), // user -> ledger of last deposit (#659)
+    MaxDecreaseBps,       // max allowed decrease in basis points (#974)
     RateLimitConfig(Symbol),    // category -> rate-limit policy
     RateLimitGlobalState(Symbol), // category -> global window usage
-    RateLimitUserState(Address, Symbol), // (user, category) -> window usage
-    MaxBatchSize,         // batch_deposit entry ceiling (0 = unlimited)
-    DepositSnapshot(Address), // user -> first-deposit snapshot (#462)
-    ProtocolAdapter(Symbol),  // protocol -> adapter contract address (#656)
-    ProtocolWhitelist(Symbol),// protocol -> whitelist flag (#656)
-    ProtocolWhitelistIndex,   // Vec<Symbol> of whitelisted protocols (#656)
-    StandbyAgent,         // hot-standby agent key (#653)
 }
 ```
 
