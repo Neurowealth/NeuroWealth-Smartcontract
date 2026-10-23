@@ -2361,28 +2361,24 @@ const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
 pub const APPROVAL_RENEWAL_LEAD_LEDGERS: u32 = 5_000;
 
 use topics::{
-    TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED, TOPIC_AGENT_UPDATE_CONFIRMED,
-    TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_AGENT_KEY_ROTATED, TOPIC_APY_PREDICTION,
-    TOPIC_APPROVAL_TTL_SCHEDULED,
-    TOPIC_APPROVAL_TTL_UPDATED,
-    TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
     TOPIC_AGENT_KEY_ROTATED, TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED,
     TOPIC_AGENT_UPDATE_CONFIRMED, TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_APPROVAL_TTL_SCHEDULED,
-    TOPIC_APPROVAL_TTL_UPDATED, TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT, TOPIC_ASSET_WITHDRAW,
-    TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY,
-    TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED,
-    TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW, TOPIC_EMERGENCY_HARVEST,
-    TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT,
-    TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE, TOPIC_MIGRATION_PAUSED,
-    TOPIC_MIGRATION_RECEIVED, TOPIC_MIGRATION_TARGET_CANCELLED, TOPIC_MIGRATION_TARGET_SCHEDULED,
-    TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTI_PROTOCOL_MODE, TOPIC_OWNERSHIP_CANCELLED,
-    TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED,
-    TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED, TOPIC_PROTOCOL_CHANGED,
-    TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
-    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
-    TOPIC_SHARES_UNLOCKED, TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED,
-    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED,
-    TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_APPROVAL_TTL_UPDATED, TOPIC_APY_PREDICTION, TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT,
+    TOPIC_ASSET_WITHDRAW, TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED,
+    TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT,
+    TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW,
+    TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST,
+    TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE,
+    TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_RECEIVED, TOPIC_MIGRATION_TARGET_CANCELLED,
+    TOPIC_MIGRATION_TARGET_SCHEDULED, TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTI_PROTOCOL_MODE,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
+    TOPIC_PAUSED, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
+    TOPIC_PROTOCOL_CHANGED, TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED,
+    TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED,
+    TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED,
+    TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_TVL_CAP_UPDATED,
+    TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
+    TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_WITHDRAWAL_CANCELLED, TOPIC_WITHDRAWAL_FULFILLED, TOPIC_WITHDRAWAL_QUEUED,
     TOPIC_YIELD_ATTRIBUTED,
 };
@@ -4365,34 +4361,6 @@ impl NeuroWealthVault {
             let status = if current_protocol != symbol_short!("none") {
                 // The shared protocol-switch block above already completed and
                 // accounted for the exit. Only finalize the protocol state here.
-            let mut status = symbol_short!("success");
-
-            if current_protocol != symbol_short!("none") {
-                let expected_withdrawal = Self::get_protocol_balance(&env, &current_protocol);
-                amount_attempted = amount_attempted.saturating_add(expected_withdrawal);
-
-                let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
-                amount_withdrawn = amount_withdrawn.saturating_add(withdrawn);
-                amount_moved = amount_moved.saturating_add(withdrawn);
-
-                if expected_withdrawal > 0 {
-                    let remaining_balance = Self::get_protocol_balance(&env, &current_protocol);
-                    if remaining_balance > 0 {
-                        // Protocol exit incomplete — abort gracefully (Issue #145).
-                        env.events().publish(
-                            (TOPIC_REBALANCE_FAILED,),
-                            RebalanceFailedEvent {
-                                from_protocol: current_protocol,
-                                reason: symbol_short!("exit_fail"),
-                            },
-                        );
-                        // Failed exits count toward auto-pause, but do not
-                        // advance LastRebalanceLedger because the target was
-                        // not reached.
-                        Self::record_rebalance_outcome(&env, &symbol_short!("failed"));
-                        return;
-                    }
-                }
                 Self::set_current_protocol(&env, symbol_short!("none"));
                 symbol_short!("success")
             } else {

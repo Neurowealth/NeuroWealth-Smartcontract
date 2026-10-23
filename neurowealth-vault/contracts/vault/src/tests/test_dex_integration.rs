@@ -82,7 +82,8 @@ fn test_dex_integration_withdraw_via_rebalance() {
     let dex_wd_events = find_events_by_topic(events, &env, Symbol::new(&env, "dex_wd"));
     assert_eq!(dex_wd_events.len(), 1);
 
-    let rebalance_events = find_events_by_topic(env.events().all(), &env, symbol_short!("rebalance"));
+    let rebalance_events =
+        find_events_by_topic(env.events().all(), &env, symbol_short!("rebalance"));
     let none_event = rebalance_events
         .iter()
         .filter_map(|(_, _, data)| RebalanceEvent::try_from_val(&env, data).ok())

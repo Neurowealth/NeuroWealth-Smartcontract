@@ -33,7 +33,7 @@ fn test_set_max_decrease_bps() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -44,11 +44,11 @@ fn test_set_max_decrease_bps() {
     client.deposit(&user, &deposit);
 
     // Set to 500 bps (5%)
-    client.set_max_decrease_bps(&owner, &500);
+    client.set_max_decrease_bps(&500);
     assert_eq!(client.get_max_decrease_bps(), 500);
 
     // Set to 2000 bps (20%)
-    client.set_max_decrease_bps(&owner, &2000);
+    client.set_max_decrease_bps(&2000);
     assert_eq!(client.get_max_decrease_bps(), 2000);
 }
 
@@ -58,7 +58,7 @@ fn test_set_max_decrease_bps_hard_ceiling() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -69,11 +69,11 @@ fn test_set_max_decrease_bps_hard_ceiling() {
     client.deposit(&user, &deposit);
 
     // Set to 10_000 bps (100%) - should succeed
-    client.set_max_decrease_bps(&owner, &10_000);
+    client.set_max_decrease_bps(&10_000);
     assert_eq!(client.get_max_decrease_bps(), 10_000);
 
     // Set to 20_000 bps - should be clamped to 10_000
-    client.set_max_decrease_bps(&owner, &20_000);
+    client.set_max_decrease_bps(&20_000);
     assert_eq!(client.get_max_decrease_bps(), 10_000);
 }
 
@@ -83,7 +83,7 @@ fn test_update_total_assets_uses_stored_cap() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -94,7 +94,7 @@ fn test_update_total_assets_uses_stored_cap() {
     client.deposit(&user, &deposit);
 
     // Set cap to 500 bps (5%)
-    client.set_max_decrease_bps(&owner, &500);
+    client.set_max_decrease_bps(&500);
 
     // Attempt to report a 10% decrease with caller-supplied max_decrease_bps=10_000
     // Should fail because stored cap is 500 bps
@@ -109,7 +109,7 @@ fn test_update_total_assets_rejects_excess_decrease_with_stored_cap() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -120,7 +120,7 @@ fn test_update_total_assets_rejects_excess_decrease_with_stored_cap() {
     client.deposit(&user, &deposit);
 
     // Set cap to 500 bps (5%)
-    client.set_max_decrease_bps(&owner, &500);
+    client.set_max_decrease_bps(&500);
 
     // Attempt to report a 10% decrease - should fail
     let new_total = 9_000_000_i128; // 10% decrease exceeds 5% cap
@@ -133,7 +133,7 @@ fn test_update_total_assets_allows_decrease_within_stored_cap() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -144,7 +144,7 @@ fn test_update_total_assets_allows_decrease_within_stored_cap() {
     client.deposit(&user, &deposit);
 
     // Set cap to 500 bps (5%)
-    client.set_max_decrease_bps(&owner, &500);
+    client.set_max_decrease_bps(&500);
 
     // Report a 5% decrease - should succeed
     let new_total = 9_500_000_i128; // 5% decrease
@@ -154,10 +154,8 @@ fn test_update_total_assets_allows_decrease_within_stored_cap() {
 
 /// set_max_decrease_bps requires owner authorization.
 #[test]
-#[should_panic(expected = "Error(Contract, #34)")]
 fn test_set_max_decrease_bps_requires_owner() {
     let env = Env::default();
-    env.mock_all_auths();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
@@ -169,7 +167,10 @@ fn test_set_max_decrease_bps_requires_owner() {
     token.mint(&user, &deposit);
     client.deposit(&user, &deposit);
 
-    // Non-owner attempts to set cap
-    let non_owner = Address::generate(&env);
-    client.set_max_decrease_bps(&non_owner, &500);
+    env.mock_auths(&[]);
+    let result = client.try_set_max_decrease_bps(&500);
+    assert!(
+        result.is_err(),
+        "set_max_decrease_bps must fail without the owner's authorization"
+    );
 }

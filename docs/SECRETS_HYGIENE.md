@@ -19,6 +19,9 @@ leaks of Stellar secret seeds (`S...`) and `.env` contents.
 |---|---------|----------|--------|-----------------|
 | 1 | `generic-api-key`: `ETHEREUM_USDC_TOKEN_ADDRESS` | `packages/bridge/.env.example` @ `9e8ebfd` | **False positive.** The value is the *public* Ethereum mainnet USDC token contract address, not a credential. Suppressed by fingerprint in [`.gitleaksignore`](../.gitleaksignore). | No |
 | 2 | Stellar-format seeds (e.g. `SDAKFNYE…`, `SOWQ3GLR…AAAA…`) | vendored `packages/vault-client/node_modules/@stellar/stellar-base/**` in historical commits `a3e0617` / `147069a` | **Not project secrets.** These are the Stellar SDK's own published documentation/test example seeds inside an accidentally committed `node_modules` tree (since removed from the working tree). They are public upstream. The `stellar-secret-key` rule allowlists `node_modules/` paths. | No |
+| 3 | Dummy encryption keys and salts | `whatsapp/src/__tests__/cryptoUtils.test.ts` @ `c8d70b9` | **Test fixtures.** Unit test fixtures for testing encryption/decryption routines. Suppressed by fingerprint in [`.gitleaksignore`](../.gitleaksignore). | No |
+| 4 | Dummy Stellar secret keys and tokens | `frontend/src/lib/errorSanitizer.test.ts`, `frontend/src/app/[locale]/error.test.tsx`, `frontend/src/components/ErrorBoundary.test.tsx` @ `4248391` | **Test fixtures.** Unit test inputs verifying redaction of sensitive data and secret keys in error handling routines (#866). Suppressed by fingerprint in [`.gitleaksignore`](../.gitleaksignore). | No |
+| 5 | Dummy API key and bearer token | `packages/bridge/src/bridge-recovery.test.ts` @ `6d7f77f` | **Test fixtures.** Unit test inputs verifying error message sanitization and credential redaction (#848). Suppressed by fingerprint in [`.gitleaksignore`](../.gitleaksignore). | No |
 
 **Conclusion:** no live project credentials were found anywhere in history.
 Nothing required rotation. `scripts/deploy-devnet.sh` reads keys from the
