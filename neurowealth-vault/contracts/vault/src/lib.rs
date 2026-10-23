@@ -4444,7 +4444,9 @@ impl NeuroWealthVault {
                     .checked_mul(denom)
                     .and_then(|v| v.checked_div(total))
                     .unwrap_or(0);
-                let b = u32::try_from(b_i128).unwrap_or(0).min(Self::BPS_DENOMINATOR);
+                let b = u32::try_from(b_i128)
+                    .unwrap_or(0)
+                    .min(Self::BPS_DENOMINATOR);
                 (b, Self::BPS_DENOMINATOR.saturating_sub(b))
             } else {
                 (0, 0)
@@ -9689,9 +9691,10 @@ impl NeuroWealthVault {
             .get(&DataKeyExt::NextRequestId)
             .unwrap_or(1u32);
         let request_id = next_id;
-        env.storage()
-            .instance()
-            .set(&DataKeyExt::NextRequestId, &next_id.checked_add(1).expect("vault: queue id overflow"));
+        env.storage().instance().set(
+            &DataKeyExt::NextRequestId,
+            &next_id.checked_add(1).expect("vault: queue id overflow"),
+        );
 
         let timestamp = env.ledger().timestamp();
         let request = WithdrawalRequest {
@@ -10029,7 +10032,11 @@ impl NeuroWealthVault {
 
             // Expired requests are terminal and must not occupy storage forever.
             if config.ttl > 0 && current_timestamp > request.created_at.saturating_add(config.ttl) {
-                Self::adjust_reserved_withdrawal_amount(&env, &request.user, 0_i128.saturating_sub(request.amount));
+                Self::adjust_reserved_withdrawal_amount(
+                    &env,
+                    &request.user,
+                    0_i128.saturating_sub(request.amount),
+                );
                 env.storage()
                     .instance()
                     .remove(&DataKeyExt::WithdrawalRequest(id));
@@ -10055,7 +10062,11 @@ impl NeuroWealthVault {
                 BurnAndPayMode::Requested,
             );
 
-            Self::adjust_reserved_withdrawal_amount(&env, &request.user, 0_i128.saturating_sub(request.amount));
+            Self::adjust_reserved_withdrawal_amount(
+                &env,
+                &request.user,
+                0_i128.saturating_sub(request.amount),
+            );
 
             // Fulfil only after payment and share accounting have succeeded.
             env.storage()
