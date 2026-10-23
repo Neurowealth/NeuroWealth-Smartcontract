@@ -216,7 +216,6 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         canRetry = true;
         onTransactionConfirmed?.();
       } else if (confirmation.status === 'FAILED') {
-        setTxError({ kind: 'submission_failed', message: TX_ERROR_COPY.submission_failed });
         onOptimisticBalanceChange?.(-optimisticBalanceDelta);
         setTxError({ kind: 'submission_failed', message: t('submissionFailed') });
         canRetry = true;

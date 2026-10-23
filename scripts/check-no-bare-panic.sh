@@ -47,8 +47,10 @@ FOUND=0
 
 while IFS= read -r file; do
   while IFS= read -r line; do
+    # Strip line number prefix from grep -n output
+    content="${line#*:}"
     # Skip comment lines
-    if [[ "$line" =~ ^[[:space:]]*/[/*] ]]; then
+    if [[ "$content" =~ ^[[:space:]]*/[/*] ]]; then
       continue
     fi
     # Skip lines that already use the structured macro

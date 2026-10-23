@@ -17,8 +17,6 @@ import {
 const logger = pino({ name: 'whatsapp-webhook' });
 
 import { getSession, updateState, checkRateLimit, UserState } from './stateManager';
-import { clearOTP, generateOTP, verifyOTP } from './otpService';
-import { deliverOTP } from './otpDelivery';
 import { generateOTP, verifyOTP } from './otpService';
 import { sendOtpSms } from './smsService';
 import { createCustodialWallet, getWallet } from './walletService';
@@ -248,15 +246,6 @@ async function processWhatsAppMessage(
     // Flow 1: UNVERIFIED User sends "hi" -> Request OTP verification
     if (session.state === UserState.UNVERIFIED) {
       if (intent.type === 'GREETING' || intent.type === 'UNKNOWN') {
-        const otpCode = generateOTP(phoneHash);
-        try {
-          await deliverOTP(fromNumber.replace(/^whatsapp:/i, ''), otpCode);
-          updateState(phoneHash, UserState.AWAITING_OTP);
-          twiml.message('Your verification code was sent by SMS. Enter it here to continue. It expires in 5 minutes.');
-        } catch {
-          clearOTP(phoneHash);
-          logger.error('OTP SMS delivery failed');
-          twiml.message('We could not send your verification code. Please try again shortly.');
         await guard.begin();
         const otpCode = await generateOTP(phoneHash);
 

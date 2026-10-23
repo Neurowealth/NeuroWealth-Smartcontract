@@ -768,7 +768,7 @@ pub struct AssetConfig {
 /// `assets / shares`) is computed per asset rather than vault-globally.
 /// Absent — or all zero — until the first `deposit_asset`.
 #[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct AssetTotals {
     /// Total managed value in the asset's native units (principal + yield).
     pub assets: i128,
@@ -776,16 +776,6 @@ pub struct AssetTotals {
     pub shares: i128,
     /// Principal deposited into this asset's share pool (no yield).
     pub deposits: i128,
-}
-
-impl Default for AssetTotals {
-    fn default() -> Self {
-        AssetTotals {
-            assets: 0,
-            shares: 0,
-            deposits: 0,
-        }
-    }
 }
 
 /// Combined result for `get_asset_totals`, exposing both the per-asset pool
@@ -2887,8 +2877,6 @@ impl NeuroWealthVault {
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
 
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let token_client = token::Client::new(&env, &usdc_token);
-        token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         let total: i128 = env
             .storage()
@@ -2995,16 +2983,14 @@ impl NeuroWealthVault {
             .set(&DataKey::TotalAssets, &new_total_assets);
 
         // Record deposit ledger for flash-loan protection (#659).
-
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
         );
 
-        env.storage().persistent().set(
-            &DataKey::LastDepositLedger(user.clone()),
-            &env.ledger().sequence(),
-        );
+        // --- Cross-contract call: transfer tokens after state updates (CEI) ---
+        let token_client = token::Client::new(&env, &usdc_token);
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
 
         env.events().publish(
             (TOPIC_DEPOSIT, user.clone()),
@@ -6189,10 +6175,9 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_agent(&env, &agent);
 
-        assert!(
-            estimated_loss_stroops >= 0,
-            "estimated_loss_stroops must be non-negative"
-        );
+        if estimated_loss_stroops < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
 
         let (cumulative, incident_count) = Self::read_mev_stats(&env);
         let new_cumulative = cumulative
@@ -6237,10 +6222,9 @@ impl NeuroWealthVault {
     pub fn set_max_acceptable_mev_loss(env: Env, max_loss_stroops: i128) {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
-        assert!(
-            max_loss_stroops >= 0,
-            "max_loss_stroops must be non-negative"
-        );
+        if max_loss_stroops < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
         env.storage()
             .instance()
             .set(&DataKey::MaxAcceptableMevLoss, &max_loss_stroops);
@@ -7791,7 +7775,7 @@ impl NeuroWealthVault {
                 .instance()
                 .get(&DataKey::MaxDecreaseBps)
                 .unwrap_or(1000); // Default to 10% if not set
-            let effective_cap_bps = stored_max_bps.max(100).min(10_000);
+            let effective_cap_bps = stored_max_bps.clamp(100, 10_000);
             let max_decrease = old_total
                 .checked_mul(effective_cap_bps as i128)
                 .expect("vault: total available overflow")
@@ -7812,24 +7796,33 @@ impl NeuroWealthVault {
         // This prevents the agent from inflating total_assets beyond what the vault can pay out
         // We must include both idle funds in vault AND funds deployed to Blend
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let token_client = token::Client::new(&env, &usdc_token);
-        let vault_balance = token_client.balance(&env.current_contract_address());
-
-        let mut total_available = vault_balance;
-
         let current_protocol: Symbol = env
             .storage()
             .instance()
             .get(&DataKey::CurrentProtocol)
             .unwrap_or(symbol_short!("none"));
 
-        if current_protocol == symbol_short!("blend")
-            && env.storage().instance().has(&DataKey::BlendPool)
-        {
-            let blend_pool: Address = env.storage().instance().get(&DataKey::BlendPool).unwrap();
+        let blend_pool: Option<Address> = if current_protocol == symbol_short!("blend") {
+            env.storage().instance().get(&DataKey::BlendPool)
+        } else {
+            None
+        };
+
+        let dex_pool: Option<Address> = if current_protocol == symbol_short!("dex") {
+            env.storage().instance().get(&DataKey::DexPool)
+        } else {
+            None
+        };
+
+        // --- Cross-Contract Calls ---
+        let token_client = token::Client::new(&env, &usdc_token);
+        let vault_balance = token_client.balance(&env.current_contract_address());
+        let mut total_available = vault_balance;
+
+        if let Some(pool) = blend_pool {
             let deployed_balance = BlendPoolClient::get_balance(
                 &env,
-                &blend_pool,
+                &pool,
                 &usdc_token,
                 &env.current_contract_address(),
             );
@@ -7838,13 +7831,10 @@ impl NeuroWealthVault {
                 .expect("vault: total available overflow");
         }
 
-        if current_protocol == symbol_short!("dex")
-            && env.storage().instance().has(&DataKey::DexPool)
-        {
-            let dex_pool: Address = env.storage().instance().get(&DataKey::DexPool).unwrap();
+        if let Some(pool) = dex_pool {
             let deployed_balance = DexPoolClient::get_balance(
                 &env,
-                &dex_pool,
+                &pool,
                 &usdc_token,
                 &env.current_contract_address(),
             );
@@ -9670,7 +9660,7 @@ impl NeuroWealthVault {
                 .unwrap_or_else(|| Vec::new(&env));
             Self::require(
                 &env,
-                (order.len() as u32) < config.max_size,
+                order.len() < config.max_size,
                 VaultError::BatchSizeExceeded,
             );
         }
@@ -10126,6 +10116,7 @@ impl NeuroWealthVault {
 
     /// Returns `true` when the asset has been registered by the owner (#646).
     #[inline]
+    #[allow(dead_code)]
     fn is_asset_supported(env: &Env, asset: &Symbol) -> bool {
         env.storage()
             .instance()
@@ -11889,6 +11880,7 @@ impl NeuroWealthVault {
     }
 
     /// Reads the vault's locally tracked per-venue deployment `(blend, dex)`.
+    #[allow(dead_code)]
     fn read_deployed_split(env: &Env) -> (i128, i128) {
         env.storage()
             .instance()

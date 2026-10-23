@@ -25,12 +25,6 @@ import {
 export default function DashboardPage() {
   const t = useTranslations('Index');
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [vaultState, setVaultState] = useState<VaultState>({
-    balance: 0,
-    strategy: 'Balanced',
-    exchangeRate: 1.042,
-    apy: 8.4
-  });
   const [optimisticBalanceDelta, setOptimisticBalanceDelta] = useState(0);
   const [vaultState, setVaultState] = useState<VaultState>({ ...EMPTY_VAULT_STATE });
   const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
@@ -71,8 +65,6 @@ export default function DashboardPage() {
         getRecentTransactions(publicKey),
       ]);
 
-      setVaultState(state);
-      setOptimisticBalanceDelta(0);
       if (signal?.aborted) return;
 
       if (!stateResult.ok) {
@@ -80,6 +72,7 @@ export default function DashboardPage() {
       }
 
       setVaultState(stateResult.state);
+      setOptimisticBalanceDelta(0);
       setEarnings(earnData);
       setChartData(chart);
       setTransactions(txs);
@@ -100,7 +93,6 @@ export default function DashboardPage() {
     if (publicKey) {
       loadData(abortController.signal);
     } else {
-      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
       setOptimisticBalanceDelta(0);
       setVaultState({ ...EMPTY_VAULT_STATE });
       setEarnings({ today: 0, week: 0, month: 0 });

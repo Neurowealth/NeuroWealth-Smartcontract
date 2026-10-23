@@ -4291,6 +4291,48 @@
       ]
     },
     {
+      "name": "ApyPredictionSubmittedEvent",
+      "topic": "apy_pred",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "Protocol this prediction applies to (`\"blend\"` or `\"dex\"`)."
+        },
+        {
+          "name": "predicted_apy_bps",
+          "type": "i128",
+          "description": "Predicted APY in basis points."
+        },
+        {
+          "name": "apy_1h_bps",
+          "type": "i128",
+          "description": "1-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "apy_6h_bps",
+          "type": "i128",
+          "description": "6-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "apy_24h_bps",
+          "type": "i128",
+          "description": "24-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "confidence_bps",
+          "type": "u32",
+          "description": "Model confidence in basis points."
+        },
+        {
+          "name": "submitted_at_ledger",
+          "type": "u32",
+          "description": "Ledger at which this prediction was submitted."
+        }
+      ]
+    },
+    {
       "name": "MevExtractionSuspectedEvent",
       "topic": "unknown",
       "description": "Emitted by the contract.",

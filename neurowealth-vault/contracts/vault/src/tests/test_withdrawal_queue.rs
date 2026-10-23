@@ -3,6 +3,7 @@
 use super::utils::*;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
+#[allow(clippy::too_many_arguments)]
 fn assert_withdrawal_state(
     token: &TestTokenClient,
     client: &NeuroWealthVaultClient,

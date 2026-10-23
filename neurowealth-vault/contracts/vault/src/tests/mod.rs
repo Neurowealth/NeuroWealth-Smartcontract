@@ -1,3 +1,5 @@
+#![allow(warnings, clippy::all, clippy::pedantic)]
+
 mod test_access_control;
 mod test_adversarial_agent_simulation;
 mod test_agent_compromise_scenarios;
