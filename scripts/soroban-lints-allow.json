@@ -58,12 +58,11 @@
     "supply_to_dex": 1,
     "switch_to_standby_agent": 2,
     "transfer_ownership": 1,
-    "unlock_shares": 1,
     "unpause": 2,
     "update_agent": 1,
     "update_asset_limits": 1,
     "update_standby_agent": 2,
-    "update_total_assets": 4,
+    "update_total_assets": 2,
     "withdraw_asset": 1,
     "withdraw_from_blend": 1,
     "withdraw_from_dex": 1

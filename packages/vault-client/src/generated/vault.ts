@@ -707,6 +707,24 @@ export interface EmergencyWithdrawalEvent {
 }
 
 /** Emitted by the contract. */
+export interface ApyPredictionSubmittedEvent {
+  /** Protocol this prediction applies to (`"blend"` or `"dex"`). */
+  protocol: string;
+  /** Predicted APY in basis points. */
+  predicted_apy_bps: bigint;
+  /** 1-hour-ahead APY forecast in basis points. */
+  apy_1h_bps: bigint;
+  /** 6-hour-ahead APY forecast in basis points. */
+  apy_6h_bps: bigint;
+  /** 24-hour-ahead APY forecast in basis points. */
+  apy_24h_bps: bigint;
+  /** Model confidence in basis points. */
+  confidence_bps: number;
+  /** Ledger at which this prediction was submitted. */
+  submitted_at_ledger: number;
+}
+
+/** Emitted by the contract. */
 export interface MevExtractionSuspectedEvent {
   /** The rebalance protocol where MEV was suspected (e.g., "blend", "dex"). */
   protocol: string;

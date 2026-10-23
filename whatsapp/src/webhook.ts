@@ -84,15 +84,6 @@ export async function handleWhatsAppWebhook(req: Request, res: Response): Promis
   // strategy, and transaction state. Serialize per phone number so
   // concurrent messages from the same user apply in arrival order instead
   // of racing; messages from different users still process in parallel.
-  await runExclusive(phoneHash, () => processWhatsAppMessage(phoneHash, fromNumber, messageBody, res));
-}
-
-async function processWhatsAppMessage(
-  phoneHash: string,
-  fromNumber: string,
-  messageBody: string,
-  res: Response,
-): Promise<void> {
   // The idempotency claim happens inside the lock, so an in-process
   // duplicate observes the first delivery's final state.
   const idempotencyKey = deriveIdempotencyKey(req.body, req.headers?.['i-twilio-idempotency-token']);

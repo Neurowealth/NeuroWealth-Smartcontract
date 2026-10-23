@@ -171,8 +171,6 @@ describe('ingestLiveApys fixtures', () => {
 
 describe('evaluateYield (#467)', () => {
   it('moves balanced funds to the higher-yielding DEX when real APYs are available', async () => {
-    // Mock the fetch functions to return real values
-    const { fetchBlendApy, fetchDexApy } = await import('./yieldComparison');
     // When live protocols are provided, it uses those instead of the fallback functions
     const liveProtocols = [
       fixtureProtocol('blend', 0.065),

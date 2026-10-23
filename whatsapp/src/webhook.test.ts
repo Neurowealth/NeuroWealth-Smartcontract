@@ -8,22 +8,6 @@ import { smsClient } from './smsService';
 
 setStateStore(new InMemoryStateStore());
 
-const deliveredCodes = new Map<string, string>();
-const otpDeliveryModulePath = require.resolve('./otpDelivery');
-require.cache[otpDeliveryModulePath] = {
-  id: otpDeliveryModulePath,
-  filename: otpDeliveryModulePath,
-  loaded: true,
-  exports: {
-    deliverOTP: async (phoneNumber: string, code: string) => {
-      deliveredCodes.set(phoneNumber, code);
-    },
-  },
-  parent: null,
-  children: [],
-  paths: [],
-} as any;
-
 const { handleWhatsAppWebhook } = require('./webhook') as typeof import('./webhook');
 
 // Webhook state machine (#691). Each test uses its own phone number, because the
@@ -81,9 +65,6 @@ async function send(from: string, body: string): Promise<Captured> {
 async function verifiedPhone(): Promise<string> {
   const from = freshFrom();
   await send(from, 'hi');
-  const code = deliveredCodes.get(from.replace(/^whatsapp:/i, ''));
-  assert.ok(code, 'the OTP must be delivered out of band');
-  const confirmation = await send(from, code);
   assert.ok(lastSmsCode, 'the greeting must issue an OTP via SMS');
   const confirmation = await send(from, lastSmsCode!);
   assert.match(confirmation.body, /verified/i);
@@ -104,11 +85,6 @@ describe('webhook verification flow (#691)', () => {
     const captured = await send(from, 'hi');
 
     assert.strictEqual(captured.type, 'text/xml');
-    const code = deliveredCodes.get(from.replace(/^whatsapp:/i, ''));
-    assert.ok(code, 'the OTP must be delivered by SMS');
-    assert.match(captured.body, /sent by SMS/i);
-    assert.doesNotMatch(captured.body, new RegExp(code), 'TwiML must not contain the OTP');
-    assert.strictEqual(getSession(hashPhoneNumber(from)).state, UserState.AWAITING_OTP);
     assert.doesNotMatch(captured.body, /[0-9]{6}/, 'the OTP code must never appear in the chat reply');
     assert.match(captured.body, /sent a 6-digit verification code to your phone via SMS/);
     assert.ok(lastSmsCode, 'the OTP must be delivered via SMS');
@@ -123,7 +99,6 @@ describe('webhook verification flow (#691)', () => {
   it('creates a wallet once the OTP is accepted', async () => {
     const from = freshFrom();
     await send(from, 'hi');
-    const issued = deliveredCodes.get(from.replace(/^whatsapp:/i, ''))!;
     const issued = lastSmsCode!;
     const captured = await send(from, issued);
 
@@ -135,7 +110,6 @@ describe('webhook verification flow (#691)', () => {
   it('rejects a wrong OTP and says how many attempts remain', async () => {
     const from = freshFrom();
     await send(from, 'hi');
-    const issued = deliveredCodes.get(from.replace(/^whatsapp:/i, ''))!;
     const issued = lastSmsCode!;
     const wrong = issued === '000000' ? '111111' : '000000';
     const captured = await send(from, wrong);

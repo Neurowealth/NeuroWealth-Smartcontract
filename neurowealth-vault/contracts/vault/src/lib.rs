@@ -138,6 +138,7 @@
 // single, explained crate-level allow (issues #422 / #423).
 #![allow(missing_docs)]
 #![no_std]
+#![allow(clippy::pedantic)]
 #![allow(deprecated)]
 // These mixed-case aliases are part of the legacy `VaultError` API and are
 // retained for source compatibility with existing clients and tests.
@@ -367,11 +368,6 @@ impl VaultError {
     pub const AgentCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
     pub const UsdcTokenCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
     pub const MaximumDepositExceedsCeiling: Self = Self::MaximumDepositExceeded;
-    pub const MigrationPaused: Self = Self::Paused;
-    pub const InvalidMigrationTarget: Self = Self::InvalidStrategy;
-    pub const NoSharesToMigrate: Self = Self::NoSharesToWithdraw;
-    pub const InsufficientUnlockedShares: Self = Self::InsufficientShares;
-    pub const EmergencyWithdrawalNotAllowed: Self = Self::NotPaused;
 }
 
 // ============================================================================
@@ -385,6 +381,12 @@ impl VaultError {
 /// storage is used for per-user data that requires efficient access.
 #[contracttype]
 pub enum DataKey {
+    /// Legacy user's principal USDC balance (key: user Address).
+    ///
+    /// Deprecated: retained only to preserve the serialized `DataKey` layout
+    /// across upgrades. New accounting must not read or write this key; user
+    /// balances are derived from `Shares(user)` and the current exchange rate.
+    Balance(Address),
     /// User's share balance (key: user Address).
     /// Represents proportional ownership of the vault's total assets.
     Shares(Address),
@@ -2332,9 +2334,9 @@ const USER_SHARES_TTL_THRESHOLD: u32 = 100;
 
 /// Lock period constants for share locking (#636).
 /// Assuming ~5 seconds per ledger on Stellar mainnet.
-const LOCK_30_DAYS_LEDGERS: u32 = 30 * 24 * 60 * 60 / 5; // ~518,400 ledgers
-const LOCK_90_DAYS_LEDGERS: u32 = 90 * 24 * 60 * 60 / 5; // ~1,555,200 ledgers
-const LOCK_180_DAYS_LEDGERS: u32 = 180 * 24 * 60 * 60 / 5; // ~3,110,400 ledgers
+const LOCK_30_DAYS_LEDGERS: u32 = 518_400; // 30 days @ 5s/ledger (~518,400 ledgers)
+const LOCK_90_DAYS_LEDGERS: u32 = 1_555_200; // 90 days @ 5s/ledger (~1,555,200 ledgers)
+const LOCK_180_DAYS_LEDGERS: u32 = 3_110_400; // 180 days @ 5s/ledger (~3,110,400 ledgers)
 
 /// Target ledgers to extend a user's `Shares` entry to when maintaining TTL.
 const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
@@ -4190,7 +4192,7 @@ impl NeuroWealthVault {
 
         Self::require_rebalance_cooldown_elapsed(&env);
 
-        if min_out < 0 || (min_out <= 10_000 && min_out > Self::BPS_DENOMINATOR as i128) {
+        if min_out < 0 || (min_out <= 10_000 && min_out > i128::from(Self::BPS_DENOMINATOR)) {
             panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
         }
 
@@ -4437,8 +4439,13 @@ impl NeuroWealthVault {
             } else if blend_bal > 0 || dex_bal > 0 {
                 // Already holding a split position — reflect it exactly.
                 let total = blend_bal.saturating_add(dex_bal);
-                let b = ((blend_bal * (Self::BPS_DENOMINATOR as i128)) / total) as u32;
-                (b, Self::BPS_DENOMINATOR - b)
+                let denom = i128::from(Self::BPS_DENOMINATOR);
+                let b_i128 = blend_bal
+                    .checked_mul(denom)
+                    .and_then(|v| v.checked_div(total))
+                    .unwrap_or(0);
+                let b = u32::try_from(b_i128).unwrap_or(0).min(Self::BPS_DENOMINATOR);
+                (b, Self::BPS_DENOMINATOR.saturating_sub(b))
             } else {
                 (0, 0)
             }
@@ -4612,10 +4619,12 @@ impl NeuroWealthVault {
             }
         };
 
-        let weighted = (blend_bps as u64)
-            .saturating_mul(blend_apy as u64)
-            .saturating_add((dex_bps as u64).saturating_mul(dex_apy as u64));
-        (weighted / (Self::BPS_DENOMINATOR as u64)) as u32
+        let denom = u64::from(Self::BPS_DENOMINATOR);
+        let weighted = u64::from(blend_bps)
+            .saturating_mul(u64::from(blend_apy))
+            .saturating_add(u64::from(dex_bps).saturating_mul(u64::from(dex_apy)));
+        let res_u64 = weighted.checked_div(denom).unwrap_or(0);
+        u32::try_from(res_u64).unwrap_or(0)
     }
 
     /// Rebalances the vault across **both** protocols simultaneously.
@@ -4684,7 +4693,7 @@ impl NeuroWealthVault {
         );
         Self::require_valid_allocation(&env, blend_bps, dex_bps);
 
-        if min_out < 0 || (min_out <= 10_000 && min_out > Self::BPS_DENOMINATOR as i128) {
+        if min_out < 0 || (min_out <= 10_000 && min_out > i128::from(Self::BPS_DENOMINATOR)) {
             panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
         }
 
@@ -4716,13 +4725,13 @@ impl NeuroWealthVault {
 
         // ── Step 1: exit over-allocated venues first, to free up liquidity ──
         if blend_bal > blend_target {
-            let excess = blend_bal - blend_target;
+            let excess = blend_bal.saturating_sub(blend_target);
             amount_attempted = amount_attempted.saturating_add(excess);
             amount_withdrawn =
                 amount_withdrawn.saturating_add(Self::withdraw_from_blend(&env, excess, min_out));
         }
         if dex_bal > dex_target {
-            let excess = dex_bal - dex_target;
+            let excess = dex_bal.saturating_sub(dex_target);
             amount_attempted = amount_attempted.saturating_add(excess);
             amount_withdrawn =
                 amount_withdrawn.saturating_add(Self::withdraw_from_dex(&env, excess, min_out));
@@ -4733,7 +4742,7 @@ impl NeuroWealthVault {
 
         let blend_now = Self::get_protocol_balance(&env, &symbol_short!("blend"));
         if blend_target > blend_now && available > 0 {
-            let want = min(blend_target - blend_now, available);
+            let want = min(blend_target.saturating_sub(blend_now), available);
             if want > 0 {
                 amount_attempted = amount_attempted.saturating_add(want);
                 let supplied = Self::supply_to_blend(&env, want, min_out, false);
@@ -4744,7 +4753,7 @@ impl NeuroWealthVault {
 
         let dex_now = Self::get_protocol_balance(&env, &symbol_short!("dex"));
         if dex_target > dex_now && available > 0 {
-            let want = min(dex_target - dex_now, available);
+            let want = min(dex_target.saturating_sub(dex_now), available);
             if want > 0 {
                 amount_attempted = amount_attempted.saturating_add(want);
                 let supplied = Self::supply_to_dex(&env, want, min_out, false);
@@ -4790,7 +4799,7 @@ impl NeuroWealthVault {
             (TOPIC_REBALANCE,),
             RebalanceEvent {
                 protocol: symbol_short!("multi"),
-                expected_apy: Self::get_composite_apy(env.clone()) as i128,
+                expected_apy: i128::from(Self::get_composite_apy(env.clone())),
                 status: status.clone(),
                 amount_attempted,
                 amount_moved,
@@ -5168,7 +5177,7 @@ impl NeuroWealthVault {
         let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
 
-        if min_out < 0 || (min_out <= 10_000 && min_out > Self::BPS_DENOMINATOR as i128) {
+        if min_out < 0 || (min_out <= 10_000 && min_out > i128::from(Self::BPS_DENOMINATOR)) {
             panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
         }
 
@@ -7777,7 +7786,7 @@ impl NeuroWealthVault {
                 .unwrap_or(1000); // Default to 10% if not set
             let effective_cap_bps = stored_max_bps.clamp(100, 10_000);
             let max_decrease = old_total
-                .checked_mul(effective_cap_bps as i128)
+                .checked_mul(i128::from(effective_cap_bps))
                 .expect("vault: total available overflow")
                 .checked_div(10_000)
                 .expect("vault: total available overflow");
@@ -8234,7 +8243,7 @@ impl NeuroWealthVault {
     /// [`EmergencyPausedEvent`]. The pause is applied at most once per trip: if
     /// the vault is already paused no duplicate event is emitted.
     fn record_rebalance_outcome(env: &Env, status: &Symbol) {
-        if *status == symbol_short!("failed") {
+        if status == &symbol_short!("failed") {
             let (threshold, current_failures) = Self::read_circuit_breaker_state(env);
             let failures = current_failures.saturating_add(1);
             env.storage()
@@ -8254,7 +8263,7 @@ impl NeuroWealthVault {
                         .publish((TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
                 }
             }
-        } else if *status == symbol_short!("success") {
+        } else if status == &symbol_short!("success") {
             Self::write_consecutive_failures(env, 0);
         }
     }
@@ -8920,10 +8929,10 @@ impl NeuroWealthVault {
             .unwrap_or(0)
             .saturating_sub(10_000);
 
-        let days_held = held_seconds / 86_400;
+        let days_held = i128::from(held_seconds.checked_div(86_400).unwrap_or(1));
         growth_bps
             .checked_mul(365)
-            .and_then(|v| v.checked_div(days_held as i128))
+            .and_then(|v| v.checked_div(days_held))
             .unwrap_or(0)
     }
 
@@ -9631,7 +9640,13 @@ impl NeuroWealthVault {
             let numerator = total_reserved_after
                 .checked_mul(total_shares)
                 .expect("vault: shares overflow");
-            (numerator + total_assets - 1) / total_assets
+            numerator
+                .checked_add(total_assets)
+                .expect("vault: shares overflow")
+                .checked_sub(1)
+                .expect("vault: shares underflow")
+                .checked_div(total_assets)
+                .expect("vault: divide by zero")
         } else {
             total_reserved_after
         };
@@ -9676,7 +9691,7 @@ impl NeuroWealthVault {
         let request_id = next_id;
         env.storage()
             .instance()
-            .set(&DataKeyExt::NextRequestId, &(next_id + 1));
+            .set(&DataKeyExt::NextRequestId, &next_id.checked_add(1).expect("vault: queue id overflow"));
 
         let timestamp = env.ledger().timestamp();
         let request = WithdrawalRequest {
@@ -9758,7 +9773,7 @@ impl NeuroWealthVault {
         );
         Self::require(&env, request.user == user, VaultError::NotRequestOwner);
 
-        Self::adjust_reserved_withdrawal_amount(&env, &user, -request.amount);
+        Self::adjust_reserved_withdrawal_amount(&env, &user, 0_i128.saturating_sub(request.amount));
 
         env.storage()
             .instance()
@@ -9886,7 +9901,7 @@ impl NeuroWealthVault {
             if last_deposit_ledger > 0 {
                 let holding_elapsed = current_ledger.saturating_sub(last_deposit_ledger);
                 if holding_elapsed < min_holding_period {
-                    let eligible_ledger = last_deposit_ledger + min_holding_period;
+                    let eligible_ledger = last_deposit_ledger.saturating_add(min_holding_period);
                     return WithdrawalEligibility {
                         eligible_ledger,
                         eligible_now: false,
@@ -9911,7 +9926,7 @@ impl NeuroWealthVault {
                 .get::<_, WithdrawalRequest>(&DataKeyExt::WithdrawalRequest(request_id))
             {
                 if request.user == user && !request.fulfilled && !request.cancelled {
-                    user_position_in_queue = Some(index as u32);
+                    user_position_in_queue = u32::try_from(index).ok();
                     break;
                 }
             }
@@ -9921,9 +9936,12 @@ impl NeuroWealthVault {
             // User is in queue - estimate processing time based on position
             // Assume batch processing of MAX_WITHDRAWAL_PROCESS_BATCH per call
             const BATCH_SIZE: u32 = 10;
-            let estimated_batches = (position / BATCH_SIZE) + 1;
+            let estimated_batches = position
+                .checked_div(BATCH_SIZE)
+                .unwrap_or(0)
+                .saturating_add(1);
             // Assume one batch per ledger (conservative estimate)
-            let eligible_ledger = current_ledger + estimated_batches;
+            let eligible_ledger = current_ledger.saturating_add(estimated_batches);
 
             return WithdrawalEligibility {
                 eligible_ledger,
@@ -9990,7 +10008,7 @@ impl NeuroWealthVault {
                 new_order.push_back(id);
                 continue;
             }
-            inspected += 1;
+            inspected = inspected.saturating_add(1);
 
             let Some(request): Option<WithdrawalRequest> = env
                 .storage()
@@ -10010,15 +10028,19 @@ impl NeuroWealthVault {
             }
 
             // Expired requests are terminal and must not occupy storage forever.
-            if config.ttl > 0 && current_timestamp > request.created_at + config.ttl {
-                Self::adjust_reserved_withdrawal_amount(&env, &request.user, -request.amount);
+            if config.ttl > 0 && current_timestamp > request.created_at.saturating_add(config.ttl) {
+                Self::adjust_reserved_withdrawal_amount(&env, &request.user, 0_i128.saturating_sub(request.amount));
                 env.storage()
                     .instance()
                     .remove(&DataKeyExt::WithdrawalRequest(id));
                 continue;
             }
 
-            let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+            let usdc_token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::UsdcToken)
+                .unwrap_or_else(|| panic_with_error!(&env, VaultError::NotInitialized));
             let vault_address = env.current_contract_address();
             let available = token::Client::new(&env, &usdc_token).balance(&vault_address);
             if available < request.amount {
@@ -10033,14 +10055,14 @@ impl NeuroWealthVault {
                 BurnAndPayMode::Requested,
             );
 
-            Self::adjust_reserved_withdrawal_amount(&env, &request.user, -request.amount);
+            Self::adjust_reserved_withdrawal_amount(&env, &request.user, 0_i128.saturating_sub(request.amount));
 
             // Fulfil only after payment and share accounting have succeeded.
             env.storage()
                 .instance()
                 .remove(&DataKeyExt::WithdrawalRequest(id));
 
-            processed += 1;
+            processed = processed.saturating_add(1);
 
             env.events().publish(
                 (TOPIC_WITHDRAWAL_FULFILLED,),
@@ -11012,7 +11034,7 @@ impl NeuroWealthVault {
     /// actual fund movement.
     fn adjust_reserved_withdrawal_amount(env: &Env, user: &Address, delta: i128) {
         let current = Self::read_reserved_withdrawal_amount(env, user);
-        let updated = (current + delta).max(0);
+        let updated = current.saturating_add(delta).max(0);
         if updated == 0 {
             env.storage()
                 .instance()
@@ -11280,11 +11302,15 @@ impl NeuroWealthVault {
         if slippage_bps == 0 {
             return 0;
         }
-        if slippage_bps > Self::BPS_DENOMINATOR as i128 {
+        let denom = i128::from(Self::BPS_DENOMINATOR);
+        if slippage_bps > denom {
             return slippage_bps;
         }
-        expected.saturating_mul(Self::BPS_DENOMINATOR as i128 - slippage_bps)
-            / Self::BPS_DENOMINATOR as i128
+        let factor = denom.saturating_sub(slippage_bps);
+        expected
+            .saturating_mul(factor)
+            .checked_div(denom)
+            .unwrap_or(0)
     }
 
     /// Revokes any allowance `spender` still holds over `from`'s tokens.
@@ -11788,13 +11814,13 @@ impl NeuroWealthVault {
         amount: i128,
         min_out: i128,
     ) -> i128 {
-        if *protocol == symbol_short!("multi") {
+        if protocol == &symbol_short!("multi") {
             // Multi-protocol mode: pull from both venues proportionally so a
             // redemption does not skew the target allocation.
             Self::withdraw_proportionally(env, amount, min_out)
-        } else if *protocol == symbol_short!("blend") {
+        } else if protocol == &symbol_short!("blend") {
             Self::withdraw_from_blend(env, amount, min_out)
-        } else if *protocol == symbol_short!("dex") {
+        } else if protocol == &symbol_short!("dex") {
             Self::withdraw_from_dex(env, amount, min_out)
         } else {
             0
@@ -11812,7 +11838,7 @@ impl NeuroWealthVault {
     /// # Returns
     /// The amount deployed to the protocol, or 0 if not deployed
     fn get_protocol_balance(env: &Env, protocol: &Symbol) -> i128 {
-        if *protocol == symbol_short!("blend") {
+        if protocol == &symbol_short!("blend") {
             let pool_address: Option<Address> = env.storage().instance().get(&DataKey::BlendPool);
             if let Some(pool) = pool_address {
                 let usdc_token: Address =
@@ -11822,7 +11848,7 @@ impl NeuroWealthVault {
             } else {
                 0
             }
-        } else if *protocol == symbol_short!("dex") {
+        } else if protocol == &symbol_short!("dex") {
             let pool_address: Option<Address> = env.storage().instance().get(&DataKey::DexPool);
             if let Some(pool) = pool_address {
                 let usdc_token: Address =
@@ -11832,7 +11858,7 @@ impl NeuroWealthVault {
             } else {
                 0
             }
-        } else if *protocol == symbol_short!("multi") {
+        } else if protocol == &symbol_short!("multi") {
             // Composite venue: the sum of both live positions.
             Self::get_protocol_balance(env, &symbol_short!("blend"))
                 .saturating_add(Self::get_protocol_balance(env, &symbol_short!("dex")))
@@ -11928,15 +11954,17 @@ impl NeuroWealthVault {
         if total <= 0 {
             return (0, 0);
         }
-        let denom = Self::BPS_DENOMINATOR as i128;
+        let denom = i128::from(Self::BPS_DENOMINATOR);
         let blend = total
-            .checked_mul(blend_bps as i128)
+            .checked_mul(i128::from(blend_bps))
             .expect("vault: allocation overflow")
-            / denom;
+            .checked_div(denom)
+            .expect("vault: allocation division failed");
         let dex = total
-            .checked_mul(dex_bps as i128)
+            .checked_mul(i128::from(dex_bps))
             .expect("vault: allocation overflow")
-            / denom;
+            .checked_div(denom)
+            .expect("vault: allocation division failed");
         (blend, dex)
     }
 
@@ -11965,19 +11993,20 @@ impl NeuroWealthVault {
         let mut from_blend = target
             .checked_mul(blend_bal)
             .expect("vault: proportional withdrawal overflow")
-            / total;
+            .checked_div(total)
+            .expect("vault: proportional withdrawal division failed");
         let mut from_dex = target
             .checked_sub(from_blend)
             .expect("vault: proportional withdrawal underflow");
 
         // Never ask a venue for more than it holds; spill the excess over.
         if from_dex > dex_bal {
-            let spill = from_dex - dex_bal;
+            let spill = from_dex.saturating_sub(dex_bal);
             from_dex = dex_bal;
             from_blend = min(blend_bal, from_blend.saturating_add(spill));
         }
         if from_blend > blend_bal {
-            let spill = from_blend - blend_bal;
+            let spill = from_blend.saturating_sub(blend_bal);
             from_blend = blend_bal;
             from_dex = min(dex_bal, from_dex.saturating_add(spill));
         }

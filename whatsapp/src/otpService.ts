@@ -28,10 +28,6 @@ export async function generateOTP(phoneHash: string): Promise<string> {
   return code;
 }
 
-export function clearOTP(phoneHash: string): void {
-  otpStore.delete(phoneHash);
-}
-
 /**
  * Verifies an OTP code for a user.
  * Enforces 5-minute expiration and max attempt limits. Each call counts as an

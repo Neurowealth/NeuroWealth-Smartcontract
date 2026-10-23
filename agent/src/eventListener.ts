@@ -17,15 +17,29 @@ export { pool };
 
 const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 export const server = new rpc.Server(rpcUrl);
+export const eventCircuitBreaker = new EventCircuitBreaker();
+
+export function getCircuitBreakerStatus(): CircuitBreakerStatus {
+  return eventCircuitBreaker.getStatus();
+}
+
+export function resetCircuitBreaker(): void {
+  eventCircuitBreaker.reset();
+}
 
 const EVENTS_PAGE_LIMIT = 100;
 
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 let activePollingPromise: Promise<void> | null = null;
 let isStopping = false;
 
 export async function stopEventListener(timeoutMs = 5000): Promise<void> {
   isStopping = true;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
   if (eventInterval) {
     clearInterval(eventInterval);
     eventInterval = null;
@@ -79,9 +93,7 @@ export async function startEventListener() {
     let polling = false;
     isStopping = false;
 
-    // #902: declare pollTimer and eventCircuitBreaker that were missing
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
-    const eventCircuitBreaker = new EventCircuitBreaker();
+    // #902: pollTimer and eventCircuitBreaker are module-scoped so stopEventListener can clear them
 
     const scheduleNextTick = (delayMs: number) => {
       if (isStopping) return;
