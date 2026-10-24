@@ -11105,6 +11105,33 @@ impl NeuroWealthVault {
             assets_requested
         };
 
+        // Dust shares (#993): a holder whose entire redeemable balance is
+        // worth less than 1 stroop would otherwise panic forever (`requested
+        // == 0` fails the liquidity/`NoAssetsToReturn` checks below with no
+        // way to recover) and stay stuck in `UserSharesIndex`, needing TTL
+        // extension indefinitely. `withdraw_all` is the only mode that can
+        // legitimately redeem a user's full position with a zero payout, so
+        // burn the dust here and prune the index, skipping the
+        // liquidity/transfer path entirely.
+        if mode == BurnAndPayMode::All && shares_for_redemption > 0 && requested == 0 {
+            let new_user_shares = user_shares
+                .checked_sub(shares_for_redemption)
+                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+            env.storage()
+                .persistent()
+                .set(&DataKey::Shares(user.clone()), &new_user_shares);
+            if new_user_shares == 0 {
+                Self::prune_user_from_index(env, user);
+            }
+            let new_total_shares = total_shares
+                .checked_sub(shares_for_redemption)
+                .expect("vault: withdrawal underflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalShares, &new_total_shares);
+            return (0, shares_for_redemption);
+        }
+
         if mode == BurnAndPayMode::Requested && locked_shares > 0 {
             let unlocked_shares = user_shares
                 .checked_sub(locked_shares)
