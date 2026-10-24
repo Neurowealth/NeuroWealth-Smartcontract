@@ -1,7 +1,7 @@
 # NeuroWealth Bug Bounty Program
 
 > **Status:** Active — Pre-Mainnet  
-> **Last updated:** 2026-08-24  
+> **Last updated:** 2026-10-22  
 > **Program managed by:** NeuroWealth Security Team
 
 We reward security researchers who responsibly disclose vulnerabilities in the
@@ -168,17 +168,38 @@ practical exploitability.
 
 ## Reporting Channel
 
-**Primary:** Email `security@neurowealth.io` with subject line:
-```
-[BUG BOUNTY] <one-line summary>
-```
+The previously published security mailbox is unavailable. Do not send reports
+there or assume that a replacement email address has been verified.
 
-**Alternative (for program status / questions only):** Open a
-[GitHub Security Advisory](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
-via the "Report a vulnerability" button on the repo's Security tab.
+**Private reporting:** Use the repository's
+[Report a vulnerability form](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
+when the **Report a vulnerability** button is available on its Security /
+Advisories page. This is a private vulnerability-reporting channel, not a
+public GitHub issue. A reporting URL alone does not mean the feature is enabled.
+
+**If the button is unavailable:** Stop before sharing vulnerability details.
+Ask maintainers to enable private vulnerability reporting or publish a
+confirmed working private address. Non-sensitive requests for channel
+availability can be added to [issue #1073](https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/1073);
+include no vulnerability description, proof of concept, affected secrets, or
+exploit details in that public request.
 
 **Do NOT** open a public GitHub issue for a security vulnerability. Doing so
 will disqualify the report from bounty eligibility.
+
+### Maintainer activation and verification
+
+A repository administrator, organization owner, or security manager must
+[enable private vulnerability reporting](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository)
+before this channel can accept private reports. Confirm that **Report a
+vulnerability** is visible to a signed-in researcher without repository write
+access and that the private reporting form opens. Do not submit a fake
+vulnerability just to test availability.
+
+If email is offered instead, publish the maintainer-confirmed address here only
+after checking the domain's mail delivery configuration and confirming that
+the security team can receive mail. Updating this document alone does not
+repair DNS, create a mailbox, or enable a GitHub repository setting.
 
 ### Report Template
 
@@ -288,7 +309,7 @@ receive a reduced or no bounty, at our discretion.
 ---
 
 *This policy is subject to change. Material changes will be announced via the
-repository changelog and the `security@neurowealth.io` mailing list.*
+repository changelog.*
 
 *See also: [`SECURITY.md`](../SECURITY.md) for the full trust model, threat
 analysis, and owner-compromise runbook.*
