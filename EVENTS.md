@@ -1018,3 +1018,224 @@ pub struct QueueConfigUpdatedEvent {
 | `new_max_size` | `u32` | Maximum number of pending requests the queue can hold |
 | `new_ttl` | `u64` | Expiration time-to-live in seconds before an unfulfilled request expires |
 | `owner` | `Address` | Address of the admin who applied the new configuration |
+
+## Share Locking, Migration, Hot-Standby Agent and Flash-Loan/MEV Protection Events
+
+These eight events (Issue #996) cover share locking (#636), vault-to-vault
+migration (#637/#969), hot-standby agent rotation (#653), the flash-loan
+protection window (#659), and MEV/suspected-sandwich reporting (#658). All
+eight are emitted in `src/lib.rs` but, until now, had no entry in this
+document.
+
+### `SharesLockedEvent` (`lock`)
+
+**Topic:** `"lock"` (`TOPIC_SHARES_LOCKED`) + the locking user's `Address`
+
+Emitted when a user locks a portion of their shares via `lock_shares`.
+
+```rust
+#[contracttype]
+pub struct SharesLockedEvent {
+    pub user: Address,            // The user who locked their shares
+    pub shares_locked: i128,      // Number of shares locked
+    pub lock_duration_days: u32,  // Lock duration in days (30, 90 or 180)
+    pub expiry_ledger: u32,       // Ledger sequence when the lock expires
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `user` | `Address` | Address of the user who locked shares |
+| `shares_locked` | `i128` | Number of shares now locked |
+| `lock_duration_days` | `u32` | Requested lock duration; must be 30, 90 or 180 |
+| `expiry_ledger` | `u32` | Ledger sequence at or after which `unlock_shares` succeeds |
+
+**Usage:**
+- Frontend disables withdrawal controls for the locked portion of a user's balance until `expiry_ledger`.
+- Off-chain accounting tracks committed/locked TVL separately from freely withdrawable TVL.
+
+### `SharesUnlockedEvent` (`unlock`)
+
+**Topic:** `"unlock"` (`TOPIC_SHARES_UNLOCKED`) + the unlocking user's `Address`
+
+Emitted when a user unlocks previously locked shares via `unlock_shares`, once the lock period has elapsed.
+
+```rust
+#[contracttype]
+pub struct SharesUnlockedEvent {
+    pub user: Address,           // The user who unlocked their shares
+    pub shares_unlocked: i128,   // Number of shares unlocked
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `user` | `Address` | Address of the user who unlocked shares |
+| `shares_unlocked` | `i128` | Number of shares released back to normal (withdrawable) status |
+
+**Usage:**
+- Frontend re-enables withdrawal controls for the now-unlocked balance.
+- Off-chain accounting moves the amount from committed/locked TVL back to freely withdrawable TVL.
+
+### `EmergencyWithdrawalEvent` (`em_wd`)
+
+**Topic:** `"em_wd"` (`TOPIC_EMERGENCY_WITHDRAWAL`) + the withdrawing user's `Address`
+
+Emitted when a user performs an emergency withdrawal while the vault is paused (#635), via the owner-gated emergency path.
+
+```rust
+#[contracttype]
+pub struct EmergencyWithdrawalEvent {
+    pub user: Address,     // The user who performed the emergency withdrawal
+    pub amount: i128,      // Amount of USDC withdrawn (7 decimal places)
+    pub shares: i128,      // Number of shares burned
+    pub from_idle: bool,   // true if paid from idle vault balance, false if pulled from a deployed protocol
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `user` | `Address` | Address of the user who withdrew |
+| `amount` | `i128` | USDC amount actually paid out |
+| `shares` | `i128` | Shares burned to fund the withdrawal |
+| `from_idle` | `bool` | Whether the vault's idle balance alone covered the withdrawal, or funds had to be pulled from Blend/DEX first |
+
+**Usage:**
+- Monitoring dashboards flag emergency withdrawals separately from normal ones, since they only occur while the vault is paused.
+- Off-chain accounting reconciles `from_idle = false` events against the corresponding protocol withdrawal.
+
+### `MigrationTargetUpdatedEvent` (`mig_tgt`)
+
+**Topic:** `"mig_tgt"` (`TOPIC_MIGRATION_TARGET_UPDATED`)
+
+Emitted when a scheduled migration target change is actually applied via `execute_migration_target`, after its timelock has elapsed (#969).
+
+```rust
+#[contracttype]
+pub struct MigrationTargetUpdatedEvent {
+    pub old_target: Option<Address>,  // Previous migration target, or None if unset
+    pub new_target: Address,          // New migration target address
+    pub owner: Address,               // Owner who executed the change
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `old_target` | `Option<Address>` | The previous migration target vault, if one was set |
+| `new_target` | `Address` | The vault `migrate_shares` now sends users' positions to |
+| `owner` | `Address` | The owner address that executed the timelocked change |
+
+**Usage:**
+- Frontend surfaces the active migration target to users considering `migrate_shares`.
+- Monitoring verifies that `new_target` matches the address expected from the corresponding `MigrationTargetScheduledEvent` two steps earlier.
+
+### `AgentKeyRotatedEvent` (`key_rot`)
+
+**Topic:** `"key_rot"` (`TOPIC_AGENT_KEY_ROTATED`)
+
+Emitted on an instant hot-standby agent switchover via `switch_to_standby_agent` (#653): the standby key is promoted to primary and the old primary is demoted to standby, with no timelock.
+
+```rust
+#[contracttype]
+pub struct AgentKeyRotatedEvent {
+    pub old_primary: Address,    // Primary agent address before the switchover
+    pub new_primary: Address,    // Primary agent address after the switchover (the former standby)
+    pub new_standby: Address,    // Standby agent address after the switchover (the former primary)
+    pub owner: Address,          // Owner who triggered the switchover
+    pub timestamp: u64,          // Ledger timestamp of the switchover
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `old_primary` | `Address` | Agent address that was primary before this call |
+| `new_primary` | `Address` | Agent address that is primary after this call |
+| `new_standby` | `Address` | Agent address that is standby after this call (equal to `old_primary`) |
+| `owner` | `Address` | Owner address that triggered the switchover |
+| `timestamp` | `u64` | Ledger timestamp of the switchover |
+
+**Usage:**
+- Security monitoring alerts on every rotation, since an unexpected `key_rot` event during normal operation may indicate the owner key itself is compromised and being used to rotate in an attacker-controlled agent.
+- Off-chain agent infrastructure updates which key is actively polling/signing after a rotation.
+
+### `StandbyAgentUpdatedEvent` (`stby_ag`)
+
+**Topic:** `"stby_ag"` (`TOPIC_STANDBY_AGENT_UPDATED`)
+
+Emitted when the owner configures or changes the standby agent key via `update_standby_agent`, without performing a switchover (#653).
+
+```rust
+#[contracttype]
+pub struct StandbyAgentUpdatedEvent {
+    pub old_standby: Option<Address>,  // Standby agent before the change, or None if unset
+    pub new_standby: Address,          // Standby agent after the change
+    pub owner: Address,                // Owner who triggered the change
+    pub timestamp: u64,                // Ledger timestamp of the change
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `old_standby` | `Option<Address>` | The previously configured standby key, if any |
+| `new_standby` | `Address` | The newly configured standby key |
+| `owner` | `Address` | Owner address that made the change |
+| `timestamp` | `u64` | Ledger timestamp of the change |
+
+**Usage:**
+- Security monitoring tracks standby key provisioning separately from an actual switchover (`key_rot`), since provisioning alone does not change which key is actively authorized to call `rebalance`/`harvest`/`update_total_assets`.
+
+### `FlashLoanProtectionTriggeredEvent` (`fl_block`)
+
+**Topic:** `"fl_block"` (`symbol_short!("fl_block")`) + the blocked user's `Address`
+
+Emitted when `require_min_holding_period_elapsed` rejects a withdrawal because the user's most recent deposit has not aged past the configured minimum holding period (#659, flash-loan/yield-sniping protection).
+
+```rust
+#[contracttype]
+pub struct FlashLoanProtectionTriggeredEvent {
+    pub user: Address,               // The user whose withdrawal was rejected
+    pub last_deposit_ledger: u32,    // Ledger at which the user last deposited
+    pub current_ledger: u32,         // Current ledger at the time of the rejected withdrawal
+    pub min_holding_period: u32,     // Configured minimum holding period, in ledgers
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `user` | `Address` | Address whose withdrawal attempt was blocked |
+| `last_deposit_ledger` | `u32` | Ledger of that user's most recent deposit |
+| `current_ledger` | `u32` | Ledger at which the blocked withdrawal was attempted |
+| `min_holding_period` | `u32` | The configured minimum holding window, in ledgers, that has not yet elapsed |
+
+**Usage:**
+- Frontend surfaces a clear "funds are still in their holding period" message instead of a generic error when a withdrawal call reverts with `HoldingPeriodNotElapsed`.
+- Security monitoring correlates repeated `fl_block` events from the same address shortly after a deposit, a signature of an attempted flash-loan or rapid deposit-then-withdraw cycle the protection is designed to stop.
+
+### `MevExtractionSuspectedEvent` (`mev_alert`)
+
+**Topic:** `"mev_alert"` (`symbol_short!("mev_alert")`)
+
+Emitted by the off-chain AI agent, after a rebalance, when post-execution analysis suggests a sandwich attack occurred (actual received amount came in below the simulated/expected fill even though `min_out` was satisfied) (#658).
+
+```rust
+#[contracttype]
+pub struct MevExtractionSuspectedEvent {
+    pub protocol: Symbol,                 // The rebalance protocol where MEV was suspected ("blend", "dex")
+    pub estimated_loss_stroops: i128,      // Agent-estimated amount lost to MEV in this transaction (stroops)
+    pub min_out_used: i128,                // The min_out value set for the rebalance that triggered the report
+    pub cumulative_loss_stroops: i128,     // Running total of suspected MEV losses since vault inception
+    pub incident_count: u32,               // Number of MEV incidents recorded so far
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `protocol` | `Symbol` | Which protocol the suspected MEV occurred against |
+| `estimated_loss_stroops` | `i128` | The agent's estimate of value lost to the sandwich/MEV in this one transaction |
+| `min_out_used` | `i128` | The slippage floor that was in force for the affected rebalance |
+| `cumulative_loss_stroops` | `i128` | Running total across the vault's lifetime, stored in `DataKey::MevStats` |
+| `incident_count` | `u32` | Running count of suspected incidents, stored in `DataKey::MevStats` |
+
+**Usage:**
+- Monitoring dashboards track cumulative suspected MEV loss as a vault-health metric.
+- Exceeding `MaxAcceptableMevLoss` (per-rebalance threshold, `DataKey::MaxAcceptableMevLoss`) is a signal for the owner to review the agent's rebalance strategy or routing.
