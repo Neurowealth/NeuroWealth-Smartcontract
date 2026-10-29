@@ -2,6 +2,25 @@
 
 This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
 
+## Reporting a Vulnerability
+
+If you have discovered a security vulnerability, **do not open a public GitHub
+issue**. Public disclosure before a fix is available puts users at risk and
+will disqualify the report from bounty eligibility.
+
+**To submit a report privately:**
+
+Use [GitHub Private Vulnerability Reporting](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
+via the **"Report a vulnerability"** button on the repository's Security tab.
+This is currently the only active private reporting channel (see
+[Issue #897](https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/897)
+for background on why the previous email address is unavailable).
+
+For bounty scope, severity tiers, safe-harbor terms, and payout details, see
+[`docs/BUG_BOUNTY.md`](docs/BUG_BOUNTY.md).
+
+---
+
 ## Threat Model & Trust Boundaries (Issue #563)
 
 The `NeuroWealthVault` smart contract operates in a multi-actor ecosystem involving privileged governance keys, automated off-chain execution services, end users, external DeFi protocols, and token issuers. System security depends on defining explicit trust boundaries and technical constraints around each actor.
