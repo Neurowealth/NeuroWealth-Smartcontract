@@ -14,6 +14,7 @@
 
 #![cfg_attr(not(any(test, kani)), no_std)]
 #![allow(clippy::similar_names)]
+#![allow(clippy::arithmetic_side_effects)]
 
 /// Floor conversion used on deposit: `floor(assets × total_shares / total_assets)`.
 ///

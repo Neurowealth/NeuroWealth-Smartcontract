@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "node init && tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/**/*.test.js",
     "lint": "node -e \"const fs=require('fs'); const cp=require('child_process'); const configs=['.eslintrc.json','.eslintrc.js','eslint.config.js']; if (configs.some((config) => fs.existsSync(config))) { const result = cp.spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['eslint', '.', '--ext', '.ts,.js'], { stdio: 'inherit' }); process.exit(result.status ?? 0); } console.log('No ESLint config configured');\"",

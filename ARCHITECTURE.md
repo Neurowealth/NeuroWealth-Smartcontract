@@ -189,6 +189,7 @@ transaction, and a partially funded bump is clamped rather than rejected.
 
 ```rust
 pub enum DataKey {
+    Balance(Address),     // legacy user balance (deprecated, discriminant preservation)
     Shares(Address),       // user -> share balance
     TotalDeposits,        // total principal in vault
     TotalShares,          // total shares in circulation
@@ -200,70 +201,90 @@ pub enum DataKey {
     PendingOwner,         // pending owner for two-step transfer
     TvLCap,               // maximum TVL
     UserDepositCap,       // per-user deposit limit
-    ApprovalTtl,          // shared protocol approval lifetime
     MinDeposit,           // minimum transaction amount
     MaxDeposit,           // maximum transaction amount
     Version,              // contract version
     BlendPool,            // Blend pool contract address
-    DexPool,              // DEX liquidity pool contract address (#228)
     CurrentProtocol,      // summary symbol ("blend" | "dex" | "multi" | "none")
     MultiProtocolEnabled, // multi-protocol allocation mode flag (Phase 2)
-    BlendAllocationBps,   // target Blend weight in bps (Phase 2)
-    DexAllocationBps,     // target DEX weight in bps (Phase 2)
-    DeployedToBlend,      // tracked USDC deployed to Blend (Phase 2)
-    DeployedToDex,        // tracked USDC deployed to the DEX (Phase 2)
-    BlendApyBps,          // last reported Blend APY in bps (Phase 2)
-    DexApyBps,            // last reported DEX APY in bps (Phase 2)
-    UserStrategy(Address),// user -> strategy preference symbol
+    AllocationBps,        // target allocation split (blend_bps, dex_bps)
+    DeployedSplit,        // tracked deployed principal (blend, dex)
+    ProtocolApyBps,       // last reported APYs (blend_bps, dex_bps)
+    BlendApprovalTtl,     // legacy Blend approval TTL
+    Deployer,             // deployer address (init only)
     MinRebalanceInterval, // rebalance cooldown in ledgers (#59)
     LastRebalanceLedger,  // ledger of last successful rebalance (#59)
-    PendingAgent,         // agent awaiting timelock confirmation (#317)
-    AgentTimelockExpiry,  // ledger the pending agent update unlocks at (#317)
-    PendingUpgradeHash,   // WASM hash awaiting timelock execution (#316)
-    UpgradeTimelockExpiry,// ledger the pending upgrade unlocks at (#316)
-    Deployer,             // deployer address (init only)
-    BlendApprovalTtl,     // legacy Blend approval TTL (fallback for ApprovalTtl)
-    MaxConsecutiveFailures, // circuit-breaker trip threshold (#439)
-    ConsecutiveFailures,  // running count of failed rebalances (#439)
+    ApprovalTtl,          // shared protocol approval lifetime
+    DexPool,              // DEX liquidity pool contract address (#228)
+    UserStrategy(Address),// user -> strategy preference symbol
+    PendingAgentUpdate,   // pending agent update (new_agent, effective_ledger) (#317)
+    PendingUpgrade,       // pending upgrade (new_wasm_hash, effective_ledger) (#316)
+    PendingMigrationTarget, // pending migration target and unlock ledger (#969)
+    CircuitBreakerState,  // circuit breaker (max_failures, consecutive_failures) (#439)
     UserSharesIndex,      // append-only Vec<Address> of share holders (#440)
-    MigrationTarget,      // target vault for share migration (#637)
-    MigrationPaused,      // migration-only pause flag (#637)
-    LockedShares(Address),// user -> shares locked by the user (#636)
+    MigrationState,       // migration state (target, paused) (#637)
+    LockState(Address),   // user -> lock state (shares, expiry) (#636)
     ApyPrediction(Symbol),// protocol -> latest ML APY prediction (#650)
-    CumulativeMevLoss,    // total suspected MEV loss (#658)
-    MevIncidentCount,     // number of suspected MEV incidents (#658)
+    MevStats,             // MEV stats (cumulative_loss, incident_count) (#658)
     MaxAcceptableMevLoss, // per-rebalance MEV alert threshold (#658)
-    LockExpiry(Address),  // user -> ledger when locked shares unlock (#636)
     MinHoldingPeriod,     // flash-loan protection window in ledgers (#659)
     LastDepositLedger(Address), // user -> ledger of last deposit (#659)
+    MaxDecreaseBps,       // max allowed decrease in basis points (#974)
     RateLimitConfig(Symbol),    // category -> rate-limit policy
     RateLimitGlobalState(Symbol), // category -> global window usage
-    RateLimitUserState(Address, Symbol), // (user, category) -> window usage
-    MaxBatchSize,         // batch_deposit entry ceiling (0 = unlimited)
-    DepositSnapshot(Address), // user -> first-deposit snapshot (#462)
-    ProtocolAdapter(Symbol),  // protocol -> adapter contract address (#656)
-    ProtocolWhitelist(Symbol),// protocol -> whitelist flag (#656)
-    ProtocolWhitelistIndex,   // Vec<Symbol> of whitelisted protocols (#656)
-    StandbyAgent,         // hot-standby agent key (#653)
 }
 ```
 
 > **Keep this block in sync with `lib.rs`.** CI runs
 > `bash scripts/check-data-key-docs.sh`, which fails if any `DataKey` variant in
-> `neurowealth-vault/contracts/vault/src/lib.rs` is missing from the block above.
-> New variants must be **appended** to the enum (never inserted) to preserve the
-> serialized discriminants of existing keys across upgrades.
+> `neurowealth-vault/contracts/vault/src/lib.rs` is missing from the block above,
+> or if any `DataKeyExt` variant (see [below](#datakeyext-storage-keys)) has no
+> `DataKeyExt::<Variant>` reference anywhere in this file. New variants must be
+> **appended** to their enum (never inserted) to preserve the serialized
+> discriminants of existing keys across upgrades.
+
+### DataKeyExt storage keys
+
+`DataKeyExt` is a second, independent `#[contracttype]` enum in `src/lib.rs`
+(not the `DataKey` block above), added so later features' keys don't disturb
+`DataKey`'s existing on-chain discriminants. `scripts/check-data-key-docs.sh`
+checks both enums: for `DataKey` it parses the fenced block above; for
+`DataKeyExt`, since its variants aren't rendered as a single code block here,
+it instead requires each variant to appear at least once as a
+`DataKeyExt::<Variant>` reference somewhere in this file, such as in the
+tables below.
+
+| Key | Storage | Type | Description |
+| --- | ------- | ---- | ----------- |
+| `DataKeyExt::RateLimitUserState(Address, Symbol)` | Persistent | `(u32, u32)` (usage count, window start ledger) | Per-user fixed-window rate-limit usage for a category (e.g. withdrawals per window). Read and written by the shared rate-limit helper every gated call. |
+| `DataKeyExt::MaxBatchSize` | Instance | `u32` | Maximum entries accepted by `batch_deposit`; `0` means unlimited. |
+| `DataKeyExt::DepositSnapshot(Address)` | Persistent | `DepositSnapshot` | First-deposit snapshot for realized-APY computation (#462), keyed by user. Written once on a user's first deposit from zero shares; read by the read-only `get_user_apy` view. |
+| `DataKeyExt::ProtocolAdapter(Symbol)` | N/A | Address | Adapter contract address for a protocol, keyed by protocol symbol (#656). Declared for a planned uniform adapter interface; no entrypoint in this version of `lib.rs` (`set_protocol_adapter`) writes or reads it yet, so it is currently unused. |
+| `DataKeyExt::ProtocolWhitelist(Symbol)` | N/A | bool | Whitelist flag for a protocol, keyed by protocol symbol (#656). Same status as `ProtocolAdapter` above: declared, not yet wired to any entrypoint. |
+| `DataKeyExt::ProtocolWhitelistIndex` | N/A | `Vec<Symbol>` | Append-only index of whitelisted protocol symbols for enumeration (#656). Same status as `ProtocolAdapter` above: declared, not yet wired to any entrypoint. |
+| `DataKeyExt::StandbyAgent` | Instance | `Address` | Standby AI agent key that can also call `rebalance`, `harvest`, and `update_total_assets` alongside the primary agent (#653). Set via `update_standby_agent`; `switch_to_standby_agent` performs an instant primary/standby swap, deliberately timelock-free unlike the two-step `update_agent` flow. |
 
 ### Withdrawal queue storage keys
 
 The withdrawal queue (`queue_withdrawal`, `set_queue_config`,
-`process_withdrawal_queue`, exercised by `tests/test_withdrawal_queue.rs`) does
-**not** yet have any `DataKey` variants: those entrypoints are not present in
-`lib.rs`, so no queue state is persisted on-chain today. When the queue lands,
-its keys (e.g. queue config, next request id, per-request entries, FIFO head)
-must be appended to `DataKey`, added to the block above and to the
-instance/persistent tables in [Storage Layout](#storage-layout), and
-`scripts/check-data-key-docs.sh` must pass before merge.
+`cancel_withdrawal_request`, `process_withdrawal_queue`, exercised by
+`tests/test_withdrawal_queue.rs`) shipped under Issue #757. Its keys also live
+on `DataKeyExt`, documented in the same table style as above.
+
+| Key | Storage | Type | Description |
+| --- | ------- | ---- | ----------- |
+| `DataKeyExt::QueueConfig` | Instance | `QueueConfig { max_size: u32, ttl: u64 }` | Withdrawal queue configuration: maximum pending requests the queue can hold (`0` = unlimited) and request time-to-live in seconds. Set by `set_queue_config`; expired requests are skipped during `process_withdrawal_queue`. |
+| `DataKeyExt::NextRequestId` | Instance | `u32` | Auto-incrementing counter for the next withdrawal request's ID. Incremented by `queue_withdrawal` on each new request. |
+| `DataKeyExt::WithdrawalRequest(u32)` | Instance | `WithdrawalRequest { user: Address, amount: i128, fulfilled: bool, cancelled: bool, created_at: u64 }` | A specific queued withdrawal request, keyed by its request ID. Written by `queue_withdrawal`; `fulfilled`/`cancelled` are flipped in place by `process_withdrawal_queue`/`cancel_withdrawal_request` rather than deleting the entry, so a request's full history remains queryable by ID. |
+| `DataKeyExt::QueueOrder` | Instance | `Vec<u32>` | Ordered (FIFO) list of pending (non-fulfilled, non-cancelled) request IDs. `process_withdrawal_queue` walks this list in order; `cancel_withdrawal_request` removes the cancelled ID from it. |
+| `DataKeyExt::WithdrawalQueueStorageVersion` | Instance | `u32` | Withdrawal queue storage schema version, used to gate lazy compaction of `QueueOrder`/stale `WithdrawalRequest` entries across upgrades without a one-shot migration pass. |
+| `DataKeyExt::ReservedWithdrawalAmount(Address)` | Instance | `i128` | Sum of `amount` across one user's own pending (non-fulfilled, non-cancelled) withdrawal requests, in underlying-asset units (#990). `queue_withdrawal` checks the user's shares against this reserved total (converted to shares) in addition to the new request, so queuing several requests that together exceed the user's real balance is rejected instead of silently allowed. |
+
+See [Share Lock / Unlock, Withdrawal Request, Migration and Standby-Agent
+State Machines](docs/state-machine.md#share-lock--unlock-withdrawal-request-migration-and-standby-agent-state-machines)
+for the request lifecycle (`queue_withdrawal` to `process_withdrawal_queue` /
+`cancel_withdrawal_request`) and which functions remain callable while the
+vault is paused.
 
 ## Share Accounting Model
 

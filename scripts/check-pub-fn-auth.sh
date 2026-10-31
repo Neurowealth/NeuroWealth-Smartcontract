@@ -42,10 +42,27 @@ echo "SECURITY.md:   $SECURITY_MD"
 echo "Contract spec: $SPEC_JSON"
 echo ""
 
+# Resolve Python 3 executable (cross-platform: Linux, macOS, Windows/Git Bash)
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+  for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)" >/dev/null 2>&1; then
+      PYTHON="$candidate"
+      break
+    fi
+  done
+  if [ -z "$PYTHON" ]; then
+    echo "❌ Error: Neither python3, python, nor py found with Python 3 support" >&2
+    exit 1
+  fi
+fi
+
+export PYTHONIOENCODING=utf-8
+
 # ── 1. Parse the SECURITY.md access-control table ───────────────────────────
 echo "1. Parsing access control table from SECURITY.md..."
 
-SECURITY_FUNCTIONS=$(python3 - "$SECURITY_MD" <<'PYEOF'
+SECURITY_FUNCTIONS=$("$PYTHON" - "$SECURITY_MD" <<'PYEOF'
 import re
 import sys
 
@@ -81,14 +98,14 @@ print(json.dumps(sorted(classified)))
 PYEOF
 )
 
-SECURITY_COUNT=$(echo "$SECURITY_FUNCTIONS" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+SECURITY_COUNT=$(echo "$SECURITY_FUNCTIONS" | "$PYTHON" -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
 echo "  Found ${SECURITY_COUNT} function(s) classified in SECURITY.md"
 
 # ── 2. Parse contract-spec.json for state-changing functions ────────────────
 echo ""
 echo "2. Parsing contract-spec.json for state-changing functions..."
 
-SPEC_FUNCTIONS=$(python3 - "$SPEC_JSON" "${AUTH_GATE_NA_FUNCTIONS:-}" <<'PYEOF'
+SPEC_FUNCTIONS=$("$PYTHON" - "$SPEC_JSON" "${AUTH_GATE_NA_FUNCTIONS:-}" <<'PYEOF'
 import json
 import sys
 
@@ -129,14 +146,14 @@ print(json.dumps(sorted(state_changing)))
 PYEOF
 )
 
-SPEC_COUNT=$(echo "$SPEC_FUNCTIONS" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+SPEC_COUNT=$(echo "$SPEC_FUNCTIONS" | "$PYTHON" -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
 echo "  Found ${SPEC_COUNT} state-changing function(s) in contract-spec.json"
 
 # ── 3. Diff: functions in spec that are absent from SECURITY.md ─────────────
 echo ""
 echo "3. Checking coverage..."
 
-UNCLASSIFIED=$(python3 - "$SECURITY_FUNCTIONS" "$SPEC_FUNCTIONS" <<'PYEOF'
+UNCLASSIFIED=$("$PYTHON" - "$SECURITY_FUNCTIONS" "$SPEC_FUNCTIONS" <<'PYEOF'
 import json
 import sys
 
@@ -149,7 +166,7 @@ print(json.dumps(missing))
 PYEOF
 )
 
-MISSING_COUNT=$(echo "$UNCLASSIFIED" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+MISSING_COUNT=$(echo "$UNCLASSIFIED" | "$PYTHON" -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
 
 # ── 4. Report ────────────────────────────────────────────────────────────────
 echo ""
@@ -165,7 +182,7 @@ if [ "$MISSING_COUNT" -gt 0 ]; then
   echo "   The following state-changing function(s) exist in contract-spec.json"
   echo "   but have no row in the SECURITY.md Access Control Summary table:"
   echo ""
-  echo "$UNCLASSIFIED" | python3 -c "
+  echo "$UNCLASSIFIED" | "$PYTHON" -c "
 import json, sys
 names = json.load(sys.stdin)
 for name in names:

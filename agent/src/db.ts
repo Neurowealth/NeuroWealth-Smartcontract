@@ -126,12 +126,18 @@ export function closePool(timeoutMs = 5000): Promise<void> {
  * Exported pool proxy maintaining full backwards compatibility with all imports.
  */
 export const pool = new Proxy({} as Pool, {
-  get(_target, prop) {
+  get(target, prop) {
+    if (prop in target) {
+      return Reflect.get(target, prop);
+    }
     const val = Reflect.get(activePool, prop);
     if (typeof val === 'function') {
       return (val as (...args: unknown[]) => unknown).bind(activePool);
     }
     return val;
+  },
+  set(target, prop, value) {
+    return Reflect.set(target, prop, value);
   },
 });
 

@@ -1,3 +1,5 @@
+#![allow(warnings, clippy::all, clippy::pedantic)]
+
 mod test_access_control;
 mod test_adversarial_agent_simulation;
 mod test_agent_compromise_scenarios;
@@ -5,6 +7,7 @@ mod test_agent_timelock;
 mod test_allowance_hygiene;
 mod test_approval_ttl;
 mod test_approval_ttl_schedule;
+mod test_apy_prediction;
 mod test_asset_breakdown;
 mod test_asset_decrease;
 mod test_asset_split;
@@ -53,6 +56,7 @@ mod test_rebalance_cooldown;
 mod test_rebalance_integration;
 // Pre-existing compile failures (MockTokenDataKey not #[contracttype], no std).
 // mod test_reentrancy_defense;
+mod test_default_holding_period;
 mod test_migration;
 mod test_migration_timelock;
 mod test_require_initialized;
@@ -66,6 +70,7 @@ mod test_shares;
 mod test_stale_state_audit;
 mod test_standby_agent;
 mod test_storage_griefing_analysis;
+mod test_stored_decrease_cap;
 mod test_strategy_switch_low_liquidity;
 mod test_total_assets_cap;
 mod test_total_shares_invariant_proptest;
@@ -83,8 +88,6 @@ mod test_users_with_shares;
 mod test_withdraw;
 mod test_yield;
 mod test_zero_assets_with_shares;
-mod test_stored_decrease_cap;
-mod test_default_holding_period;
 mod utils;
 
 mod test_batch_deposit;

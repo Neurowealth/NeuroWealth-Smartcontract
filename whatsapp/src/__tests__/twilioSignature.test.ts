@@ -77,8 +77,8 @@ test('skip flag works in development but is ignored in production', () => {
 test('rejects HTTP in production', () => {
   const prod = verifyTwilioSignature({ authToken: AUTH_TOKEN, nodeEnv: 'production' });
   const req = fakeReq({ 'X-Twilio-Signature': sign() });
-  req.protocol = 'http';
-  req.secure = false;
+  (req as any).protocol = 'http';
+  (req as any).secure = false;
   // @ts-ignore
   req.headers = { 'x-forwarded-proto': 'http' };
   

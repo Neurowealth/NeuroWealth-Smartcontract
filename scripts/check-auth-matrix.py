@@ -155,7 +155,7 @@ def parse_lib_rs(filepath):
                 access = "agent"
             elif var == "user":
                 access = "user"
-            elif var == "new_owner":
+            elif var in ("new_owner", "pending_owner"):
                 access = "pending-owner"
         elif "require_auth" in body:
             # require_auth() is called, but not in the simple "<var>.require_auth()"
@@ -171,9 +171,22 @@ def parse_lib_rs(filepath):
             # No require_auth() call at all — check for known helper
             # functions / custom error variants that imply a role-gated
             # permission check via a different mechanism.
-            if "Self::require_is_owner" in body or "OnlyOwner" in body or "VaultError::CallerIsNotOwner" in body:
+            if (
+                "Self::require_is_owner" in body
+                or "OnlyOwner" in body
+                or "VaultError::CallerIsNotOwner" in body
+                or "Self::set_rate_limit(" in body
+                or "Self::set_max_batch_size(" in body
+            ):
                 access = "owner"
-            elif "Self::require_is_agent" in body or "OnlyAgent" in body or "VaultError::OnlyAgentCanUpdateTotalAssets" in body:
+            elif (
+                "Self::require_is_agent" in body
+                or "OnlyAgent" in body
+                or "VaultError::OnlyAgentCanUpdateTotalAssets" in body
+                or "VaultError::UnauthorizedAgent" in body
+                or "Self::rebalance(" in body
+                or "Self::harvest(" in body
+            ):
                 access = "agent"
             elif "Self::require_is_pending_owner" in body or "CallerIsNotPendingOwner" in body:
                 access = "pending-owner"

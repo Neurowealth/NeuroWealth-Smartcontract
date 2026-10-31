@@ -13,10 +13,19 @@ Output:
     contract-spec.json
 """
 
+import io
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 FALLBACK_TOPICS = {
     "PauseEvent": "pause_event",
@@ -578,40 +587,40 @@ FUNCTION_METADATA = {
         "access": "public",
         "description": "Preview shares minted for asset amount (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": True,
-        "query_only": False
+        "state_changing": False,
+        "query_only": True
     },
     "preview_shares_to_assets": {
         "category": "queries",
         "access": "public",
         "description": "Preview assets returned for share amount (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": True,
-        "query_only": False
+        "state_changing": False,
+        "query_only": True
     },
     "preview_withdraw": {
         "category": "queries",
         "access": "public",
         "description": "Preview shares burned for withdrawal amount (ceil), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": True,
-        "query_only": False
+        "state_changing": False,
+        "query_only": True
     },
     "convert_to_shares": {
         "category": "queries",
         "access": "public",
         "description": "Convert asset amount to shares (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": True,
-        "query_only": False
+        "state_changing": False,
+        "query_only": True
     },
     "convert_to_assets": {
         "category": "queries",
         "access": "public",
         "description": "Convert share amount to assets (floor), subject to the global preview rate limit",
         "requires_auth": False,
-        "state_changing": True,
-        "query_only": False
+        "state_changing": False,
+        "query_only": True
     },
     "get_dex_pool": {
         "category": "queries",
@@ -753,8 +762,93 @@ class ContractSpecGenerator:
                 
         return event_to_symbol
 
+    @staticmethod
+    def _is_readonly(func_name: str) -> bool:
+        return (
+            func_name.startswith("get_")
+            or func_name.startswith("preview_")
+            or func_name.startswith("convert_")
+            or func_name == "is_paused"
+        )
+
+    def _derive_access_map(self) -> Dict[str, str]:
+        """Derive access levels directly from Rust contract source code."""
+        parts = self.source.split("pub fn ")[1:]
+        functions = {}
+
+        for part in parts:
+            match = re.match(r"^([a-zA-Z0-9_]+)\s*\(", part)
+            if not match:
+                continue
+            func_name = match.group(1)
+
+            if func_name == "initialize" or self._is_readonly(func_name):
+                continue
+
+            brace_count = 0
+            in_body = False
+            body_end = 0
+            for i, char in enumerate(part):
+                if char == '{':
+                    in_body = True
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if in_body and brace_count == 0:
+                        body_end = i
+                        break
+
+            body = part[:body_end + 1] if body_end > 0 else part
+            access = "anyone"
+
+            auth_match = re.search(r"([a-zA-Z0-9_]+)\.require_auth\(\)", body)
+            if auth_match:
+                var = auth_match.group(1)
+                if var == "owner":
+                    access = "owner"
+                elif var == "agent":
+                    access = "agent"
+                elif var == "user":
+                    access = "user"
+                elif var in ("new_owner", "pending_owner"):
+                    access = "pending-owner"
+            elif "require_auth" in body:
+                if "owner" in body.lower():
+                    access = "owner"
+                elif "user" in body.lower():
+                    access = "user"
+                elif "agent" in body.lower():
+                    access = "agent"
+            else:
+                if (
+                    "Self::require_is_owner" in body
+                    or "OnlyOwner" in body
+                    or "VaultError::CallerIsNotOwner" in body
+                    or "Self::set_rate_limit(" in body
+                    or "Self::set_max_batch_size(" in body
+                ):
+                    access = "owner"
+                elif (
+                    "Self::require_is_agent" in body
+                    or "OnlyAgent" in body
+                    or "VaultError::OnlyAgentCanUpdateTotalAssets" in body
+                    or "VaultError::UnauthorizedAgent" in body
+                    or "Self::rebalance(" in body
+                    or "Self::harvest(" in body
+                ):
+                    access = "agent"
+                elif "Self::require_is_pending_owner" in body or "CallerIsNotPendingOwner" in body:
+                    access = "pending-owner"
+                elif "emergency_harvest" in func_name and "owner" in body.lower():
+                    access = "owner"
+
+            functions[func_name] = access
+
+        return functions
+
     def _get_functions(self) -> List[Dict[str, Any]]:
         """Extract all public functions from contract source."""
+        access_map = self._derive_access_map()
         matches = re.finditer(r"pub\s+(?:async\s+)?fn\s+(\w+)", self.source)
         funcs = []
         for match in matches:
@@ -830,17 +924,49 @@ class ContractSpecGenerator:
                 ret_parts = return_str.split("->", 1)
                 returns = ret_parts[1].strip()
                 
-            # Retrieve static metadata or supply defaults
+            # Retrieve static metadata and derive access / requires_auth from source
             meta = FUNCTION_METADATA.get(fn_name, {})
+            derived = access_map.get(fn_name)
+            is_ro = self._is_readonly(fn_name)
+
+            if fn_name == "initialize":
+                spec_access = "once"
+                spec_requires_auth = True
+            elif derived == "owner":
+                spec_access = "owner-only"
+                spec_requires_auth = True
+            elif derived == "agent":
+                spec_access = "agent-only"
+                spec_requires_auth = True
+            elif derived == "pending-owner":
+                spec_access = "pending-owner-only"
+                spec_requires_auth = True
+            elif derived == "user":
+                spec_access = "public"
+                spec_requires_auth = True
+            elif derived == "anyone":
+                spec_access = "public"
+                spec_requires_auth = False
+            else:
+                spec_access = meta.get("access", "public")
+                spec_requires_auth = meta.get("requires_auth", False)
+
+            if meta.get("access") and meta.get("access") not in ("public", "unknown"):
+                spec_access = meta["access"]
+            if meta.get("requires_auth") is not None and spec_access not in ("owner-only", "agent-only", "pending-owner-only"):
+                spec_requires_auth = meta["requires_auth"]
+
+            state_changing = False if is_ro else meta.get("state_changing", not fn_name.startswith(("get_", "preview_", "is_", "convert_", "touch_")))
+
             fn_entry = {
                 "name": fn_name,
-                "category": meta.get("category", "queries" if fn_name.startswith(("get_", "preview_", "is_", "convert_", "touch_")) else "management"),
-                "access": meta.get("access", "public"),
+                "category": meta.get("category", "queries" if is_ro else "management"),
+                "access": spec_access,
                 "description": meta.get("description", f"Function {fn_name}"),
                 "parameters": parameters,
                 "returns": returns,
-                "requires_auth": meta.get("requires_auth", False),
-                "state_changing": meta.get("state_changing", not fn_name.startswith(("get_", "preview_", "is_", "convert_", "touch_"))),
+                "requires_auth": spec_requires_auth,
+                "state_changing": state_changing,
             }
             
             # Merge extra keys from metadata

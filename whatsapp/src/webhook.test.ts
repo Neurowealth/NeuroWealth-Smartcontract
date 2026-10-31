@@ -1,6 +1,5 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { handleWhatsAppWebhook } from './webhook';
 import { hashPhoneNumber } from './cryptoUtils';
 import { getWallet } from './walletService';
 import { getSession, updateState, UserState } from './stateManager';
@@ -8,6 +7,8 @@ import { InMemoryStateStore, setStateStore } from './stateStore';
 import { smsClient } from './smsService';
 
 setStateStore(new InMemoryStateStore());
+
+const { handleWhatsAppWebhook } = require('./webhook') as typeof import('./webhook');
 
 // Webhook state machine (#691). Each test uses its own phone number, because the
 // session, wallet and OTP stores are module-level maps with no reset hook - and

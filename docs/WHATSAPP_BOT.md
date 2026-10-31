@@ -42,6 +42,10 @@ contract's limits, and replies with TwiML in the same HTTP response. Users get a
 |---|---|
 | `src/index.ts` | Express bootstrap, `dotenv`, body parsers, `GET /health`, `POST /api/whatsapp/webhook`. |
 | `src/webhook.ts` | Twilio handler and conversation state machine; builds TwiML replies. |
+| `src/stateManager.ts` | In-memory sessions (`UNVERIFIED` → `AWAITING_OTP` → `VERIFIED`), 15-minute inactivity reset, fixed-window rate limit (10 messages / 60 s per phone). |
+| `src/otpService.ts` | 6-digit OTP from `crypto.randomInt`, 5-minute TTL, max 3 attempts. |
+| `src/otpDelivery.ts` | Sends OTPs by Twilio SMS; codes are never included in webhook TwiML. |
+| `src/walletService.ts` | Creates a custodial `Keypair` per verified phone; stores only the public key and the encrypted secret. |
 | `src/stateManager.ts` | Sessions (`UNVERIFIED` → `AWAITING_OTP` → `VERIFIED`), 15-minute inactivity reset, fixed-window rate limit (10 messages / 60 s per phone). Persisted in Postgres via `stateStore.ts`. |
 | `src/stateStore.ts` | Durable, replica-safe storage for OTP challenges and sessions (`whatsapp_otps`, `whatsapp_sessions`); every operation is one atomic SQL statement. |
 | `src/webhookIdempotency.ts` | Idempotency key derivation and the `whatsapp_inbound_webhooks` processing ledger that makes redelivered webhooks run at most once. |
@@ -57,7 +61,8 @@ contract's limits, and replies with TwiML in the same HTTP response. Users get a
 ## Conversation flow
 
 1. **UNVERIFIED:** any greeting or unrecognised message creates an OTP and
-   moves the session to `AWAITING_OTP`.
+  sends it by SMS. The session moves to `AWAITING_OTP` only after delivery
+  succeeds; the WhatsApp reply never contains the code.
 2. **AWAITING_OTP:** a 6-digit code is checked by `verifyOTP`. On success the
    session becomes `VERIFIED` and a custodial wallet is created. Expired codes
    or three wrong attempts discard the OTP; the user must send `hi` again.
@@ -160,6 +165,11 @@ at startup.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `PORT` | no | `3000` | HTTP port for Express. |
+| `ENCRYPTION_KEY` | **yes in any shared or prod environment** | insecure built-in string | Secret used to derive the AES-256-GCM key for custodial secrets. Use ≥ 32 random bytes. Rotating it makes existing encrypted secrets undecryptable. |
+| `PHONE_HASH_SALT` | **yes in any shared or prod environment** | insecure built-in string | Salt for SHA-256 phone hashing. Changing it orphans every existing session and wallet. |
+| `TWILIO_AUTH_TOKEN` | **yes** | — | Verifies the `X-Twilio-Signature` header on every webhook request (`src/twilioSignature.ts`). If unset, every webhook request is rejected with `500`. |
+| `TWILIO_ACCOUNT_SID` | **yes for OTP delivery** | — | Twilio account used by `src/otpDelivery.ts` to send verification SMS. |
+| `TWILIO_SMS_FROM` | **yes for OTP delivery** | — | Twilio phone number with SMS capability, in E.164 format. |
 | `ENCRYPTION_KEY` | **yes** | — (boot fails if unset) | Current key-encryption key (KEK) that wraps the per-wallet data keys. ≥ 32 chars, `openssl rand -hex 32`. Rotate with the runbook below, never by simply replacing it. |
 | `ENCRYPTION_KEY_VERSION` | no | `1` | Label stored with every wrapped data key. Bump it whenever `ENCRYPTION_KEY` changes. |
 | `ENCRYPTION_KEY_RETIRED` | during a rotation | empty | `version=key,version=key` of previous KEKs, needed until `npm run rotate-keys` has finished. |
@@ -200,9 +210,9 @@ Invalid `VAULT_*` values (non-integer, zero or negative) make `validateIntent`
 throw, so the webhook replies with the generic error message rather than
 silently using a wrong limit.
 
-Replies are sent as TwiML in the webhook response, so only `TWILIO_AUTH_TOKEN`
-is needed today. `TWILIO_ACCOUNT_SID` and `TWILIO_WHATSAPP_NUMBER` become
-required once outbound (non-reply) messages are added.
+Replies are sent as TwiML, but OTPs are delivered separately by SMS. Configure
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_SMS_FROM` for outbound
+verification messages. The SMS sender must be enabled for SMS in Twilio.
 
 Requests without a valid `X-Twilio-Signature` are rejected with `403` before
 they reach the state machine, so a caller cannot impersonate a phone number by
@@ -212,6 +222,7 @@ posting a forged `From`.
 
 ```bash
 cd whatsapp
+cp .env.example .env      # then fill in encryption, phone-hash, and Twilio SMS credentials
 cp .env.example .env      # then fill in ENCRYPTION_KEY, PHONE_HASH_SALT, DATABASE_URL and TWILIO_AUTH_TOKEN
                           # (apply supabase/migrations/*.sql to that database first)
 npm install
@@ -287,6 +298,12 @@ next step for production holding real funds.
 These gaps are in the current implementation. Close them before the bot handles
 real funds:
 
+- **In-memory state.** Sessions, OTPs and custodial wallets live in process
+  `Map`s. A restart loses every wallet, including the only copy of its encrypted
+  secret. Persist wallets to the database (`db/` / `supabase/`) first.
+- **Insecure defaults.** `ENCRYPTION_KEY` and `PHONE_HASH_SALT` fall back to
+  hard-coded strings, and `scrypt` uses a fixed salt. Fail fast at startup when
+  they are unset in production.
 - **OTP is echoed in chat.** The welcome message includes the OTP for demo
   purposes, so it does not prove ownership of the phone. Deliver the OTP over a
   separate channel (SMS / Twilio Verify) and remove it from the reply.

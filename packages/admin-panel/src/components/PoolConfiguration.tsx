@@ -58,7 +58,7 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
 
     try {
       const result = await client.set_blend_pool(
-        signer,
+        signer as any,
         signer.publicKey(),
         newBlendPool,
       );
@@ -102,7 +102,7 @@ export function PoolConfiguration({ client, signer }: PoolConfigurationProps) {
 
     try {
       const result = await client.set_dex_pool(
-        signer,
+        signer as any,
         signer.publicKey(),
         newDexPool,
       );

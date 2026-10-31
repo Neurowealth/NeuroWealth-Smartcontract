@@ -57,3 +57,41 @@ describe('Soroban transaction timeout and fee (#1004)', () => {
     assert.strictEqual(totalFee, 1100);
   });
 });
+
+describe('rebalance transaction arguments (#935)', () => {
+  it('converts percent-point APY into the basis points the vault expects', async () => {
+    const { toExpectedApyBps } = await import('./sorobanTx');
+    assert.strictEqual(toExpectedApyBps(5.25), 525);
+    assert.strictEqual(toExpectedApyBps(0), 0);
+    assert.strictEqual(toExpectedApyBps(100), 10_000);
+    assert.strictEqual(toExpectedApyBps(100.01), null);
+    assert.strictEqual(toExpectedApyBps(-1), null);
+    assert.strictEqual(toExpectedApyBps(Number.NaN), null);
+  });
+
+  it('builds rebalance(agent, protocol, expected_apy, min_out) in contract order', async () => {
+    const { Keypair, scValToNative } = await import('@stellar/stellar-sdk');
+    const { buildRebalanceArgs } = await import('./sorobanTx');
+    const agent = Keypair.random().publicKey();
+
+    const args = buildRebalanceArgs(agent, 'blend', 525);
+
+    assert.strictEqual(args.length, 4);
+    assert.strictEqual(scValToNative(args[0]), agent);
+    assert.strictEqual(scValToNative(args[1]), 'blend');
+    assert.strictEqual(scValToNative(args[2]), 525n);
+    assert.strictEqual(scValToNative(args[3]), 0n);
+  });
+
+  it('rejects a rebalance without an agent identity instead of submitting', async () => {
+    const { submitRebalanceTx } = await import('./sorobanTx');
+    const previous = process.env.SOROBAN_PUBLIC_KEY;
+    delete process.env.SOROBAN_PUBLIC_KEY;
+    try {
+      const result = await submitRebalanceTx('blend', 5, { mode: 'dry-run', decisionId: 'd', snapshot: {} });
+      assert.strictEqual(result.status, 'rejected');
+    } finally {
+      if (previous !== undefined) process.env.SOROBAN_PUBLIC_KEY = previous;
+    }
+  });
+});

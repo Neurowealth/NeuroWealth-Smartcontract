@@ -89,7 +89,7 @@ const USER_CAP: i128 = 10_000_000_000;
 const TVL_CAP: i128 = 100_000_000_000;
 const TOKEN_FLOAT: i128 = 50_000_000_000;
 
-fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
+fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address, Address) {
     let deployer = Address::generate(env);
     let salt = BytesN::from_array(env, &[7u8; 32]);
     let contract_id = env
@@ -109,7 +109,7 @@ fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
     let token = FuzzTokenClient::new(env, &usdc);
     token.mint(&user, &TOKEN_FLOAT);
 
-    (client, user, usdc)
+    (client, user, agent, usdc)
 }
 
 fn is_allowed_panic(msg: &str) -> bool {
@@ -154,7 +154,7 @@ fuzz_target!(|data: &[u8]| {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, user, usdc) = setup(&env);
+    let (client, user, agent, usdc) = setup(&env);
     let _token = FuzzTokenClient::new(&env, &usdc);
 
     // Supported protocols for rebalance transitions
@@ -195,7 +195,7 @@ fuzz_target!(|data: &[u8]| {
                     // Rebalance to a target protocol
                     let protocol = protocols[protocol_idx].clone();
                     let expected_apy = (raw as i128) % 10_000;
-                    client.rebalance(&protocol, &expected_apy, &0);
+                    client.rebalance(&agent, &protocol, &expected_apy, &0);
                 }
                 2 => {
                     // Withdraw to test protocol exit during rebalance

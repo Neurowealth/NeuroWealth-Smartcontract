@@ -167,8 +167,8 @@ function supabaseUrl(): boolean {
 }
 
 /**
- * Fallback to fetch transactions directly from Soroban RPC events
- * Note: 'mock mode' as requested by the issue, although this fetches real on-chain events.
+ * Reads recent deposit/withdraw history straight from Soroban RPC contract
+ * events when Supabase is not configured. Every field comes from chain data.
  */
 async function getRecentTransactionsFromRpc(userAddress: string): Promise<TransactionRecord[]> {
   try {
@@ -232,10 +232,11 @@ async function getRecentTransactionsFromRpc(userAddress: string): Promise<Transa
           type: eventType === 'deposit' ? 'deposit' : 'withdrawal',
           amount: amount || 0,
           txHash: event.txHash,
-          timestamp: new Date().toLocaleString('en-US', { // Mocked timestamp since RPC doesn't provide it
+          // The ledger close time is when the event actually happened on chain.
+          timestamp: new Date(event.ledgerClosedAt).toLocaleString('en-US', {
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit',
-          }) + ' (RPC Fallback)',
+          }),
           status: 'confirmed'
         });
       } catch (_e) {

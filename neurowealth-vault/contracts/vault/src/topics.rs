@@ -26,6 +26,8 @@ pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
 /// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Topic for `ApyPredictionSubmittedEvent`, published when the agent submits a forecast.
+pub const TOPIC_APY_PREDICTION: Symbol = symbol_short!("apy_pred");
 /// Topic for `VaultPausedEvent`, published by `pause`.
 pub const TOPIC_PAUSED: Symbol = symbol_short!("paused");
 /// Topic for `VaultUnpausedEvent`, published by `unpause`.

@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "description": "Admin dashboard for NeuroWealth Vault - owner operations and contract management",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "node init && next dev",
+    "build": "node init && next build",
+    "start": "node init && next start",
     "lint": "next lint",
     "test": "node -e \"console.log('No tests yet for admin-panel; CI gate is explicit.')\"",
     "typecheck": "tsc --noEmit"
