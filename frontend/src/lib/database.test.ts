@@ -172,6 +172,34 @@ describe('getRecentTransactions', () => {
     expect(fromMock).not.toHaveBeenCalled();
   });
 
+  it('stamps RPC history with the real ledger close time, never a fabricated one (#930)', async () => {
+    const { nativeToScVal } = await import('@stellar/stellar-sdk');
+    vi.unstubAllEnvs();
+    vi.stubEnv('NEXT_PUBLIC_VAULT_CONTRACT_ID', 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4');
+    const ledgerClosedAt = '2024-03-05T14:30:00Z';
+    vi.mocked(server.getLatestLedger).mockResolvedValue({ sequence: 100000 } as never);
+    vi.mocked(server.getEvents).mockResolvedValue({
+      events: [{
+        type: 'contract',
+        id: 'evt-1',
+        txHash: 'abc123',
+        ledgerClosedAt,
+        topic: [nativeToScVal('deposit', { type: 'symbol' })],
+        value: nativeToScVal({ user: USER_ADDRESS, amount: 25_000_000 }),
+      }],
+    } as never);
+
+    const [record] = await getRecentTransactions(USER_ADDRESS);
+
+    expect(record.timestamp).toBe(new Date(ledgerClosedAt).toLocaleString('en-US', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    }));
+    expect(record.timestamp).not.toContain('RPC Fallback');
+    expect(record.amount).toBe(2.5);
+    expect(record.type).toBe('deposit');
+  });
+
   it('merges deposits and withdrawals sorted by timestamp descending, capped at 10', async () => {
     fromMock
       .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))

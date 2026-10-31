@@ -8,15 +8,20 @@
 
 use super::utils::*;
 use crate::{
-    AgentUpdatedEvent, AssetsUpdatedEvent, BlendPoolConfiguredEvent, BlendSupplyEvent,
-    BlendWithdrawEvent, DepositEvent, DepositLimitsUpdatedEvent, EmergencyPausedEvent,
-    HarvestEvent, OwnershipTransferInitiatedEvent, OwnershipTransferredEvent, ProtocolChangedEvent,
-    RebalanceEvent, TvlCapUpdatedEvent, UserDepositCapUpdatedEvent, VaultInitializedEvent,
-    VaultPausedEvent, VaultUnpausedEvent, WithdrawEvent, TOPIC_AGENT_UPDATED, TOPIC_ASSETS_UPDATED,
-    TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_DEPOSIT,
-    TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_EMERGENCY_PAUSED, TOPIC_HARVEST, TOPIC_INIT,
+    AgentKeyRotatedEvent, AgentUpdatedEvent, AssetsUpdatedEvent, BlendPoolConfiguredEvent,
+    BlendSupplyEvent, BlendWithdrawEvent, DepositEvent, DepositLimitsUpdatedEvent,
+    EmergencyPausedEvent, EmergencyWithdrawalEvent, FlashLoanProtectionTriggeredEvent,
+    HarvestEvent, MevExtractionSuspectedEvent, MigrationTargetUpdatedEvent,
+    OwnershipTransferInitiatedEvent, OwnershipTransferredEvent, ProtocolChangedEvent,
+    RebalanceEvent, SharesLockedEvent, SharesUnlockedEvent, StandbyAgentUpdatedEvent,
+    TvlCapUpdatedEvent, UserDepositCapUpdatedEvent, VaultInitializedEvent, VaultPausedEvent,
+    VaultUnpausedEvent, WithdrawEvent, TOPIC_AGENT_KEY_ROTATED, TOPIC_AGENT_UPDATED,
+    TOPIC_ASSETS_UPDATED, TOPIC_BLEND_POOL_CONFIGURED, TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW,
+    TOPIC_DEPOSIT, TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_EMERGENCY_PAUSED,
+    TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST, TOPIC_INIT, TOPIC_MIGRATION_TARGET_UPDATED,
     TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED, TOPIC_PAUSED, TOPIC_PROTOCOL_CHANGED,
-    TOPIC_REBALANCE, TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_USER_CAP_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_REBALANCE, TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED, TOPIC_STANDBY_AGENT_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_USER_CAP_UPDATED, TOPIC_WITHDRAW,
 };
 use soroban_sdk::{
     symbol_short,
@@ -900,4 +905,174 @@ fn test_event_emission_consistency() {
             _ => panic!("Unexpected event index"),
         }
     }
+}
+
+/// Regression (Issue #996): seven event types emitted by the contract had no
+/// test anywhere asserting their topic or payload shape -- SharesLockedEvent
+/// and SharesUnlockedEvent are counted as the two halves of one named gap
+/// ("SharesLockedEvent (and the unlock event)" in the issue), for eight
+/// events total covered by this one test.
+#[test]
+fn test_event_schema_locking_migration_standby_and_mev_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+    keep_storage_alive(&env);
+
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // ── SharesLockedEvent / SharesUnlockedEvent ──────────────────────────────
+    let locker = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &locker, 5_000_000_i128);
+    client.lock_shares(&locker, &5_000_000_i128, &30_u32);
+
+    let lock_events = find_events_by_topic(env.events().all(), &env, TOPIC_SHARES_LOCKED);
+    assert_eq!(
+        lock_events.len(),
+        1,
+        "Exactly one lock event should be emitted"
+    );
+    let (_, _, data) = &lock_events[0];
+    let lock_event =
+        SharesLockedEvent::try_from_val(&env, data).expect("Should be a valid SharesLockedEvent");
+    assert_eq!(lock_event.user, locker);
+    assert_eq!(lock_event.shares_locked, 5_000_000_i128);
+    assert_eq!(lock_event.lock_duration_days, 30_u32);
+
+    env.ledger().with_mut(|li| {
+        li.sequence_number = lock_event.expiry_ledger;
+    });
+    client.unlock_shares(&locker);
+
+    let unlock_events = find_events_by_topic(env.events().all(), &env, TOPIC_SHARES_UNLOCKED);
+    assert_eq!(
+        unlock_events.len(),
+        1,
+        "Exactly one unlock event should be emitted"
+    );
+    let (_, _, data) = &unlock_events[0];
+    let unlock_event = SharesUnlockedEvent::try_from_val(&env, data)
+        .expect("Should be a valid SharesUnlockedEvent");
+    assert_eq!(unlock_event.user, locker);
+    assert_eq!(unlock_event.shares_unlocked, 5_000_000_i128);
+
+    // ── FlashLoanProtectionTriggeredEvent ────────────────────────────────────
+    client.set_min_holding_period(&120_u32);
+    let flash_user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &flash_user, 1_000_000_i128);
+    let result = client.try_withdraw_all(&flash_user);
+    assert!(
+        result.is_err(),
+        "withdraw_all must be rejected within the holding period"
+    );
+
+    let fl_events = find_events_by_topic(env.events().all(), &env, symbol_short!("fl_block"));
+    assert_eq!(
+        fl_events.len(),
+        1,
+        "Exactly one flash-loan-protection event should be emitted"
+    );
+    let (_, _, data) = &fl_events[0];
+    let fl_event = FlashLoanProtectionTriggeredEvent::try_from_val(&env, data)
+        .expect("Should be a valid FlashLoanProtectionTriggeredEvent");
+    assert_eq!(fl_event.user, flash_user);
+    assert_eq!(fl_event.min_holding_period, 120_u32);
+    assert!(fl_event.current_ledger - fl_event.last_deposit_ledger < 120_u32);
+
+    // ── EmergencyWithdrawalEvent ──────────────────────────────────────────────
+    let em_user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &usdc_token, &em_user, 2_000_000_i128);
+    client.pause(&owner);
+    client.emergency_withdraw(&em_user, &2_000_000_i128);
+
+    let em_wd_events = find_events_by_topic(env.events().all(), &env, TOPIC_EMERGENCY_WITHDRAWAL);
+    assert_eq!(
+        em_wd_events.len(),
+        1,
+        "Exactly one emergency withdrawal event should be emitted"
+    );
+    let (_, _, data) = &em_wd_events[0];
+    let em_wd_event = EmergencyWithdrawalEvent::try_from_val(&env, data)
+        .expect("Should be a valid EmergencyWithdrawalEvent");
+    assert_eq!(em_wd_event.user, em_user);
+    assert_eq!(em_wd_event.amount, 2_000_000_i128);
+    assert_eq!(em_wd_event.shares, 2_000_000_i128);
+    client.unpause(&owner);
+
+    // ── MigrationTargetUpdatedEvent ───────────────────────────────────────────
+    let migration_target = Address::generate(&env);
+    client.schedule_migration_target(&owner, &migration_target);
+    let pending = client
+        .get_pending_migration_target()
+        .expect("a migration target should be pending");
+    env.ledger().with_mut(|li| {
+        li.sequence_number = pending.1;
+    });
+    client.execute_migration_target(&owner);
+
+    let mig_events = find_events_by_topic(env.events().all(), &env, TOPIC_MIGRATION_TARGET_UPDATED);
+    assert_eq!(
+        mig_events.len(),
+        1,
+        "Exactly one migration target updated event should be emitted"
+    );
+    let (_, _, data) = &mig_events[0];
+    let mig_event = MigrationTargetUpdatedEvent::try_from_val(&env, data)
+        .expect("Should be a valid MigrationTargetUpdatedEvent");
+    assert_eq!(mig_event.old_target, None);
+    assert_eq!(mig_event.new_target, migration_target);
+    assert_eq!(mig_event.owner, owner);
+
+    // ── StandbyAgentUpdatedEvent / AgentKeyRotatedEvent ──────────────────────
+    let standby = Address::generate(&env);
+    client.update_standby_agent(&standby);
+
+    let standby_events =
+        find_events_by_topic(env.events().all(), &env, TOPIC_STANDBY_AGENT_UPDATED);
+    assert_eq!(
+        standby_events.len(),
+        1,
+        "Exactly one standby agent updated event should be emitted"
+    );
+    let (_, _, data) = &standby_events[0];
+    let standby_event = StandbyAgentUpdatedEvent::try_from_val(&env, data)
+        .expect("Should be a valid StandbyAgentUpdatedEvent");
+    assert_eq!(standby_event.old_standby, None);
+    assert_eq!(standby_event.new_standby, standby);
+    assert_eq!(standby_event.owner, owner);
+
+    client.switch_to_standby_agent();
+
+    let rotated_events = find_events_by_topic(env.events().all(), &env, TOPIC_AGENT_KEY_ROTATED);
+    assert_eq!(
+        rotated_events.len(),
+        1,
+        "Exactly one agent key rotated event should be emitted"
+    );
+    let (_, _, data) = &rotated_events[0];
+    let rotated_event = AgentKeyRotatedEvent::try_from_val(&env, data)
+        .expect("Should be a valid AgentKeyRotatedEvent");
+    assert_eq!(rotated_event.old_primary, agent);
+    assert_eq!(rotated_event.new_primary, standby);
+    assert_eq!(rotated_event.new_standby, agent);
+    assert_eq!(rotated_event.owner, owner);
+
+    // ── MevExtractionSuspectedEvent ───────────────────────────────────────────
+    let protocol = symbol_short!("blend");
+    client.submit_mev_report(&standby, &protocol, &500_000_i128, &9_000_000_i128);
+
+    let mev_events = find_events_by_topic(env.events().all(), &env, symbol_short!("mev_alert"));
+    assert_eq!(
+        mev_events.len(),
+        1,
+        "Exactly one MEV extraction suspected event should be emitted"
+    );
+    let (_, _, data) = &mev_events[0];
+    let mev_event = MevExtractionSuspectedEvent::try_from_val(&env, data)
+        .expect("Should be a valid MevExtractionSuspectedEvent");
+    assert_eq!(mev_event.protocol, protocol);
+    assert_eq!(mev_event.estimated_loss_stroops, 500_000_i128);
+    assert_eq!(mev_event.min_out_used, 9_000_000_i128);
+    assert_eq!(mev_event.cumulative_loss_stroops, 500_000_i128);
+    assert_eq!(mev_event.incident_count, 1_u32);
 }

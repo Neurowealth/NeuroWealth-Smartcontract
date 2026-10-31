@@ -199,12 +199,6 @@ export async function fetchBlendApy(): Promise<number | null> {
 
     // Query the Blend pool contract for supply APR
     // In production, this would call the contract's get_supply_apr() method
-    // For now, we'll implement a placeholder that can be replaced with actual RPC calls
-    const { server } = await import('./eventListener');
-    const { Contract } = await import('@stellar/stellar-sdk');
-
-    const contract = new Contract(blendContractId);
-    // Note: This is a placeholder - actual implementation depends on Blend's contract interface
     // Typical Blend pools expose a get_supply_apr() or similar method
     // For now, we return null to trigger the fail-safe (no rebalance on stale data)
     logger?.warn('Blend APY fetch not yet implemented with real RPC; returning null (no rebalance)');
@@ -246,12 +240,6 @@ export async function fetchDexApy(): Promise<number | null> {
 
     // Query the DEX pool for fee APR
     // In production, this would call the pool's get_fee_apr() method or query an indexer
-    // For now, we'll implement a placeholder that can be replaced with actual RPC calls
-    const { server } = await import('./eventListener');
-    const { Contract } = await import('@stellar/stellar-sdk');
-
-    const contract = new Contract(dexPoolId);
-    // Note: This is a placeholder - actual implementation depends on the DEX's contract interface
     // Typical DEX pools expose fee data through state or indexer queries
     // For now, we return null to trigger the fail-safe (no rebalance on stale data)
     logger?.warn('DEX APY fetch not yet implemented with real RPC; returning null (no rebalance)');
@@ -331,7 +319,7 @@ export async function evaluateYield(
       }
     }
 
-    return { shouldRebalance: true, targetProtocol };
+    return { shouldRebalance: true, targetProtocol, targetApy };
   } catch {
     return { shouldRebalance: false };
   }

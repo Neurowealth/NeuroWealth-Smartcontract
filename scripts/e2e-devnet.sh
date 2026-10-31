@@ -31,7 +31,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARTIFACTS_DIR="$SCRIPT_DIR/e2e-artifacts"
-WASM_PATH="$REPO_ROOT/neurowealth-vault/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+DEFAULT_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/neurowealth-vault/target}"
+WASM_PATH="${WASM_PATH:-$DEFAULT_TARGET_DIR/wasm32-unknown-unknown/release/neurowealth_vault.wasm}"
 
 SOROBAN_RPC_URL="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"
 SOROBAN_NETWORK_PASSPHRASE="${SOROBAN_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"
@@ -135,8 +136,12 @@ if [[ ! -f "$WASM_PATH" ]]; then
   log "Building contract..."
   (cd "$REPO_ROOT/neurowealth-vault" && \
     RUSTFLAGS="-C target-cpu=mvp" cargo build \
+      -p neurowealth-vault \
       --target wasm32-unknown-unknown \
       --release)
+  if command -v wasm-opt &>/dev/null && [[ -f "$WASM_PATH" ]]; then
+    wasm-opt --strip-target-features "$WASM_PATH" -o "$WASM_PATH"
+  fi
 fi
 
 if [[ ! -f "$WASM_PATH" ]]; then
@@ -192,9 +197,13 @@ save_artifact "user_address.txt" "$USER_ADDR"
 
 log_section "SCENARIO: CONTRACT DEPLOYMENT"
 
+DEPLOY_SALT=$(python3 -c "import os; print(os.urandom(32).hex())")
+log "Using deployment salt: $DEPLOY_SALT"
+
 DEPLOY_OUTPUT=$(run_soroban "Deploy vault contract" \
   contract deploy \
   --wasm "$WASM_PATH" \
+  --salt "$DEPLOY_SALT" \
   --source e2e-deployer \
   --network testnet) || {
   record_fail "contract_deploy" "Failed to deploy contract: $DEPLOY_OUTPUT"
@@ -254,8 +263,11 @@ INIT_OUTPUT=$(run_soroban "Initialize vault" \
   --network testnet \
   -- \
   initialize \
+  --deployer "$DEPLOYER_ADDR" \
+  --owner "$DEPLOYER_ADDR" \
   --agent "$DEPLOYER_ADDR" \
-  --usdc_token "$USDC_TOKEN_ID" 2>&1) || {
+  --usdc_token "$USDC_TOKEN_ID" \
+  --salt "$DEPLOY_SALT" 2>&1) || {
   record_fail "initialize" "Init failed: $INIT_OUTPUT"
   exit 1
 }
@@ -270,8 +282,11 @@ REINIT_OUTPUT=$(run_soroban "Verify double-init prevention" \
   --network testnet \
   -- \
   initialize \
+  --deployer "$DEPLOYER_ADDR" \
+  --owner "$DEPLOYER_ADDR" \
   --agent "$DEPLOYER_ADDR" \
-  --usdc_token "$USDC_TOKEN_ID" 2>&1) && {
+  --usdc_token "$USDC_TOKEN_ID" \
+  --salt "$DEPLOY_SALT" 2>&1) && {
   record_fail "initialize_idempotent" "Double-init should have failed but succeeded"
 } || {
   if echo "$REINIT_OUTPUT" | grep -qi "already initialized\|Already initialized\|Error\|error\|panic\|failed"; then
@@ -280,6 +295,16 @@ REINIT_OUTPUT=$(run_soroban "Verify double-init prevention" \
     record_fail "initialize_idempotent" "Unexpected output: $REINIT_OUTPUT"
   fi
 }
+
+# Disable minimum holding period for immediate E2E deposit + withdraw verification
+run_soroban "Disable minimum holding period for E2E immediate withdrawal tests" \
+  contract invoke \
+  --id "$CONTRACT_ID" \
+  --source e2e-deployer \
+  --network testnet \
+  -- \
+  set_min_holding_period \
+  --ledgers 0 >/dev/null 2>&1 || true
 
 record_pass "initialize"
 
@@ -435,6 +460,7 @@ REBALANCE_OUTPUT=$(run_soroban "Rebalance to 'none' protocol" \
   --network testnet \
   -- \
   rebalance \
+  --agent "$DEPLOYER_ADDR" \
   --protocol "none" \
   --expected_apy "0" \
   --min_out "0" 2>&1) || {
@@ -480,6 +506,12 @@ log_section "SCENARIO 7: EVENT VERIFICATION"
 
 # Fetch recent events for our contract using the CLI
 EVENTS_OUTPUT=$(run_soroban "Fetch contract events" \
+  events \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --start-ledger 0 \
+  --count 50 2>&1) || \
+EVENTS_OUTPUT=$(run_soroban "Fetch contract events (legacy CLI)" \
   contract events \
   --id "$CONTRACT_ID" \
   --network testnet \
@@ -619,8 +651,8 @@ fi
 if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
   log_section "SCENARIO 9: UPGRADE TIMELOCK"
 
-  # Create a fake WASM hash for testing (32 bytes)
-  FAKE_WASM_HASH="0000000000000000000000000000000000000000000000000000000000000000"
+  # Create a non-zero fake WASM hash for testing (32 bytes)
+  FAKE_WASM_HASH="0101010101010101010101010101010101010101010101010101010101010101"
 
   # Schedule upgrade (step 1 of 2)
   SCHEDULE_OUTPUT=$(run_soroban "Schedule upgrade" \

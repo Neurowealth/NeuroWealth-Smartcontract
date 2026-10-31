@@ -12,8 +12,7 @@
  */
 
 import logger from './logger';
-import { Keypair, Contract, xdr } from '@stellar/stellar-sdk';
-import { server } from './eventListener';
+import { Keypair } from '@stellar/stellar-sdk';
 
 export interface WithdrawalKeeperConfig {
   /** Interval between queue checks in milliseconds (default: 5 minutes) */
@@ -49,7 +48,7 @@ export interface WithdrawalKeeperResult {
   error?: string;
 }
 
-interface QueueEntry {
+interface _QueueEntry {
   request_id: number;
   user: string;
   amount: number;
@@ -65,8 +64,6 @@ async function getQueueState(
   vaultContractId: string,
 ): Promise<{ queueDepth: number; oldestRequestAgeMs: number; idleLiquidity: number }> {
   try {
-    const contract = new Contract(vaultContractId);
-
     // Query queue depth (this is a placeholder - actual implementation depends on contract)
     // In production, this would call a get_queue_state() or similar method
     const queueDepth = 0; // Placeholder
@@ -93,14 +90,6 @@ async function processWithdrawalQueue(
   batchSize: number,
 ): Promise<number> {
   try {
-    const contract = new Contract(vaultContractId);
-    const { nativeToScVal } = await import('@stellar/stellar-sdk');
-
-    const args = [
-      nativeToScVal(agentKeypair.publicKey(), { type: 'address' }),
-      nativeToScVal(batchSize, { type: 'u32' }),
-    ];
-
     // Note: This is a placeholder - actual implementation needs to build and submit a transaction
     // In production, this would use the transaction building logic from sorobanTx.ts
     logger.info({ vaultContractId, batchSize }, 'process_withdrawal_queue called');

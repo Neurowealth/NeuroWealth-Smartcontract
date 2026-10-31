@@ -44,11 +44,11 @@ export function PauseControl({ client, signer }: PauseControlProps) {
       let hash: string | undefined;
       if (paused) {
         // Unpause
-        const result = await client.unpause(signer, signer.publicKey());
+        const result = await client.unpause(signer as any, signer.publicKey());
         hash = result?.hash;
       } else {
         // Pause
-        const result = await client.pause(signer, signer.publicKey());
+        const result = await client.pause(signer as any, signer.publicKey());
         hash = result?.hash;
       }
 

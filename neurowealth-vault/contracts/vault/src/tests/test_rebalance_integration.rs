@@ -302,6 +302,11 @@ fn test_integration_rebalance_from_blend_to_none_withdraws_all() {
         .find(|e| e.protocol == symbol_short!("none"))
         .expect("RebalanceEvent for 'none' must be emitted");
     assert_eq!(none_event.expected_apy, 0_i128);
+    assert_eq!(none_event.amount_attempted, deposit_amount);
+    assert_eq!(none_event.amount_moved, deposit_amount);
+    assert_eq!(none_event.amount_supplied, 0);
+    assert_eq!(none_event.amount_withdrawn, deposit_amount);
+    assert_eq!(wd_events.len(), 1, "Blend exit should happen exactly once");
 }
 
 /// Rebalancing from "none" to "none" is a no-op and should succeed without
@@ -553,6 +558,8 @@ fn test_integration_rebalance_event_schema_correctness() {
 
     assert_eq!(events[2].protocol, symbol_short!("none"));
     assert_eq!(events[2].expected_apy, 0_i128);
+    assert_eq!(events[2].amount_attempted, 10_000_000_i128);
+    assert_eq!(events[2].amount_moved, 10_000_000_i128);
     assert_eq!(events[2].amount_supplied, 0);
     assert_eq!(events[2].amount_withdrawn, 10_000_000_i128);
 }

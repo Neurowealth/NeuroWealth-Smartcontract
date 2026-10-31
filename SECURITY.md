@@ -1,18 +1,25 @@
 # Security Model
 
+This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
+
 ## Reporting a Vulnerability
 
-Follow the [private reporting instructions](docs/BUG_BOUNTY.md#reporting-channel)
-in the bug bounty policy. The formerly listed security mailbox is unavailable;
-use only a confirmed private channel. GitHub's **Report a vulnerability** form
-works only after maintainers enable private vulnerability reporting.
+If you have discovered a security vulnerability, **do not open a public GitHub
+issue**. Public disclosure before a fix is available puts users at risk and
+will disqualify the report from bounty eligibility.
 
-If the form is unavailable, request channel activation or a verified contact
-without disclosing vulnerability details publicly. See
-[issue #1073](https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/1073)
-for the non-sensitive channel-availability request.
+**To submit a report privately:**
 
-This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
+Use [GitHub Private Vulnerability Reporting](https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new)
+via the **"Report a vulnerability"** button on the repository's Security tab.
+This is currently the only active private reporting channel (see
+[Issue #897](https://github.com/Neurowealth/NeuroWealth-Smartcontract/issues/897)
+for background on why the previous email address is unavailable).
+
+For bounty scope, severity tiers, safe-harbor terms, and payout details, see
+[`docs/BUG_BOUNTY.md`](docs/BUG_BOUNTY.md).
+
+---
 
 ## Threat Model & Trust Boundaries (Issue #563)
 
@@ -381,12 +388,41 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |
-| set_rate_limit, set_rate_limit_config | yes | - | - | - |
-| set_queue_config | yes | - | - | - |
-| process_withdrawal_queue | - | - | - | anyone (authenticated) |
 | submit_mev_report | - | yes | - | - |
 | set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
+| add_supported_asset | yes | - | - | - |
+| batch_deposit | - | - | yes | - |
+| cancel_migration_target | yes | - | - | - |
+| cancel_withdrawal_request | - | - | yes | - |
+| deposit_asset | - | - | yes | - |
+| emergency_harvest | yes | - | - | - |
+| emergency_withdraw | - | - | yes | - |
+| enable_multi_protocol | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| lock_shares | - | - | yes | - |
+| migrate_shares | - | - | yes | - |
+| process_withdrawal_queue | - | yes | - | - |
+| queue_withdrawal | - | - | yes | - |
+| rebalance_multi | - | yes | - | - |
+| receive_migration | - | - | - | anyone |
+| remove_supported_asset | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| set_batch_size_limit | yes | - | - | - |
+| set_max_batch_size | yes | - | - | - |
+| set_max_consecutive_failures | yes | - | - | - |
+| set_max_decrease_bps | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
+| set_protocol_apy | - | yes | - | - |
+| set_queue_config | yes | - | - | - |
+| set_rate_limit | yes | - | - | - |
+| set_rate_limit_config | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
+| unlock_shares | - | - | yes | - |
+| update_asset_limits | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| withdraw_asset | - | - | yes | - |
 
 
 ### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)

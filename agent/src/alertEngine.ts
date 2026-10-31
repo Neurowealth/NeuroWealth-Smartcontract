@@ -8,8 +8,18 @@ export interface AlertRule {
     severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 }
 
-interface VaultAlertState {
-    totalAssets: number;
+export interface VaultAlertState {
+    /** Vault total assets in whole USDC, or null when it could not be read from chain. */
+    totalAssets: number | null;
+}
+
+/** Reads live vault state for alert evaluation. Injectable for tests. */
+export type VaultAlertStateReader = () => Promise<VaultAlertState>;
+
+async function readVaultAlertStateFromChain(): Promise<VaultAlertState> {
+    // Loaded lazily: sorobanTx -> eventListener -> alertEngine would otherwise be a load-time cycle.
+    const { fetchVaultTotalAssets } = await import('./sorobanTx');
+    return { totalAssets: await fetchVaultTotalAssets() };
 }
 
 export interface MonitoringAlertThresholds {
@@ -35,6 +45,8 @@ export const alertRules: AlertRule[] = [
         name: 'TVL_ANOMALY',
         description: 'Sudden drop in TVL detected.',
         check: (event, state) => {
+            // Without real on-chain TVL the rule cannot be evaluated; never guess it.
+            if (state.totalAssets === null || state.totalAssets <= 0) return false;
             const thresholds = getAlertThresholds();
             return event.type === 'withdraw' && event.amount > state.totalAssets * (thresholds.tvlDropPercentage / 100);
         },
@@ -59,15 +71,26 @@ export const alertRules: AlertRule[] = [
     },
 ];
 
-export async function processEventForAlerts(event: unknown): Promise<string[]> {
+export async function processEventForAlerts(
+    event: unknown,
+    readVaultState: VaultAlertStateReader = readVaultAlertStateFromChain,
+): Promise<string[]> {
     const parsed = parseAlertEventPayload(event);
     if (!parsed.ok) {
         logger.warn({ reason: parsed.reason, event }, 'Dropping invalid or unknown alert event');
         return [];
     }
 
-    // Mock fetching vault state
-    const state: VaultAlertState = { totalAssets: 1000000 };
+    let state: VaultAlertState;
+    try {
+        state = await readVaultState();
+    } catch (error) {
+        logger.warn({ error: error instanceof Error ? error.message : error }, 'Failed to read vault state for alerts');
+        state = { totalAssets: null };
+    }
+    if (state.totalAssets === null) {
+        logger.warn('Vault total assets unavailable; skipping TVL-relative alert rules');
+    }
     const triggered: string[] = [];
     
     for (const rule of alertRules) {

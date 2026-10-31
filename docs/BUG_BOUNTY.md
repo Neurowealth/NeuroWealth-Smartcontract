@@ -1,7 +1,7 @@
 # NeuroWealth Bug Bounty Program
 
 > **Status:** Active — Pre-Mainnet  
-> **Last updated:** 2026-10-22  
+> **Last updated:** 2026-08-24  
 > **Program managed by:** NeuroWealth Security Team
 
 We reward security researchers who responsibly disclose vulnerabilities in the
@@ -309,7 +309,7 @@ receive a reduced or no bounty, at our discretion.
 ---
 
 *This policy is subject to change. Material changes will be announced via the
-repository changelog.*
+repository changelog and a repository announcement.*
 
 *See also: [`SECURITY.md`](../SECURITY.md) for the full trust model, threat
 analysis, and owner-compromise runbook.*

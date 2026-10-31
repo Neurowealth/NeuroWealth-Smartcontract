@@ -7,4 +7,41 @@
 # WhatsApp bot crypto utilities unit test fixtures: dummy encryption keys and salts for testing encryption/decryption routines.
 c8d70b94b685449b4d9709b9abd2e953c1619db1:whatsapp/src/__tests__/cryptoUtils.test.ts:generic-api-key:5
 whatsapp/src/__tests__/cryptoUtils.test.ts:generic-api-key:5
+35ce7e522d0106c8ce6cd4cb15caed90732453f9:whatsapp/src/cryptoUtils.ts:generic-api-key:32
+whatsapp/src/cryptoUtils.ts:generic-api-key:32
 
+# Frontend error sanitization & boundary unit test fixtures: dummy Stellar secret keys and credentials for testing redaction routines (#866).
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:16
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:18
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:55
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:55
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:57
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:107
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:108
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:109
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:109
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:25
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/app/[locale]/error.test.tsx:stellar-secret-key:46
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/app/[locale]/error.test.tsx:stellar-secret-key:48
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/components/ErrorBoundary.test.tsx:stellar-secret-key:137
+424839107ed5b731a92c0ba78a7f581147e47b52:frontend/src/components/ErrorBoundary.test.tsx:stellar-secret-key:140
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:16
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:18
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:55
+frontend/src/lib/errorSanitizer.test.ts:generic-api-key:55
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:57
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:107
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:108
+frontend/src/lib/errorSanitizer.test.ts:stellar-secret-key:109
+frontend/src/lib/errorSanitizer.test.ts:generic-api-key:109
+frontend/src/lib/errorSanitizer.test.ts:generic-api-key:25
+frontend/src/app/[locale]/error.test.tsx:stellar-secret-key:46
+frontend/src/app/[locale]/error.test.tsx:stellar-secret-key:48
+frontend/src/components/ErrorBoundary.test.tsx:stellar-secret-key:137
+frontend/src/components/ErrorBoundary.test.tsx:stellar-secret-key:140
+
+# Bridge error sanitization recovery unit test fixture: dummy API key and bearer token for testing error message redaction (#848).
+6d7f77f18d8b858a5643b515262387fba6421e3e:packages/bridge/src/bridge-recovery.test.ts:generic-api-key:511
+6d7f77f18d8b858a5643b515262387fba6421e3e:packages/bridge/src/bridge-recovery.test.ts:generic-api-key:512
+packages/bridge/src/bridge-recovery.test.ts:generic-api-key:511
+packages/bridge/src/bridge-recovery.test.ts:generic-api-key:512

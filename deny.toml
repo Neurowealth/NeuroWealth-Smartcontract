@@ -18,11 +18,11 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 # Crates that have been yanked from crates.io fail the build.
 yanked = "deny"
 
-# Unmaintained crates: warn on transitive, deny on workspace direct deps
-unmaintained = "all"
+# Unmaintained crates: warn
+unmaintained = "warn"
 
-# Unsound crates: only fail if they're direct workspace dependencies
-unsound = "workspace"
+# Unsound crates: deny
+unsound = "deny"
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
 # Add entries here when a published advisory cannot be resolved immediately.

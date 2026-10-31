@@ -33,6 +33,12 @@ jobs:
           cache: 'npm'
           cache-dependency-path: './whatsapp/package-lock.json'
 
+      - name: Build vault-client dependency
+        run: |
+          cd ../packages/vault-client
+          npm ci
+          npm run build
+
       - name: Install dependencies
         run: npm ci
 

@@ -22,3 +22,18 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to view the application.
+
+## Mock mode
+
+The dashboard reads real data only: vault state from Soroban RPC, history from
+Supabase (or Soroban RPC contract events when Supabase is not configured).
+There are no silent fallbacks to hard-coded balances, APYs or transactions.
+
+Mock data is served only when mock mode is explicitly enabled at build time:
+
+| Variable | Effect |
+| --- | --- |
+| `NEXT_PUBLIC_USE_MOCKS=true` | Enables the in-browser test harness (`window.__NEUROWEALTH_E2E__`) instead of Freighter / Soroban RPC. |
+| `NEXT_PUBLIC_E2E_TESTS=true` | Alias used by the Playwright suite (`playwright.config.ts`). |
+
+Leave both unset (the default) for any real deployment.

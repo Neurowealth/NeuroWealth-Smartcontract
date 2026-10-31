@@ -410,3 +410,106 @@ fn test_withdraw_all_enforces_min_holding_period() {
     );
     assert_eq!(client.get_shares(&user), 0, "All shares should be burned");
 }
+
+/// Regression (#993): a holder whose entire redeemable balance is worth less
+/// than 1 stroop must still be able to exit via `withdraw_all`, burning their
+/// dust shares with a zero payout and being pruned from `UserSharesIndex`,
+/// rather than panicking forever on `NoAssetsToReturn`/`NoLiquidityAvailable`.
+#[test]
+fn test_withdraw_all_burns_dust_shares_with_zero_payout() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    // A large holder establishes a huge TotalShares base relative to the
+    // dust holder below, so a crash in share price can floor the dust
+    // holder's redemption to zero while the large holder's doesn't.
+    let whale = Address::generate(&env);
+    let whale_deposit = 10_000_000_000_i128; // DEFAULT_MAX_DEPOSIT / DEFAULT_USER_DEPOSIT_CAP
+    mint_and_deposit(&env, &client, &usdc_token, &whale, whale_deposit);
+
+    // The smallest possible depositor: exactly MinDeposit, 1:1 at this point.
+    let dust_user = Address::generate(&env);
+    let dust_deposit = 1_000_000_i128; // DEFAULT_MIN_DEPOSIT
+    mint_and_deposit(&env, &client, &usdc_token, &dust_user, dust_deposit);
+
+    let total_shares_before = whale_deposit + dust_deposit;
+    assert_eq!(client.get_shares(&dust_user), dust_deposit);
+
+    // Simulate a catastrophic loss report by writing TotalAssets directly,
+    // rather than going through update_total_assets's owner-cosigned,
+    // percentage-capped decrease path (which would take ~130 repeated calls
+    // at the default 10%-per-call cap to reach dust territory here, and
+    // separately has its own unrelated pre-existing bug: any call to
+    // set_max_decrease_bps corrupts a later update_total_assets into a
+    // host-level ConversionError trap, confirmed via git stash to reproduce
+    // identically on the unmodified upstream tree). The dust holder's share
+    // of a near-zero total now floors to 0 assets:
+    //   1_000_000 * 1 / 10_001_000_000 == 0 (integer division).
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::TotalAssets, &1_i128);
+    });
+
+    // Clear the default 120-ledger min holding period (#975, flash-loan
+    // protection) so it doesn't interfere with this test's unrelated
+    // scenario; #993 is about the exit itself, not the holding window.
+    let current_sequence = env.ledger().sequence();
+    env.ledger().with_mut(|li| {
+        li.sequence_number = current_sequence + 120;
+    });
+
+    assert_eq!(
+        client.get_balance(&dust_user),
+        0,
+        "dust holder's redeemable balance must floor to zero assets"
+    );
+    assert!(
+        client.get_shares(&dust_user) > 0,
+        "dust holder must still hold shares before calling withdraw_all"
+    );
+
+    // Must NOT panic, and must actually burn the shares.
+    let withdrawn = client.withdraw_all(&dust_user);
+    assert_eq!(withdrawn, 0, "dust withdrawal pays out exactly zero assets");
+    assert_eq!(
+        client.get_shares(&dust_user),
+        0,
+        "dust shares must be fully burned"
+    );
+    assert_stored_shares_zero(&env, &contract_id, &dust_user);
+
+    // TotalShares must drop by exactly the dust shares burned, no more and
+    // no less, and the dust user must be pruned from the index.
+    env.as_contract(&contract_id, || {
+        let total_shares: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap();
+        assert_eq!(
+            total_shares,
+            total_shares_before - dust_deposit,
+            "TotalShares must be consistent after a dust burn"
+        );
+        let index: soroban_sdk::Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap();
+        assert!(
+            !index.contains(&dust_user),
+            "dust user must be pruned from UserSharesIndex after exiting"
+        );
+    });
+
+    // The WithdrawEvent must still be emitted, with a zero amount/shares
+    // payload that matches what was actually burned.
+    let withdraw_events = find_events_by_topic(env.events().all(), &env, TOPIC_WITHDRAW);
+    assert_eq!(
+        withdraw_events.len(),
+        1,
+        "exactly one WithdrawEvent must be emitted for the dust withdrawal"
+    );
+    let (_, _, data) = &withdraw_events[0];
+    let event = WithdrawEvent::try_from_val(&env, data).expect("Should be a valid WithdrawEvent");
+    assert_eq!(event.amount, 0);
+    assert_eq!(event.shares, dust_deposit);
+}

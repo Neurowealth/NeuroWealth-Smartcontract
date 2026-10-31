@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # check-data-key-docs.sh
 #
-# Validates that every DataKey variant in lib.rs is documented in the
-# ARCHITECTURE.md storage layout table. Prevents documentation drift when
-# new storage keys are added or existing ones renamed.
+# Validates that every DataKey AND DataKeyExt variant in lib.rs is
+# documented in ARCHITECTURE.md. Prevents documentation drift when new
+# storage keys are added or existing ones renamed. DataKeyExt was added
+# as a second storage enum without any corresponding doc check (Issue
+# #994), which let its withdrawal-queue keys (QueueConfig, NextRequestId,
+# WithdrawalRequest, QueueOrder, WithdrawalQueueStorageVersion,
+# ReservedWithdrawalAmount) go completely undocumented; this script now
+# covers both enums.
 #
 # Usage:
 #   bash scripts/check-data-key-docs.sh
@@ -160,12 +165,67 @@ if [ ${#EXTRA[@]} -gt 0 ]; then
 fi
 
 echo ""
-# Only missing (undocumented) variants fail the check; extras only warn.
+if [ "$FAIL" -gt 0 ]; then
+  echo "❌ DataKey check FAILED — add the missing variants to the DataKey Structure"
+  echo "   section in ARCHITECTURE.md."
+fi
+
+# ── 5. Same check for DataKeyExt (Issue #994) ────────────────────────────────
+# DataKeyExt is a second, separate storage enum in lib.rs. Unlike DataKey, it
+# is not rendered as a single fenced code block in the docs; each variant is
+# instead referenced as `DataKeyExt::VariantName` inline in prose/tables (see
+# the withdrawal-queue storage table in ARCHITECTURE.md). So: extract variant
+# names from the enum in lib.rs exactly as above, then just grep the doc file
+# for a `DataKeyExt::<name>` reference anywhere, rather than parsing a fence.
+EXT_VARIANTS=()
+IN_EXT_ENUM=0
+while IFS= read -r line; do
+  if echo "$line" | grep -qE '^[[:space:]]*pub[[:space:]]+enum[[:space:]]+DataKeyExt'; then
+    IN_EXT_ENUM=1
+    continue
+  fi
+  if [ "$IN_EXT_ENUM" -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*\}'; then
+    break
+  fi
+  if [ "$IN_EXT_ENUM" -eq 1 ]; then
+    variant=$(echo "$line" | sed -nE 's/^[[:space:]]+([A-Z][A-Za-z0-9_]*).*/\1/p')
+    if [ -n "$variant" ]; then
+      EXT_VARIANTS+=("$variant")
+    fi
+  fi
+done < "$LIB_RS"
+
+if [ ${#EXT_VARIANTS[@]} -eq 0 ]; then
+  echo "ERROR: No DataKeyExt variants found in lib.rs — check the enum definition." >&2
+  exit 1
+fi
+
+echo ""
+echo "Found ${#EXT_VARIANTS[@]} DataKeyExt variants in lib.rs"
+
+EXT_MISSING=()
+for v in "${EXT_VARIANTS[@]}"; do
+  if ! grep -qE "DataKeyExt::${v}\b" "$ARCH_MD"; then
+    EXT_MISSING+=("$v")
+  fi
+done
+
+if [ ${#EXT_MISSING[@]} -gt 0 ]; then
+  FAIL=1
+  echo "❌ DataKeyExt variants in lib.rs but MISSING a \`DataKeyExt::<name>\` reference"
+  echo "   anywhere in ARCHITECTURE.md:"
+  for v in "${EXT_MISSING[@]}"; do
+    echo "   - $v"
+  done
+else
+  echo "✅ All DataKeyExt variants have a \`DataKeyExt::<name>\` reference in ARCHITECTURE.md"
+fi
+
+echo ""
 if [ "$FAIL" -gt 0 ]; then
   echo "❌ DATAKEY DOCS CHECK FAILED"
-  echo "   Add the missing variants to the DataKey Structure section in ARCHITECTURE.md."
   exit 1
 else
-  echo "✅ DATAKEY DOCS CHECK PASSED — all lib.rs variants are documented in ARCHITECTURE.md"
+  echo "✅ DATAKEY DOCS CHECK PASSED — all DataKey and DataKeyExt variants are documented in ARCHITECTURE.md"
   exit 0
 fi

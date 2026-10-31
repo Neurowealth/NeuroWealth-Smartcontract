@@ -15,8 +15,10 @@ vi.mock('@stellar/freighter-api', () => ({
 }));
 
 import {
+  assertFreighterNetwork,
   classifyWalletError,
   connectFreighterWallet,
+  describeNetwork,
   isFreighterInstalled,
   signWithFreighter,
   WalletSigningError,
@@ -204,5 +206,62 @@ describe('signWithFreighter', () => {
     expect(signTransactionMock).toHaveBeenCalledWith('raw-xdr', {
       networkPassphrase: customPassphrase,
     });
+  });
+});
+
+describe('Freighter network guard (#931)', () => {
+  const TESTNET = 'Test SDF Network ; September 2015';
+  const MAINNET = 'Public Global Stellar Network ; September 2015';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('names well-known networks', () => {
+    expect(describeNetwork(MAINNET)).toBe('Mainnet');
+    expect(describeNetwork(TESTNET)).toBe('Testnet');
+    expect(describeNetwork('My Private Net')).toBe('a custom network');
+    expect(describeNetwork(undefined)).toBe('an unknown network');
+  });
+
+  it('resolves when Freighter is on the required network', async () => {
+    getNetworkDetailsMock.mockResolvedValue({ network: 'TESTNET', networkUrl: '', networkPassphrase: TESTNET });
+    await expect(assertFreighterNetwork(TESTNET)).resolves.toBeUndefined();
+  });
+
+  it('names both networks when a Testnet wallet meets a Mainnet app', async () => {
+    getNetworkDetailsMock.mockResolvedValue({ network: 'TESTNET', networkUrl: '', networkPassphrase: TESTNET });
+    const error = await assertFreighterNetwork(MAINNET).catch((e) => e);
+    expect(error.message).toContain('the wallet is on Testnet but this app requires Mainnet');
+    expect(classifyWalletError(error)).toBe('wrong_network');
+  });
+
+  it('treats an unreadable network as a disconnected wallet', async () => {
+    getNetworkDetailsMock.mockResolvedValue({ network: '', networkUrl: '', networkPassphrase: '', error: 'locked' });
+    const error = await assertFreighterNetwork(TESTNET).catch((e) => e);
+    expect(classifyWalletError(error)).toBe('wallet_disconnected');
+  });
+
+  it('never asks Freighter to sign a Mainnet transaction while the wallet is on Testnet', async () => {
+    getNetworkDetailsMock.mockResolvedValue({ network: 'TESTNET', networkUrl: '', networkPassphrase: TESTNET });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = await signWithFreighter('xdr_string', MAINNET).catch((e) => e);
+
+    expect(error).toBeInstanceOf(WalletSigningError);
+    expect(error.kind).toBe('wrong_network');
+    expect(signTransactionMock).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('never asks Freighter to sign when its network cannot be read', async () => {
+    getNetworkDetailsMock.mockResolvedValue({ network: '', networkUrl: '', networkPassphrase: '' });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const error = await signWithFreighter('xdr_string', TESTNET).catch((e) => e);
+
+    expect(error.kind).toBe('wallet_disconnected');
+    expect(signTransactionMock).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });

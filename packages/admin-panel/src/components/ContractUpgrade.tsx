@@ -97,7 +97,7 @@ export function ContractUpgrade({
       // Convert hex to BytesN<32>
       const hashBytes = Buffer.from(wasmHash, "hex");
       const result = await client.schedule_upgrade(
-        signer,
+        signer as any,
         signer.publicKey(),
         hashBytes as any,
       );
@@ -129,7 +129,7 @@ export function ContractUpgrade({
     setTxHash(null);
 
     try {
-      const result = await client.execute_upgrade(signer, signer.publicKey());
+      const result = await client.execute_upgrade(signer as any, signer.publicKey());
       if (!result.hash) {
         throw new Error('Transaction did not return a hash');
       }
@@ -165,7 +165,7 @@ export function ContractUpgrade({
     setTxHash(null);
 
     try {
-      const result = await client.cancel_upgrade(signer, signer.publicKey());
+      const result = await client.cancel_upgrade(signer as any, signer.publicKey());
       if (!result.hash) {
         throw new Error('Transaction did not return a hash');
       }

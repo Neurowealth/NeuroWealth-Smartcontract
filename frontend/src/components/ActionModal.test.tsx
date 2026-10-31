@@ -54,7 +54,13 @@ vi.mock('@stellar/stellar-sdk', () => {
   };
 });
 
-const renderModal = (type: 'deposit' | 'withdraw' = 'deposit') => render(
+const renderModal = (
+  type: 'deposit' | 'withdraw' = 'deposit',
+  callbacks: {
+    onOptimisticBalanceChange?: (delta: number) => void;
+    onTransactionConfirmed?: () => void;
+  } = {},
+) => render(
   <ActionModal
     isOpen
     onClose={vi.fn()}
@@ -62,6 +68,7 @@ const renderModal = (type: 'deposit' | 'withdraw' = 'deposit') => render(
     userPublicKey="GUSER"
     balance={250}
     exchangeRate={1.25}
+    {...callbacks}
   />,
 );
 
@@ -131,6 +138,32 @@ describe('ActionModal', () => {
     expect(await screen.findByText(/deposit successful/i, {}, { timeout: 3000 })).toBeInTheDocument();
     expect(signWithFreighter).toHaveBeenCalledWith('AAAAAgAAAAD...SorobanVaultTx...', expect.any(String));
     expect(screen.getByText(/tx-hash-ab/i)).toBeInTheDocument();
+  });
+
+  it('optimistically updates balance, rolls back a failed confirmation, and permits retry', async () => {
+    const onOptimisticBalanceChange = vi.fn();
+    const onTransactionConfirmed = vi.fn();
+    sendTransactionMock
+      .mockResolvedValueOnce({ status: 'PENDING', hash: 'tx-hash-failed' })
+      .mockResolvedValueOnce({ status: 'PENDING', hash: 'tx-hash-retry' });
+    pollTransactionMock
+      .mockResolvedValueOnce({ status: 'FAILED' })
+      .mockResolvedValueOnce({ status: 'SUCCESS' });
+
+    renderModal('deposit', { onOptimisticBalanceChange, onTransactionConfirmed });
+    submit('25');
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Transaction failed. Please try again.');
+    });
+    expect(onOptimisticBalanceChange.mock.calls).toEqual([[25], [-25]]);
+    expect(screen.getByRole('button', { name: /confirm deposit/i })).toBeEnabled();
+    expect(onTransactionConfirmed).not.toHaveBeenCalled();
+
+    submit('25');
+    expect(await screen.findByText(/deposit successful/i, {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(onOptimisticBalanceChange.mock.calls).toEqual([[25], [-25], [25]]);
+    expect(onTransactionConfirmed).toHaveBeenCalledOnce();
   });
 
   it('starts only one preparation flow for rapid repeated submissions', async () => {
