@@ -13,6 +13,7 @@ on:
       - 'neurowealth-vault/contracts/**'
       - 'scripts/post-upgrade-smoke.sh'
       - 'scripts/e2e-devnet.sh'
+      - 'scripts/check-storage-layout.py'
       - '.stellar-version'
 
   # 3. Post-deploy: trigger automatically after the primary CI workflow finishes on main
@@ -108,6 +109,9 @@ jobs:
           wasm-opt --strip-target-features \
             "$WASM_FILE" \
             -o "$WASM_FILE"
+
+          mkdir -p target/wasm32-unknown-unknown/release
+          cp "$WASM_FILE" target/wasm32-unknown-unknown/release/neurowealth_vault.wasm
 
       - name: 🔑 Make scripts executable
         run: chmod +x scripts/*.sh scripts/*.py

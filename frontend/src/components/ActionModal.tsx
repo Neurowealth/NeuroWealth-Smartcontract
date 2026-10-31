@@ -44,6 +44,8 @@ interface ActionModalProps {
   userPublicKey: string | null;
   balance: number;
   exchangeRate: number;
+  onOptimisticBalanceChange?: (delta: number) => void;
+  onTransactionConfirmed?: () => void;
 }
 
 export const ActionModal: React.FC<ActionModalProps> = ({
@@ -52,7 +54,9 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   type,
   userPublicKey,
   balance,
-  exchangeRate
+  exchangeRate,
+  onOptimisticBalanceChange,
+  onTransactionConfirmed,
 }) => {
   const t = useTranslations('ActionModal');
   const [amount, setAmount] = useState<string>('');
@@ -124,6 +128,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     setTxError(null);
     let canRetry = false;
     let submissionStarted = false;
+    let optimisticBalanceDelta = 0;
 
     try {
       const amountInBaseUnits = BigInt(Math.round(numAmount * 1e7));
@@ -199,6 +204,8 @@ export const ActionModal: React.FC<ActionModalProps> = ({
       // be preserved even while confirmation is still pending, so a later polling
       // step can't relabel a genuine submission as a failure.
       setTxHash(sendResult.hash);
+      optimisticBalanceDelta = actionType === 'deposit' ? numAmount : -numAmount;
+      onOptimisticBalanceChange?.(optimisticBalanceDelta);
 
       const confirmation = testHarness
         ? await testHarness.pollTransaction(sendResult.hash)
@@ -207,7 +214,9 @@ export const ActionModal: React.FC<ActionModalProps> = ({
       if (confirmation.status === 'SUCCESS') {
         setTxSuccess(true);
         canRetry = true;
+        onTransactionConfirmed?.();
       } else if (confirmation.status === 'FAILED') {
+        onOptimisticBalanceChange?.(-optimisticBalanceDelta);
         setTxError({ kind: 'submission_failed', message: t('submissionFailed') });
         canRetry = true;
       }

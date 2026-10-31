@@ -5,7 +5,7 @@
 //! yield sniping around update_total_assets.
 
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env};
 
 /// get_min_holding_period returns default 120 ledgers after initialization.
 #[test]
@@ -65,7 +65,7 @@ fn test_withdraw_succeeds_after_holding_period_elapses() {
     client.deposit(&user, &deposit);
 
     // Advance ledger by 120 ledgers (default holding period)
-    env.ledger().set_sequence(120);
+    env.ledger().set_sequence_number(120);
 
     // Withdrawal should now succeed
     client.withdraw(&user, &deposit);
@@ -78,7 +78,7 @@ fn test_owner_can_adjust_min_holding_period() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -92,11 +92,11 @@ fn test_owner_can_adjust_min_holding_period() {
     assert_eq!(client.get_min_holding_period(), 120);
 
     // Owner adjusts to 60 ledgers
-    client.set_min_holding_period(&owner, &60);
+    client.set_min_holding_period(&60);
     assert_eq!(client.get_min_holding_period(), 60);
 
     // Owner can set to 0 to disable
-    client.set_min_holding_period(&owner, &0);
+    client.set_min_holding_period(&0);
     assert_eq!(client.get_min_holding_period(), 0);
 }
 

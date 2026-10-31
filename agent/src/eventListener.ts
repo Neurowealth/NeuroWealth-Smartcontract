@@ -17,15 +17,29 @@ export { pool };
 
 const rpcUrl = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 export const server = new rpc.Server(rpcUrl);
+export const eventCircuitBreaker = new EventCircuitBreaker();
+
+export function getCircuitBreakerStatus(): CircuitBreakerStatus {
+  return eventCircuitBreaker.getStatus();
+}
+
+export function resetCircuitBreaker(): void {
+  eventCircuitBreaker.reset();
+}
 
 const EVENTS_PAGE_LIMIT = 100;
 
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let eventInterval: ReturnType<typeof setInterval> | null = null;
 let activePollingPromise: Promise<void> | null = null;
 let isStopping = false;
 
 export async function stopEventListener(timeoutMs = 5000): Promise<void> {
   isStopping = true;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
   if (eventInterval) {
     clearInterval(eventInterval);
     eventInterval = null;
@@ -79,9 +93,7 @@ export async function startEventListener() {
     let polling = false;
     isStopping = false;
 
-    // #902: declare pollTimer and eventCircuitBreaker that were missing
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
-    const eventCircuitBreaker = new EventCircuitBreaker();
+    // #902: pollTimer and eventCircuitBreaker are module-scoped so stopEventListener can clear them
 
     const scheduleNextTick = (delayMs: number) => {
       if (isStopping) return;
@@ -224,7 +236,7 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
 
       if (decision.shouldRebalance && decision.targetProtocol) {
         logger.info({ targetProtocol: decision.targetProtocol, userStrategy }, 'Rebalance needed');
-        const expectedApy = currentApy; // use current evaluated APY or fetch it
+        const expectedApy = decision.targetApy ?? currentApy;
         const snapshot = {
           eventId: event.id,
           strategy: userStrategy,
@@ -232,10 +244,21 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
           currentApy,
           decision,
         };
-        await submitRebalanceTx(decision.targetProtocol, expectedApy, {
+        const result = await submitRebalanceTx(decision.targetProtocol, expectedApy, {
           decisionId: createDecisionId('deposit-event', event.id, snapshot),
           snapshot,
         });
+        if (result.status === 'rejected') {
+          logger.error(
+            { targetProtocol: decision.targetProtocol, rejectionReasons: result.rejectionReasons, eventId: event.id },
+            'Rebalance transaction was rejected',
+          );
+        } else {
+          logger.info(
+            { targetProtocol: decision.targetProtocol, status: result.status, txHash: result.txHash, operationId: result.operationId },
+            'Rebalance transaction processed',
+          );
+        }
       }
     } catch (error) {
       logger.error({ error: error instanceof Error ? error.message : error, userStrategy }, 'Yield evaluation failed for deposit');

@@ -95,7 +95,7 @@ function startDecisionLoop(executionMode: 'live' | 'dry-run') {
         
         if (decisionToRebalance?.targetProtocol) {
           logger.info({ targetProtocol: decisionToRebalance.targetProtocol }, 'Submitting batch rebalance transaction');
-          await submitRebalanceTx(decisionToRebalance.targetProtocol, currentAllocation.apy, {
+          await submitRebalanceTx(decisionToRebalance.targetProtocol, decisionToRebalance.targetApy ?? currentAllocation.apy, {
             mode: executionMode,
             decisionId,
             snapshot: cycleSnapshot,

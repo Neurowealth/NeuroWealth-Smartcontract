@@ -145,10 +145,12 @@ describe('ingestLiveApys fixtures', () => {
     assert.deepStrictEqual(await evaluateYield('balanced', 'blend', 5, live), {
       shouldRebalance: true,
       targetProtocol: 'dex',
+      targetApy: 10,
     });
     assert.deepStrictEqual(await evaluateYield('conservative', 'none', 0, live), {
       shouldRebalance: true,
       targetProtocol: 'blend',
+      targetApy: 5,
     });
   });
 
@@ -169,17 +171,17 @@ describe('ingestLiveApys fixtures', () => {
 
 describe('evaluateYield (#467)', () => {
   it('moves balanced funds to the higher-yielding DEX when real APYs are available', async () => {
-    // Mock the fetch functions to return real values
-    const { fetchBlendApy, fetchDexApy } = await import('./yieldComparison');
     // When live protocols are provided, it uses those instead of the fallback functions
     const liveProtocols = [
       fixtureProtocol('blend', 0.065),
       fixtureProtocol('dex', 0.082),
     ];
-    assert.deepStrictEqual(await evaluateYield('balanced', 'blend', 6.5, liveProtocols), {
+    const { targetApy, ...decision } = await evaluateYield('balanced', 'blend', 6.5, liveProtocols);
+    assert.deepStrictEqual(decision, {
       shouldRebalance: true,
       targetProtocol: 'dex',
     });
+    assert.ok(Math.abs((targetApy ?? 0) - 8.2) < 1e-9);
   });
 
   it('keeps conservative strategies on Blend', async () => {
@@ -190,6 +192,7 @@ describe('evaluateYield (#467)', () => {
     assert.deepStrictEqual(await evaluateYield('conservative', 'none', 0, liveProtocols), {
       shouldRebalance: true,
       targetProtocol: 'blend',
+      targetApy: 6.5,
     });
     assert.strictEqual((await evaluateYield('conservative', 'blend', 6.5, liveProtocols)).shouldRebalance, false);
   });

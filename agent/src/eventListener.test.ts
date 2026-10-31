@@ -76,14 +76,14 @@ async function tickOnce(ms = 5100): Promise<void> {
 // Helpers used by multiple suites
 // ---------------------------------------------------------------------------
 
-function resetState() {
+async function resetState() {
   rpcCalls.length = 0;
   dbQueries.length = 0;
   latestLedgerSeq = 1000;
   eventsResponse = { events: [], latestLedger: 1000 };
   delete process.env.VAULT_CONTRACT_ID;
   delete process.env.DATABASE_URL;
-  stopEventListener();
+  await stopEventListener();
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +115,8 @@ describe('eventListener – event detection and parsing', () => {
   // mock.module, we validate observable side-effects: the DB writes triggered
   // by logEventToDb (when DATABASE_URL is set) and whether getEvents was called.
 
-  beforeEach(() => {
-    resetState();
+  beforeEach(async () => {
+    await resetState();
     process.env.VAULT_CONTRACT_ID = 'CONTRACT_ABC';
   });
   afterEach(() => stopEventListener());
@@ -188,8 +188,8 @@ describe('eventListener – event detection and parsing', () => {
 // ---------------------------------------------------------------------------
 
 describe('eventListener – error handling for failed transactions', () => {
-  beforeEach(() => {
-    resetState();
+  beforeEach(async () => {
+    await resetState();
     process.env.VAULT_CONTRACT_ID = 'CONTRACT_ABC';
   });
   afterEach(() => stopEventListener());
@@ -280,8 +280,8 @@ describe('eventListener – error handling for failed transactions', () => {
 // ---------------------------------------------------------------------------
 
 describe('eventListener – concurrent event handling', () => {
-  beforeEach(() => {
-    resetState();
+  beforeEach(async () => {
+    await resetState();
     process.env.VAULT_CONTRACT_ID = 'CONTRACT_ABC';
     process.env.DATABASE_URL = 'postgres://localhost/test';
   });
@@ -339,8 +339,8 @@ describe('eventListener – concurrent event handling', () => {
 // ---------------------------------------------------------------------------
 
 describe('eventListener – graceful shutdown', () => {
-  beforeEach(() => {
-    resetState();
+  beforeEach(async () => {
+    await resetState();
   });
 
   it('stops polling after stopEventListener is called', async () => {
