@@ -21,14 +21,11 @@ dist/
 build/
 target/
 
-.env
-.env.local
 .env.devnet
 .env.testnet
 .env.mainnet
 .env.*.local
 # Any other env variant (.env.production, .env.staging, ...) — templates only (#766)
-.env.*
 !.env.*.template
 !.env.example
 !.env.*.example
@@ -66,7 +63,6 @@ scripts/testnet-contracts.env
 scripts/mainnet-contracts.env
 
 # Editor / IDE files
-.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -103,3 +99,4 @@ yarn-error.log*
 .agent-state/
 
 fix.md
+config.bat
