@@ -234,7 +234,6 @@ See [`scripts/README-E2E.md`](scripts/README-E2E.md) for end-to-end devnet valid
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup, CI requirements, PR process |
 | [`scripts/README-E2E.md`](scripts/README-E2E.md) | End-to-end devnet test guide |
 | [`SECURITY.md`](SECURITY.md) | Trust model, threat analysis, pause-semantics matrix, and owner-compromise runbook |
-| [`docs/BUG_BOUNTY.md`](docs/BUG_BOUNTY.md) | Bug bounty scope, severity rubric, safe-harbor terms, and payout process |
 | [`docs/MAINNET_CHECKLIST.md`](docs/MAINNET_CHECKLIST.md) | Pre-mainnet deployment checklist |
 | [`docs/DEX_INTEGRATION.md`](docs/DEX_INTEGRATION.md) | DEX strategy behaviour, integration assumptions, and liquidity routing |
 | [`docs/BLEND_INTEGRATION_RESEARCH.md`](docs/BLEND_INTEGRATION_RESEARCH.md) | Blend protocol supply/withdraw design and cross-contract call patterns |

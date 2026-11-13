@@ -103,7 +103,7 @@ The following issues have been identified, assessed, and deliberately accepted b
 | KI-06 | Partial withdrawals during Blend high-utilization | LOW | Accepted — user retains shares; can retry | Documented in `docs/PARTIAL_WITHDRAWAL_BEHAVIOR.md` |
 | KI-07 | `DataKey::Balance` deprecated key retained in enum | INFO | Accepted — no read/write path active; retained for serialization stability | Auditors: this key is inert |
 
-> **Note to auditors:** If you identify additional issues not listed here, please report them via the submission process in [Section 10](#10-auditor-contact--coordination).
+> **Note to auditors:** Additional issues not listed here should be recorded following the existing severity definitions in [Section 10](#10-auditor-coordination).
 
 ---
 
@@ -240,15 +240,12 @@ bash ../scripts/check-pub-fn-auth.sh
 
 ---
 
-## 10. Auditor Contact & Coordination
+## 10. Auditor Coordination
 
 | Field | Value |
 | :--- | :--- |
-| Primary contact | `<SECURITY_CONTACT_EMAIL>` |
-| Secure channel | `<KEYBASE_OR_SIGNAL_HANDLE>` |
 | Expected engagement start | `<DATE>` |
 | Expected duration | `<WEEKS>` |
-| Findings submission | GitHub Security Advisory (private disclosure) or encrypted email |
 
 ### Finding severity definitions
 
@@ -261,10 +258,6 @@ Auditors are encouraged to use the following severity scale for consistency:
 | **Medium** | Indirect financial impact, griefing, or weakening of a security control |
 | **Low** | Minor issues, best-practice deviations, or issues requiring unlikely preconditions |
 | **Info** | Observations, suggestions, or out-of-scope items noted for completeness |
-
-### Disclosure policy
-
-Please do **not** disclose findings publicly until a mutually agreed embargo period has elapsed and a fix has been deployed. Use the GitHub Security Advisory private reporting feature or the encrypted email channel above.
 
 ---
 

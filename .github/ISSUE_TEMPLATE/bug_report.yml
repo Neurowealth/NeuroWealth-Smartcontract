@@ -3,11 +3,6 @@ description: Report a defect in the smart contract or related systems
 title: "Bug: "
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Before submitting, check [SECURITY.md](../SECURITY.md) — security vulnerabilities must be reported privately, not via issues.
-
   - type: textarea
     id: description
     attributes:
@@ -106,7 +101,5 @@ body:
           required: false
         - label: I have run the full test suite (`cargo test`)
           required: false
-        - label: This is NOT a security issue (security issues go to SECURITY.md)
-          required: true
         - label: I have reviewed [CONTRIBUTING.md](../CONTRIBUTING.md)
           required: false

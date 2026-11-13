@@ -56,10 +56,6 @@ The feature request template will guide you to provide:
 - Architecture alignment
 - Related issues or pull requests
 
-### Security Issues
-
-**For security-related issues**, please follow the [Security Policy](SECURITY.md) and report via GitHub's security advisory system instead of creating a public issue. Do not disclose security vulnerabilities publicly.
-
 ### Issue Labels
 
 We use the following labels to categorize issues:

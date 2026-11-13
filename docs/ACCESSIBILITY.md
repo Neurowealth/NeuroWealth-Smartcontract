@@ -62,4 +62,4 @@ Run before tagging a UI release. Tick each item in the PR description.
 
 ## Feedback
 
-Accessibility bugs can be filed against this repository with the `a11y` label, or reported through the process in [`docs/BUG_BOUNTY.md`](BUG_BOUNTY.md) when they affect fund operations.
+Accessibility bugs can be filed against this repository with the `a11y` label.

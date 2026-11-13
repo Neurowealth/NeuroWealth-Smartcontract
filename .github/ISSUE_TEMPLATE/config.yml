@@ -3,9 +3,6 @@ blank_issues_enabled: false
 
 # Contact links for common questions
 contact_links:
-  - name: Security Issues
-    url: https://github.com/NeuroWealth/NeuroWealth-Smartcontract/security/policy
-    about: Report security vulnerabilities responsibly
   - name: Documentation
     url: https://github.com/NeuroWealth/NeuroWealth-Smartcontract/blob/develop/CONTRIBUTING.md
     about: Review contribution guidelines and development setup
