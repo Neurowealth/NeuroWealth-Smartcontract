@@ -43,23 +43,34 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: 🔧 Generate contract specification
+      - name: Validate checked-in contract specification
         run: |
-          echo "Generating contract specification from Soroban contract..."
-          python3 scripts/generate-spec.py
-      
-      - name: ✅ Validate contract specification
-        run: |
-          echo "Validating specification against contract implementation..."
+          echo "Validating checked-in specification before regeneration..."
           echo "Local equivalent: python3 scripts/validate-spec.py"
           python3 scripts/validate-spec.py
 
-      - name: 🔬 Detect parameter and error-shape drift
+      - name: Generate contract specification
         run: |
-          echo "Checking event field names and VaultError codes for drift..."
-          echo "Local equivalent: python3 scripts/validate-spec.py"
+          echo "Generating contract specification from Soroban contract..."
+          python3 scripts/generate-spec.py
+
+      - name: Check contract-spec.json is up-to-date
+        run: |
+          echo "Checking that checked-in contract-spec.json matches current contract source..."
+          if git diff --quiet -- contract-spec.json; then
+            echo "Contract specification is up-to-date"
+          else
+            echo "contract-spec.json is out of date with the contract source!"
+            echo "Run: python3 scripts/generate-spec.py and commit the updated file."
+            git diff -- contract-spec.json
+            exit 1
+          fi
+
+      - name: Validate regenerated contract specification
+        run: |
+          echo "Validating regenerated specification against contract implementation..."
           python3 scripts/validate-spec.py
-          echo "✅ No parameter or error-shape drift detected"
+          echo "No parameter or error-shape drift detected"
 
       - name: 📊 Check spec completeness
         run: |

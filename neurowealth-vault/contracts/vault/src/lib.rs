@@ -2364,14 +2364,13 @@ use topics::{
     TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_RECEIVED, TOPIC_MIGRATION_TARGET_CANCELLED,
     TOPIC_MIGRATION_TARGET_SCHEDULED, TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTI_PROTOCOL_MODE,
     TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
-    TOPIC_PAUSED, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
-    TOPIC_PROTOCOL_CHANGED, TOPIC_PROTOCOL_ADAPTER_UPDATED,
-    TOPIC_PROTOCOL_WHITELIST_UPDATED, TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED,
-    TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED,
-    TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED,
-    TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_TVL_CAP_UPDATED,
-    TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
-    TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_PAUSED, TOPIC_PROTOCOL_ADAPTER_UPDATED, TOPIC_PROTOCOL_ALLOCATION_CHANGED,
+    TOPIC_PROTOCOL_APY_UPDATED, TOPIC_PROTOCOL_CHANGED, TOPIC_PROTOCOL_WHITELIST_UPDATED,
+    TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED,
+    TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_WITHDRAWAL_CANCELLED, TOPIC_WITHDRAWAL_FULFILLED, TOPIC_WITHDRAWAL_QUEUED,
     TOPIC_YIELD_ATTRIBUTED,
 };
@@ -4539,18 +4538,30 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
         owner.require_auth();
-        let old_address: Option<Address> = env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
-        env.storage().instance().set(&DataKeyExt::ProtocolAdapter(protocol.clone()), &adapter);
+        let old_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolAdapter(protocol.clone()), &adapter);
         env.events().publish(
             (TOPIC_PROTOCOL_ADAPTER_UPDATED, protocol.clone()),
-            ProtocolAdapterUpdatedEvent { protocol, old_address, new_address: adapter, owner },
+            ProtocolAdapterUpdatedEvent {
+                protocol,
+                old_address,
+                new_address: adapter,
+                owner,
+            },
         );
     }
 
     /// Returns the configured adapter for a protocol, or `None`.
     pub fn get_protocol_adapter(env: Env, protocol: Symbol) -> Option<Address> {
         Self::require_initialized(&env);
-        env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol))
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol))
     }
 
     /// Adds or removes a protocol from the owner-managed whitelist (#656).
@@ -4558,31 +4569,50 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
         owner.require_auth();
-        env.storage().instance().set(&DataKeyExt::ProtocolWhitelist(protocol.clone()), &enabled);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelist(protocol.clone()), &enabled);
 
-        let mut index: Vec<Symbol> = env.storage().instance().get(&DataKeyExt::ProtocolWhitelistIndex).unwrap_or_else(|| vec![&env]);
+        let mut index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
         let found = index.iter().any(|item| item == protocol);
         if enabled && !found {
             index.push_back(protocol.clone());
         }
-        env.storage().instance().set(&DataKeyExt::ProtocolWhitelistIndex, &index);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelistIndex, &index);
 
         env.events().publish(
             (TOPIC_PROTOCOL_WHITELIST_UPDATED, protocol.clone()),
-            ProtocolWhitelistUpdatedEvent { protocol, enabled, owner },
+            ProtocolWhitelistUpdatedEvent {
+                protocol,
+                enabled,
+                owner,
+            },
         );
     }
 
     /// Returns whether a protocol is currently whitelisted.
     pub fn get_protocol_whitelisted(env: Env, protocol: Symbol) -> bool {
         Self::require_initialized(&env);
-        env.storage().instance().get(&DataKeyExt::ProtocolWhitelist(protocol)).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol))
+            .unwrap_or(false)
     }
 
     /// Returns the currently whitelisted protocol symbols.
     pub fn get_protocol_whitelist(env: Env) -> Vec<Symbol> {
         Self::require_initialized(&env);
-        let index: Vec<Symbol> = env.storage().instance().get(&DataKeyExt::ProtocolWhitelistIndex).unwrap_or_else(|| vec![&env]);
+        let index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
         let mut result = vec![&env];
         for protocol in index.iter() {
             if Self::get_protocol_whitelisted(env.clone(), protocol.clone()) {
@@ -10391,6 +10421,7 @@ impl NeuroWealthVault {
     /// Called by `deposit_asset` to keep the legacy global counters in sync with
     /// per-asset accounting, so that `get_total_assets()` and TVL cap checks
     /// reflect the full multi-asset position.
+    #[allow(dead_code)]
     #[inline]
     fn add_to_global_totals_on_deposit(env: &Env, amount: i128) {
         let total_assets: i128 = env
@@ -10415,6 +10446,7 @@ impl NeuroWealthVault {
     }
 
     /// Subtracts `amount` from the global TotalAssets and TotalDeposits (#646).
+    #[allow(dead_code)]
     #[inline]
     fn reduce_global_totals_on_withdraw(env: &Env, amount: i128) {
         let total_assets: i128 = env
@@ -10673,12 +10705,24 @@ impl NeuroWealthVault {
     }
 
     /// Requires an adapter to be configured and the protocol to be whitelisted.
+    #[allow(dead_code)]
     #[inline]
     fn require_protocol_adapter_ready(env: &Env, protocol: &Symbol) {
-        let whitelisted: bool = env.storage().instance().get(&DataKeyExt::ProtocolWhitelist(protocol.clone())).unwrap_or(false);
+        let whitelisted: bool = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol.clone()))
+            .unwrap_or(false);
         Self::require(env, whitelisted, VaultError::ProtocolNotWhitelisted);
-        let configured: Option<Address> = env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
-        Self::require(env, configured.is_some(), VaultError::ProtocolAdapterNotConfigured);
+        let configured: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        Self::require(
+            env,
+            configured.is_some(),
+            VaultError::ProtocolAdapterNotConfigured,
+        );
     }
 
     /// Enforces a per-user call allowance.

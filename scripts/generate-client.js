@@ -304,11 +304,29 @@ function generateErrorEnum() {
     'export const VaultErrorCode = {',
   ];
 
+  const seenKeys = new Map();
   for (const [name, def] of Object.entries(spec.errors ?? {})) {
-    const safeName = name
+    let safeName = name
       .replace('VaultError::', '')
       .replace(/[^a-zA-Z0-9_]/g, '_');
-    lines.push(`  /** ${def.description} */`);
+
+    // Namespace legacy variant to prevent silent overwriting of error code 90 (#1126)
+    if (name === 'VaultError::UnauthorizedAgentError') {
+      safeName = 'LegacyUnauthorizedAgentError';
+    }
+
+    if (seenKeys.has(safeName)) {
+      const existingCode = seenKeys.get(safeName);
+      if (existingCode !== def.code) {
+        if (name.startsWith('VaultError::')) {
+          safeName = 'Legacy' + safeName;
+        } else {
+          safeName = safeName + '_' + def.code;
+        }
+      }
+    }
+
+    seenKeys.set(safeName, def.code);
     lines.push(`  ${safeName}: ${def.code},`);
   }
 

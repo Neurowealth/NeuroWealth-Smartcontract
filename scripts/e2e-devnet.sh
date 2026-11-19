@@ -154,11 +154,27 @@ save_artifact "wasm_hash.txt" "$(sha256sum "$WASM_PATH" 2>/dev/null || shasum -a
 
 # Validate storage layout metadata
 log "Validating contract DataKey storage layout metadata..."
-python3 "$SCRIPT_DIR/check-storage-layout.py" "$WASM_PATH" "$WASM_PATH" \
-  --output "$ARTIFACTS_DIR/storage_layout_diff.txt" || {
-  log "ERROR: Storage layout check failed."
-  exit 1
-}
+BASELINE_WASM="${BASELINE_WASM_PATH:-}"
+if [ -z "$BASELINE_WASM" ] && [ -f "$SCRIPT_DIR/../target/wasm32-unknown-unknown/release/neurowealth_vault_baseline.wasm" ]; then
+  BASELINE_WASM="$SCRIPT_DIR/../target/wasm32-unknown-unknown/release/neurowealth_vault_baseline.wasm"
+fi
+
+if [ -n "$BASELINE_WASM" ] && [ -f "$BASELINE_WASM" ]; then
+  log "Comparing candidate WASM against baseline: $BASELINE_WASM"
+  python3 "$SCRIPT_DIR/check-storage-layout.py" "$BASELINE_WASM" "$WASM_PATH" \
+    --output "$ARTIFACTS_DIR/storage_layout_diff.txt" || {
+    log "ERROR: Storage layout check failed against baseline."
+    exit 1
+  }
+else
+  log "No baseline WASM provided; inspecting candidate DataKey schema..."
+  python3 "$SCRIPT_DIR/check-storage-layout.py" "$WASM_PATH" "$WASM_PATH" \
+    --allow-identical \
+    --output "$ARTIFACTS_DIR/storage_layout_diff.txt" || {
+    log "ERROR: Storage layout check failed."
+    exit 1
+  }
+fi
 
 # ---------------------------------------------------------------------------
 # Identity setup
