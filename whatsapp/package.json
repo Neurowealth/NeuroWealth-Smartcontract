@@ -10,7 +10,7 @@
     "dev": "ts-node src/index.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "test": "tsc && node --test \"dist/__tests__/*.test.js\""
+    "test": "tsc && node --test dist"
   },
   "dependencies": {
     "@neurowealth/vault-client": "file:../packages/vault-client",

@@ -405,7 +405,7 @@ async function processWhatsAppMessage(
 
     const reqId = `req-${Math.random().toString(36).substring(2, 9)}`;
     logger.error(
-      { error, phoneHash, intent, state: session.state, reqId },
+      { error, phoneHash, intentType: intent.type, state: session.state, reqId },
       'Error processing webhook request'
     );
     reply(twiml, `❌ An error occurred processing your request. Please try again in a few moments. (Ref: ${reqId})`);
