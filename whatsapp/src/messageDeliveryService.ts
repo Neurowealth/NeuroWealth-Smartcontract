@@ -72,7 +72,7 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
   const { messageSid, status, to, errorCode, errorMessage } = bounded.value;
 
   if (!messageSid) {
-    logger.warn({ status, to }, 'Ignoring delivery status callback with no MessageSid');
+    logger.warn({ status, to: to ? hashPhoneNumber(to) : to }, 'Ignoring delivery status callback with no MessageSid');
     return { applied: false, reason: 'missing_message_sid' };
   }
 

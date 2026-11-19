@@ -15,6 +15,7 @@ function getPool(): Pool {
       throw new Error('DATABASE_URL must be set; refusing to use an unsafe database default');
     }
     pool = new Pool({ connectionString });
+    pool.on('error', (err): void => { console.error('pg pool error', err); });
   }
   return pool;
 }
