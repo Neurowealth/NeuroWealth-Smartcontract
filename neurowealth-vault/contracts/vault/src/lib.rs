@@ -3472,6 +3472,13 @@ impl NeuroWealthVault {
                 VaultError::MaximumDepositExceeded,
             );
         }
+        // Vault-wide limits apply on the multi-asset path too, matching
+        // `deposit` / `batch_deposit` (MinDeposit, MaxDeposit, UserDepositCap,
+        // TvLCap). Per-asset caps above do not replace these.
+        Self::require_minimum_deposit(&env, amount);
+        Self::require_maximum_deposit(&env, amount);
+        Self::require_within_deposit_cap(&env, &user, amount);
+        Self::require_within_tvl_cap(&env, amount);
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
 
         // Read all accounting state BEFORE the token transfer so a malicious
@@ -7873,13 +7880,20 @@ impl NeuroWealthVault {
             .get(&DataKey::CurrentProtocol)
             .unwrap_or(symbol_short!("none"));
 
-        let blend_pool: Option<Address> = if current_protocol == symbol_short!("blend") {
+        // "multi" (derive_protocol_summary when both venues hold funds) must
+        // count deployed balances at both venues, otherwise full-value reports
+        // revert against idle funds alone.
+        let blend_pool: Option<Address> = if current_protocol == symbol_short!("blend")
+            || current_protocol == symbol_short!("multi")
+        {
             env.storage().instance().get(&DataKey::BlendPool)
         } else {
             None
         };
 
-        let dex_pool: Option<Address> = if current_protocol == symbol_short!("dex") {
+        let dex_pool: Option<Address> = if current_protocol == symbol_short!("dex")
+            || current_protocol == symbol_short!("multi")
+        {
             env.storage().instance().get(&DataKey::DexPool)
         } else {
             None
@@ -8643,6 +8657,7 @@ impl NeuroWealthVault {
     /// # Panics
     ///
     /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If `user` does not authorize the invocation.
     /// - [`VaultError::RateLimitExceeded`] if this user's TTL bucket is exhausted.
     ///
     /// # Storage
@@ -8664,6 +8679,10 @@ impl NeuroWealthVault {
     /// ```
     pub fn touch_user_ttl(env: Env, user: Address) -> bool {
         Self::require_initialized(&env);
+        // Auth required: the rate-limit bucket below writes a per-user key to
+        // instance storage, and without auth anyone could grow that map without
+        // bound by rotating fresh addresses.
+        user.require_auth();
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
