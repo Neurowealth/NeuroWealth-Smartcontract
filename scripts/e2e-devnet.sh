@@ -333,7 +333,7 @@ DEPOSIT_OUTPUT=$(run_soroban "Deposit $DEPOSIT_AMOUNT into vault" \
 
 save_artifact "tx_deposit.txt" "$DEPOSIT_OUTPUT"
 
-if echo "$DEPOSIT_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$DEPOSIT_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "deposit_basic ($DEPOSIT_AMOUNT)"
 fi
 
@@ -360,7 +360,7 @@ WITHDRAW_OUTPUT=$(run_soroban "Withdraw $WITHDRAW_AMOUNT from vault" \
 
 save_artifact "tx_withdraw.txt" "$WITHDRAW_OUTPUT"
 
-if echo "$WITHDRAW_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$WITHDRAW_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "withdraw_basic ($WITHDRAW_AMOUNT)"
 fi
 
@@ -384,7 +384,7 @@ PAUSE_OUTPUT=$(run_soroban "Pause vault" \
 
 save_artifact "tx_pause.txt" "$PAUSE_OUTPUT"
 
-if echo "$PAUSE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$PAUSE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "pause"
 fi
 
@@ -423,7 +423,7 @@ UNPAUSE_OUTPUT=$(run_soroban "Unpause vault" \
 
 save_artifact "tx_unpause.txt" "$UNPAUSE_OUTPUT"
 
-if echo "$UNPAUSE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$UNPAUSE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "unpause"
 fi
 
@@ -442,7 +442,7 @@ POST_UNPAUSE_DEPOSIT=$(run_soroban "Deposit after unpause" \
 
 save_artifact "tx_deposit_after_unpause.txt" "$POST_UNPAUSE_DEPOSIT"
 
-if echo "$POST_UNPAUSE_DEPOSIT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$POST_UNPAUSE_DEPOSIT" | grep -qiE "FAILED|error"; then
   record_pass "deposit_after_unpause"
 fi
 
@@ -470,7 +470,7 @@ REBALANCE_OUTPUT=$(run_soroban "Rebalance to 'none' protocol" \
 
 save_artifact "tx_rebalance.txt" "$REBALANCE_OUTPUT"
 
-if echo "$REBALANCE_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$REBALANCE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "rebalance_none"
 fi
 
@@ -494,7 +494,7 @@ WITHDRAW_ALL_OUTPUT=$(run_soroban "Withdraw all remaining funds" \
 
 save_artifact "tx_withdraw_all.txt" "$WITHDRAW_ALL_OUTPUT"
 
-if echo "$WITHDRAW_ALL_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$WITHDRAW_ALL_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "withdraw_all"
 fi
 
@@ -576,7 +576,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
   save_artifact "tx_update_agent_propose.txt" "$UPDATE_AGENT_OUTPUT"
 
-  if echo "$UPDATE_AGENT_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+  if ! echo "$UPDATE_AGENT_OUTPUT" | grep -qiE "FAILED|error"; then
     record_pass "update_agent_propose"
 
     # Verify agent is unchanged before confirmation
@@ -617,7 +617,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
     save_artifact "tx_confirm_agent_update.txt" "$CONFIRM_OUTPUT"
 
-    if echo "$CONFIRM_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+    if ! echo "$CONFIRM_OUTPUT" | grep -qiE "FAILED|error"; then
       record_pass "confirm_agent_update"
 
       # Verify agent is now updated
@@ -669,7 +669,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
   save_artifact "tx_schedule_upgrade.txt" "$SCHEDULE_OUTPUT"
 
-  if echo "$SCHEDULE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+  if ! echo "$SCHEDULE_OUTPUT" | grep -qiE "FAILED|error"; then
     record_pass "schedule_upgrade"
     log "Upgrade scheduled. Execution requires waiting for the 24-hour timelock."
     log "To complete the test, run this script again after the timelock expires."
@@ -702,7 +702,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
       save_artifact "tx_execute_upgrade.txt" "$EXEC_OUTPUT"
 
-      if echo "$EXEC_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+      if ! echo "$EXEC_OUTPUT" | grep -qiE "FAILED|error"; then
         record_pass "execute_upgrade"
         log "Upgrade successfully executed."
         rm -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt"
@@ -737,7 +737,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
       save_artifact "tx_cancel_upgrade.txt" "$CANCEL_OUTPUT"
 
-      if echo "$CANCEL_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+      if ! echo "$CANCEL_OUTPUT" | grep -qiE "FAILED|error"; then
         record_pass "cancel_upgrade"
         log "Upgrade successfully cancelled."
         rm -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt"

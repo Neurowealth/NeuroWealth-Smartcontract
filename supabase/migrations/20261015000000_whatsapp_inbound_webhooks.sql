@@ -30,3 +30,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_inbound_webhooks (
 -- Supports alerting on stuck/abandoned deliveries and retention sweeps.
 CREATE INDEX IF NOT EXISTS idx_whatsapp_inbound_webhooks_status_updated
     ON whatsapp_inbound_webhooks (status, updated_at);
+
+ALTER TABLE whatsapp_inbound_webhooks ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY whatsapp_inbound_webhooks_service_role_all ON whatsapp_inbound_webhooks
+    AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);

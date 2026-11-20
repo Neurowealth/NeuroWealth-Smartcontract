@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # =============================================================================
-# NeuroWealth Vault — Mainnet Deployment Script (Production-Ready)
+# NeuroWealth Vault — Mainnet Deployment Script (Dry-Run Preview Only)
 # =============================================================================
 #
-# Production mainnet deployment with comprehensive safety checks, dry-run mode,
-# and timelocked operations. Implements all checks from MAINNET_CHECKLIST.md
+# Configuration validation and deployment preview for mainnet. Currently
+# supports dry-run mode only (--dry-run). Production deployment is not yet
+# implemented. Use this script to validate all configuration parameters before
+# manual deployment via Stellar CLI.
 #
 # Usage:
-#   ./scripts/deploy-mainnet.sh [OPTIONS]
+#   ./scripts/deploy-mainnet.sh --dry-run
 #
 # Options:
-#   --dry-run              Simulate deployment without broadcasting transactions
+#   --dry-run              Validate configuration and simulate deployment steps
 #   --help                 Show this help message
-#   --force-deploy         Skip final confirmation (use with caution)
 #
 # Required environment variables:
 #   MAINNET_DEPLOYER_SECRET_KEY     Temporary deployer key (will be discarded)
@@ -36,8 +37,8 @@
 #   SOROBAN_RPC_URL                 Override mainnet RPC URL
 #
 # Exit codes:
-#   0  — Deployment successful
-#   1  — Deployment failed or aborted
+#   0  — Configuration validation passed
+#   1  — Validation failed or aborted
 #   2  — Invalid configuration or missing variables
 #   3  — Safety check failed
 # =============================================================================
@@ -59,7 +60,6 @@ SOROBAN_RPC_URL="${SOROBAN_RPC_URL:-https://soroban.stellar.org}"
 
 # Default values
 DRY_RUN=false
-FORCE_DEPLOY=false
 DEPLOYMENT_LOG="$SCRIPT_DIR/mainnet-deployment.log"
 DEPLOYMENT_ARTIFACTS="$SCRIPT_DIR/mainnet-deployment-artifacts.json"
 
@@ -93,14 +93,13 @@ info() { echo -e "${BLUE}ℹ $*${NC}"; }
 
 show_help() {
   cat << EOF
-NeuroWealth Vault Mainnet Deployment Script
+NeuroWealth Vault Mainnet Deployment Configuration Validator
 
 USAGE:
-    $0 [OPTIONS]
+    $0 --dry-run
 
 OPTIONS:
-    --dry-run         Simulate deployment without submitting transactions
-    --force-deploy    Skip final confirmation (use with caution)
+    --dry-run         Validate configuration and show deployment preview
     --help            Show this help message
 
 REQUIRED ENVIRONMENT VARIABLES:
@@ -121,12 +120,12 @@ OPTIONAL:
     MAINNET_APPROVAL_TTL             Token approval TTL (default: 52560)
     MAINNET_SALT                     Deployment salt (auto-generated)
 
-EXAMPLE:
-    # Dry-run deployment (recommended first step)
-    ./scripts/deploy-mainnet.sh --dry-run
+NOTE: This script validates configuration only. For production deployment,
+follow the MAINNET_DEPLOYMENT_RUNBOOK.txt manual procedures.
 
-    # Production deployment
-    ./scripts/deploy-mainnet.sh
+EXAMPLE:
+    # Validate configuration
+    source .env.mainnet && ./scripts/deploy-mainnet.sh --dry-run
 
 EOF
 }
@@ -370,29 +369,14 @@ show_deployment_summary() {
 
 # Final confirmation before deployment
 confirm_deployment() {
-  if [[ "$FORCE_DEPLOY" == "true" ]]; then
-    warning "Force deploy enabled, skipping confirmation"
-    return 0
-  fi
-  
   if [[ "$DRY_RUN" == "true" ]]; then
-    info "Dry-run mode: simulation only, no real transactions will be sent"
-    read -p "Proceed with dry-run simulation? (y/N): " -r
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-      error "Aborted by user"
-      return 1
-    fi
+    info "Validating configuration: simulation only, no real transactions"
+    return 0
   else
-    warning "This will deploy to MAINNET with REAL funds"
-    warning "This action CANNOT be undone"
-    read -p "Type 'DEPLOY TO MAINNET' to confirm: " -r
-    if [[ "$REPLY" != "DEPLOY TO MAINNET" ]]; then
-      error "Aborted by user"
-      return 1
-    fi
+    error "Non-dry-run mode is not supported. Use: ./scripts/deploy-mainnet.sh --dry-run"
+    error "For manual production deployment, follow MAINNET_DEPLOYMENT_RUNBOOK.txt"
+    return 1
   fi
-  
-  return 0
 }
 
 # Simulate deployment
@@ -431,11 +415,8 @@ simulate_deployment() {
 
 # Execute production deployment
 execute_deployment() {
-  log_section "EXECUTING MAINNET DEPLOYMENT"
-  
-  error "Production deployment function not yet implemented"
-  error "This requires actual stellar CLI integration with key signing"
-  error "For now, use dry-run mode to verify configuration"
+  error "Production deployment is not yet implemented in this script"
+  error "Please follow manual procedures in MAINNET_DEPLOYMENT_RUNBOOK.txt"
   return 1
 }
 
@@ -482,10 +463,6 @@ main() {
         DRY_RUN=true
         shift
         ;;
-      --force-deploy)
-        FORCE_DEPLOY=true
-        shift
-        ;;
       --help)
         show_help
         exit 0
@@ -499,7 +476,17 @@ main() {
   done
   
   # Start deployment
-  log_section "NEUROWEALTH MAINNET DEPLOYMENT"
+  log_section "NEUROWEALTH MAINNET DEPLOYMENT VALIDATOR"
+  
+  # Require --dry-run flag
+  if [[ "$DRY_RUN" != "true" ]]; then
+    error "This script is configuration-validation only"
+    error "Usage: ./scripts/deploy-mainnet.sh --dry-run"
+    error ""
+    error "For actual mainnet deployment, follow MAINNET_DEPLOYMENT_RUNBOOK.txt"
+    show_help
+    exit 1
+  fi
   
   # Check all prerequisites
   if ! check_all_config; then
@@ -515,18 +502,14 @@ main() {
     exit 1
   fi
   
-  # Execute
-  if [[ "$DRY_RUN" == "true" ]]; then
-    if ! simulate_deployment; then
-      exit 1
-    fi
-  else
-    if ! execute_deployment; then
-      exit 1
-    fi
+  # Execute simulation only
+  if ! simulate_deployment; then
+    exit 1
   fi
   
-  success "Deployment process complete"
+  success "Configuration validation complete"
+  info "Configuration is ready for production deployment"
+  info "Next: Follow MAINNET_DEPLOYMENT_RUNBOOK.txt for manual deployment steps"
   log "Full log saved to: $DEPLOYMENT_LOG"
   
   return 0

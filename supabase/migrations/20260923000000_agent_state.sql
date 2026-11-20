@@ -6,3 +6,6 @@ CREATE TABLE IF NOT EXISTS agent_state (
 );
 
 ALTER TABLE agent_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY agent_state_service_role_all ON agent_state
+    AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);
