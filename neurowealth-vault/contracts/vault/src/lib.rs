@@ -2917,6 +2917,11 @@ impl NeuroWealthVault {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         // Register the user in the active-share index the first time they hold
         // non-zero shares, so the `get_users_with_shares` indexer view can page
@@ -2939,6 +2944,11 @@ impl NeuroWealthVault {
                     deposited_at: env.ledger().timestamp(),
                 },
             );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
         }
 
         // Set default strategy for first-time depositors
@@ -2952,6 +2962,11 @@ impl NeuroWealthVault {
             env.storage()
                 .persistent()
                 .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
 
             env.events().publish(
                 (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
@@ -2989,6 +3004,11 @@ impl NeuroWealthVault {
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
         );
 
         // --- Cross-contract call: transfer tokens after state updates (CEI) ---
@@ -3075,6 +3095,11 @@ impl NeuroWealthVault {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         if current_shares == 0 {
             Self::add_to_user_index(&env, &user);
@@ -3086,6 +3111,11 @@ impl NeuroWealthVault {
                     principal: amount,
                     deposited_at: env.ledger().timestamp(),
                 },
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
             );
         }
 
@@ -3099,6 +3129,11 @@ impl NeuroWealthVault {
             env.storage()
                 .persistent()
                 .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
 
             env.events().publish(
                 (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
@@ -3133,6 +3168,11 @@ impl NeuroWealthVault {
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
         );
 
         env.events().publish(
@@ -3246,6 +3286,11 @@ impl NeuroWealthVault {
                 .checked_add(shares_to_mint)
                 .expect("batch_deposit: shares overflow")),
         );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         if current_shares == 0 {
             // Register the user in the active-share index the first time
@@ -3266,6 +3311,11 @@ impl NeuroWealthVault {
                     deposited_at: env.ledger().timestamp(),
                 },
             );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
         }
 
         if current_shares == 0
@@ -3278,6 +3328,11 @@ impl NeuroWealthVault {
             env.storage()
                 .persistent()
                 .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
             env.events().publish(
                 (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
                 UserStrategyUpdatedEvent {
@@ -3317,6 +3372,11 @@ impl NeuroWealthVault {
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
         );
 
         for i in 0..total_entries {
@@ -3534,6 +3594,11 @@ impl NeuroWealthVault {
                 .checked_add(shares_to_mint)
                 .expect("deposit_asset: overflow")),
         );
+        env.storage().persistent().extend_ttl(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         env.storage()
             .instance()
@@ -3548,6 +3613,11 @@ impl NeuroWealthVault {
         env.storage().persistent().set(
             &DataKey::LastDepositLedger(user.clone()),
             &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
         );
 
         env.events().publish(
@@ -3648,12 +3718,20 @@ impl NeuroWealthVault {
             Self::convert_to_asset_shares_internal_ceil(&env, &asset, actual_to_return);
 
         // Update per-user per-asset shares.
+        let new_user_asset_shares = user_shares
+            .checked_sub(final_shares_to_burn)
+            .expect("withdraw_asset: user shares underflow");
         env.storage().persistent().set(
             &MultiAssetKey::Shares(user.clone(), asset.clone()),
-            &(user_shares
-                .checked_sub(final_shares_to_burn)
-                .expect("withdraw_asset: user shares underflow")),
+            &new_user_asset_shares,
         );
+        if new_user_asset_shares > 0 {
+            env.storage().persistent().extend_ttl(
+                &MultiAssetKey::Shares(user.clone(), asset.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
 
         // Update per-asset totals.
         let mut new_totals = totals;
@@ -3936,6 +4014,11 @@ impl NeuroWealthVault {
         env.storage()
             .persistent()
             .set(&DataKey::LockState(user.clone()), &(shares, expiry_ledger));
+        env.storage().persistent().extend_ttl(
+            &DataKey::LockState(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         // Emit lock event
         env.events().publish(
@@ -6750,6 +6833,11 @@ impl NeuroWealthVault {
         env.storage()
             .persistent()
             .set(&DataKey::UserStrategy(user.clone()), &strategy);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserStrategy(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         env.events().publish(
             (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
@@ -8344,7 +8432,7 @@ impl NeuroWealthVault {
         }
     }
 
-    /// Extends the persistent TTL for a user's `Shares` entry when it exists.
+    /// Extends the persistent TTL for a user's persistent entries when they exist (#1045).
     fn extend_user_shares_ttl(env: &Env, user: &Address) {
         let shares_key = DataKey::Shares(user.clone());
         if env.storage().persistent().has(&shares_key) {
@@ -8353,6 +8441,53 @@ impl NeuroWealthVault {
                 USER_SHARES_TTL_THRESHOLD,
                 USER_SHARES_TTL_EXTEND_TO,
             );
+        }
+        let lock_key = DataKey::LockState(user.clone());
+        if env.storage().persistent().has(&lock_key) {
+            env.storage().persistent().extend_ttl(
+                &lock_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let last_dep_key = DataKey::LastDepositLedger(user.clone());
+        if env.storage().persistent().has(&last_dep_key) {
+            env.storage().persistent().extend_ttl(
+                &last_dep_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let snapshot_key = DataKeyExt::DepositSnapshot(user.clone());
+        if env.storage().persistent().has(&snapshot_key) {
+            env.storage().persistent().extend_ttl(
+                &snapshot_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let strategy_key = DataKey::UserStrategy(user.clone());
+        if env.storage().persistent().has(&strategy_key) {
+            env.storage().persistent().extend_ttl(
+                &strategy_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let supported_assets: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(env));
+        for asset in supported_assets.iter() {
+            let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset);
+            if env.storage().persistent().has(&asset_shares_key) {
+                env.storage().persistent().extend_ttl(
+                    &asset_shares_key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+            }
         }
     }
 
@@ -8686,15 +8821,69 @@ impl NeuroWealthVault {
         // Count maintenance attempts even when the requested entry is absent;
         // otherwise an attacker could use missing-user probes as a cheap DoS.
         Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
-        if !env
+
+        let has_shares = env
             .storage()
             .persistent()
-            .has(&DataKey::Shares(user.clone()))
-        {
+            .has(&DataKey::Shares(user.clone()));
+        let has_lock = env
+            .storage()
+            .persistent()
+            .has(&DataKey::LockState(user.clone()));
+        let has_deposit = env
+            .storage()
+            .persistent()
+            .has(&DataKey::LastDepositLedger(user.clone()));
+        let has_snapshot = env
+            .storage()
+            .persistent()
+            .has(&DataKeyExt::DepositSnapshot(user.clone()));
+        let has_strategy = env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserStrategy(user.clone()));
+
+        let mut has_asset_shares = false;
+        let supported_assets: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(&env));
+        for asset in supported_assets.iter() {
+            if env
+                .storage()
+                .persistent()
+                .has(&MultiAssetKey::Shares(user.clone(), asset))
+            {
+                has_asset_shares = true;
+                break;
+            }
+        }
+
+        if !has_shares && !has_lock && !has_deposit && !has_snapshot && !has_strategy && !has_asset_shares {
             return false;
         }
+
         Self::extend_user_shares_ttl(&env, &user);
         true
+    }
+
+    /// Extends the persistent TTL for a user's multi-asset `Shares` entry (#1045).
+    pub fn touch_user_asset_ttl(env: Env, user: Address, asset: Symbol) -> bool {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
+        let key = MultiAssetKey::Shares(user, asset);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns both the principal balance and share balance for a user.
@@ -9781,6 +9970,10 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKeyExt::WithdrawalRequest(request_id), &request);
+        env.storage().instance().extend_ttl(
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
 
         // Append to order queue
         let mut order: Vec<u32> = env
@@ -10293,7 +10486,11 @@ impl NeuroWealthVault {
             .get(&DataKey::UserSharesIndex)
             .unwrap_or_else(|| Vec::new(env));
 
-        for user in index.iter() {
+        let len = index.len();
+        let limit = core::cmp::min(len, MAX_USERS_PER_PAGE);
+
+        for i in 0..limit {
+            let user = index.get(i).unwrap();
             let shares: i128 = env
                 .storage()
                 .persistent()
@@ -11318,6 +11515,13 @@ impl NeuroWealthVault {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        if new_user_shares > 0 {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Shares(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
         if new_user_shares == 0 {
             Self::prune_user_from_index(env, user);
         }
@@ -11333,6 +11537,13 @@ impl NeuroWealthVault {
                 &DataKey::LockState(user.clone()),
                 &(new_user_shares, lock_expiry),
             );
+            if new_user_shares > 0 {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::LockState(user.clone()),
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+            }
         }
 
         let new_total_shares = total_shares
