@@ -3756,7 +3756,7 @@ impl NeuroWealthVault {
         token_client.transfer(&env.current_contract_address(), &user, &actual_to_return);
 
         env.events().publish(
-            (TOPIC_ASSET_WITHDRAW, user.clone()),
+            (TOPIC_ASSET_WITHDRAW, user.clone(), asset.clone()),
             AssetWithdrawEvent {
                 user,
                 asset,
