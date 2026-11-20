@@ -10,6 +10,11 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Asset withdrawal event topic (Issue #1088):** `withdraw_asset` now publishes
+  `AssetWithdrawEvent` as `(TOPIC_ASSET_WITHDRAW, user, asset)`, matching the
+  documented indexed-topic schema and `deposit_asset`. Asset-filtering indexers
+  can now find and classify withdrawals; `EVENTS.md` documents both multi-asset
+  events.
 - **Deprecate `set_limits` (Issue #991; no behavior change):** `set_limits` is
   marked `#[deprecated]` in favor of `set_caps` (or `set_tvl_cap`/
   `set_user_deposit_cap`/`set_deposit_limits` individually), which use
