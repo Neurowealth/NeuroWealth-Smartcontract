@@ -1,8 +1,8 @@
-import { Request, Response } from 'express';
-import twilio from 'twilio';
-import pino from 'pino';
-import { hashPhoneNumber } from './cryptoUtils';
-import { runExclusive } from './commandLock';
+import { Request, Response } from "express";
+import twilio from "twilio";
+import pino from "pino";
+import { hashPhoneNumber } from "./cryptoUtils";
+import { runExclusive } from "./commandLock";
 import {
   deriveIdempotencyKey,
   getIdempotencyStore,
@@ -12,17 +12,28 @@ import {
   RetryableWebhookError,
   SideEffectGuard,
   WEBHOOK_LEASE_MS,
-} from './webhookIdempotency';
+} from "./webhookIdempotency";
 
-const logger = pino({ name: 'whatsapp-webhook' });
+const logger = pino({ name: "whatsapp-webhook" });
 
-import { getSession, updateState, checkRateLimit, UserState } from './stateManager';
-import { generateOTP, verifyOTP } from './otpService';
-import { sendOtpSms } from './smsService';
-import { createCustodialWallet, getWallet } from './walletService';
-import { parseIntent } from './intentParser';
-import { validateIntent } from './contractLimits';
-import { getPortfolio, handleDeposit, handleWithdraw, handleStrategyUpdate } from './vaultRouter';
+import {
+  getSession,
+  updateState,
+  checkRateLimit,
+  UserState,
+} from "./stateManager";
+import { generateOTP, verifyOTP } from "./otpService";
+import { sendOtpSms } from "./smsService";
+import { applyDeliveryStatus } from "./messageDeliveryService";
+import { createCustodialWallet, getWallet } from "./walletService";
+import { parseIntent } from "./intentParser";
+import { validateIntent } from "./contractLimits";
+import {
+  getPortfolio,
+  handleDeposit,
+  handleWithdraw,
+  handleStrategyUpdate,
+} from "./vaultRouter";
 import {
   INPUT_LIMITS,
   SAFE_MALFORMED_REPLY,
@@ -30,32 +41,45 @@ import {
   SAFE_STRATEGY_REPLY,
   boundOutbound,
   boundText,
-} from './inputBounds';
+} from "./inputBounds";
 
-function reply(twiml: { message: (body: string) => unknown }, text: string): void {
+function reply(
+  twiml: { message: (body: string) => unknown },
+  text: string,
+): void {
   twiml.message(boundOutbound(text));
 }
 
-function rejectInbound(res: Response, reason: 'oversize' | 'malformed' | 'type'): void {
+function rejectInbound(
+  res: Response,
+  reason: "oversize" | "malformed" | "type",
+): void {
   const twiml = new MessagingResponse();
-  reply(twiml, reason === 'oversize' ? SAFE_OVERSIZE_REPLY : SAFE_MALFORMED_REPLY);
-  res.type('text/xml').send(twiml.toString());
+  reply(
+    twiml,
+    reason === "oversize" ? SAFE_OVERSIZE_REPLY : SAFE_MALFORMED_REPLY,
+  );
+  res.type("text/xml").send(twiml.toString());
 }
 
 const MessagingResponse = twilio.twiml.MessagingResponse;
 
 /** Acknowledges a webhook without sending any reply message to the user. */
-const EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
+const EMPTY_TWIML =
+  '<?xml version="1.0" encoding="UTF-8"?><Response></Response>';
 
 /**
  * Main Webhook Handler for WhatsApp Messages (Twilio HTTP POST)
  */
-export async function handleWhatsAppWebhook(req: Request, res: Response): Promise<void> {
+export async function handleWhatsAppWebhook(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const fromNumber = req.body?.From;
   const messageBody = req.body?.Body;
 
-  if (fromNumber === undefined || fromNumber === null || fromNumber === '') {
-    res.status(400).send('Missing sender phone number');
+  if (fromNumber === undefined || fromNumber === null || fromNumber === "") {
+    res.status(400).send("Missing sender phone number");
     return;
   }
 
@@ -65,13 +89,16 @@ export async function handleWhatsAppWebhook(req: Request, res: Response): Promis
     return;
   }
 
-  const bodyCheck = boundText(messageBody ?? '', INPUT_LIMITS.inboundBody);
+  const bodyCheck = boundText(messageBody ?? "", INPUT_LIMITS.inboundBody);
   if (!bodyCheck.ok) {
     rejectInbound(res, bodyCheck.reason);
     return;
   }
 
-  const commandCheck = boundText(bodyCheck.value.trim(), INPUT_LIMITS.commandText);
+  const commandCheck = boundText(
+    bodyCheck.value.trim(),
+    INPUT_LIMITS.commandText,
+  );
   if (!commandCheck.ok) {
     rejectInbound(res, commandCheck.reason);
     return;
@@ -86,12 +113,25 @@ export async function handleWhatsAppWebhook(req: Request, res: Response): Promis
   // of racing; messages from different users still process in parallel.
   // The idempotency claim happens inside the lock, so an in-process
   // duplicate observes the first delivery's final state.
-  const idempotencyKey = deriveIdempotencyKey(req.body, req.headers?.['i-twilio-idempotency-token']);
-  const messageSid = typeof req.body?.MessageSid === 'string' && req.body.MessageSid !== '' ? req.body.MessageSid : null;
+  const idempotencyKey = deriveIdempotencyKey(
+    req.body,
+    req.headers?.["i-twilio-idempotency-token"],
+  );
+  const messageSid =
+    typeof req.body?.MessageSid === "string" && req.body.MessageSid !== ""
+      ? req.body.MessageSid
+      : null;
   // The raw number is only used in-flight to deliver the OTP via SMS (#942);
   // it is never persisted, only the hash is.
   await runExclusive(phoneHash, () =>
-    processIdempotently(idempotencyKey, messageSid, phoneHash, fromCheck.value, commandCheck.value, res)
+    processIdempotently(
+      idempotencyKey,
+      messageSid,
+      phoneHash,
+      fromCheck.value,
+      commandCheck.value,
+      res,
+    ),
   );
 }
 
@@ -108,45 +148,77 @@ async function processIdempotently(
   phoneHash: string,
   rawPhoneNumber: string,
   messageBody: string,
-  res: Response
+  res: Response,
 ): Promise<void> {
   if (!idempotencyKey) {
-    logger.warn({ phoneHash }, 'Inbound webhook has no MessageSid or idempotency token; processing without deduplication');
-    await respondWithCommand(null, null, 0, phoneHash, rawPhoneNumber, messageBody, res);
+    logger.warn(
+      { phoneHash },
+      "Inbound webhook has no MessageSid or idempotency token; processing without deduplication",
+    );
+    await respondWithCommand(
+      null,
+      null,
+      0,
+      phoneHash,
+      rawPhoneNumber,
+      messageBody,
+      res,
+    );
     return;
   }
 
   const store = getIdempotencyStore();
   let claim;
   try {
-    claim = await store.claim(idempotencyKey, { messageSid, phoneHash }, WEBHOOK_LEASE_MS);
+    claim = await store.claim(
+      idempotencyKey,
+      { messageSid, phoneHash },
+      WEBHOOK_LEASE_MS,
+    );
   } catch (error) {
     // Nothing has run yet, so asking Twilio to retry is always safe.
-    logger.error({ error, phoneHash, idempotencyKey }, 'Failed to claim inbound webhook idempotency key');
-    res.status(503).send('Temporarily unable to process message');
+    logger.error(
+      { error, phoneHash, idempotencyKey },
+      "Failed to claim inbound webhook idempotency key",
+    );
+    res.status(503).send("Temporarily unable to process message");
     return;
   }
 
   switch (claim.kind) {
-    case 'completed':
-      logger.info({ phoneHash, idempotencyKey }, 'Duplicate inbound webhook after completion; acknowledging without reply');
-      res.status(claim.responseStatus).type('text/xml').send(EMPTY_TWIML);
+    case "completed":
+      logger.info(
+        { phoneHash, idempotencyKey },
+        "Duplicate inbound webhook after completion; acknowledging without reply",
+      );
+      res.status(claim.responseStatus).type("text/xml").send(EMPTY_TWIML);
       return;
-    case 'abandoned':
+    case "abandoned":
       logger.error(
         { phoneHash, idempotencyKey },
-        'Duplicate inbound webhook for an abandoned attempt with unknown outcome; not re-running command'
+        "Duplicate inbound webhook for an abandoned attempt with unknown outcome; not re-running command",
       );
-      res.status(200).type('text/xml').send(EMPTY_TWIML);
+      res.status(200).type("text/xml").send(EMPTY_TWIML);
       return;
-    case 'in_progress':
+    case "in_progress":
       // Another worker holds the lease. Signal a retryable conflict so a
       // later redelivery can either see the result or resume a failure.
-      logger.info({ phoneHash, idempotencyKey }, 'Duplicate inbound webhook while original is still processing');
-      res.status(409).send('Message is already being processed');
+      logger.info(
+        { phoneHash, idempotencyKey },
+        "Duplicate inbound webhook while original is still processing",
+      );
+      res.status(409).send("Message is already being processed");
       return;
-    case 'acquired':
-      await respondWithCommand(idempotencyKey, store, claim.attempt, phoneHash, rawPhoneNumber, messageBody, res);
+    case "acquired":
+      await respondWithCommand(
+        idempotencyKey,
+        store,
+        claim.attempt,
+        phoneHash,
+        rawPhoneNumber,
+        messageBody,
+        res,
+      );
       return;
   }
 }
@@ -158,31 +230,49 @@ async function respondWithCommand(
   phoneHash: string,
   rawPhoneNumber: string,
   messageBody: string,
-  res: Response
+  res: Response,
 ): Promise<void> {
   const guard = new SideEffectGuard(store, idempotencyKey, attempt);
 
   let replyXml: string;
   try {
-    replyXml = await processWhatsAppMessage(phoneHash, rawPhoneNumber, messageBody, guard);
+    replyXml = await processWhatsAppMessage(
+      phoneHash,
+      rawPhoneNumber,
+      messageBody,
+      guard,
+    );
   } catch (error) {
     if (error instanceof LeaseLostError) {
-      logger.warn({ phoneHash, idempotencyKey, attempt }, 'Lost idempotency lease before side effects; aborting attempt');
-      res.status(409).send('Message is already being processed');
+      logger.warn(
+        { phoneHash, idempotencyKey, attempt },
+        "Lost idempotency lease before side effects; aborting attempt",
+      );
+      res.status(409).send("Message is already being processed");
       return;
     }
 
     // Only retryable failures escape processWhatsAppMessage: anything
     // irreversible would already have been converted to a reply.
-    logger.warn({ error, phoneHash, idempotencyKey, attempt }, 'Retryable failure processing inbound webhook');
+    logger.warn(
+      { error, phoneHash, idempotencyKey, attempt },
+      "Retryable failure processing inbound webhook",
+    );
     if (store && idempotencyKey) {
       await store
-        .fail(idempotencyKey, attempt, error instanceof Error ? error.message : String(error))
+        .fail(
+          idempotencyKey,
+          attempt,
+          error instanceof Error ? error.message : String(error),
+        )
         .catch((storeError) =>
-          logger.error({ error: storeError, idempotencyKey }, 'Failed to record retryable webhook failure')
+          logger.error(
+            { error: storeError, idempotencyKey },
+            "Failed to record retryable webhook failure",
+          ),
         );
     }
-    res.status(503).send('Temporarily unable to process message');
+    res.status(503).send("Temporarily unable to process message");
     return;
   }
 
@@ -193,10 +283,13 @@ async function respondWithCommand(
     await store
       .complete(idempotencyKey, attempt, 200)
       .catch((storeError) =>
-        logger.error({ error: storeError, idempotencyKey }, 'Failed to record completed webhook processing')
+        logger.error(
+          { error: storeError, idempotencyKey },
+          "Failed to record completed webhook processing",
+        ),
       );
   }
-  res.status(200).type('text/xml').send(replyXml);
+  res.status(200).type("text/xml").send(replyXml);
 }
 
 /**
@@ -210,13 +303,16 @@ async function processWhatsAppMessage(
   phoneHash: string,
   rawPhoneNumber: string,
   messageBody: string,
-  guard: SideEffectGuard
+  guard: SideEffectGuard,
 ): Promise<string> {
   const twiml = new MessagingResponse();
 
   // Enforce per-phone rate limiting
   if (!(await checkRateLimit(phoneHash))) {
-    reply(twiml, '⚠️ Rate limit exceeded. Please wait a minute before sending another message.');
+    reply(
+      twiml,
+      "⚠️ Rate limit exceeded. Please wait a minute before sending another message.",
+    );
     return twiml.toString();
   }
 
@@ -236,24 +332,40 @@ async function processWhatsAppMessage(
     // STATE MACHINE FLOW:
     // Flow 1: UNVERIFIED User sends "hi" -> Request OTP verification
     if (session.state === UserState.UNVERIFIED) {
-      if (intent.type === 'GREETING' || intent.type === 'UNKNOWN') {
+      if (intent.type === "GREETING" || intent.type === "UNKNOWN") {
         await guard.begin();
         const otpCode = await generateOTP(phoneHash);
 
         try {
           // The OTP is delivered via SMS only; it must never appear in the
           // WhatsApp chat reply (#942).
-          await sendOtpSms(rawPhoneNumber, otpCode);
+          const messageSid = await sendOtpSms(rawPhoneNumber, otpCode);
+          // Register initial delivery row so retry/escalation can track this SMS
+          await applyDeliveryStatus({
+            messageSid,
+            status: "queued",
+            to: rawPhoneNumber,
+          });
           await updateState(phoneHash, UserState.AWAITING_OTP);
-          reply(twiml,
-            `👋 Welcome to NeuroWealth AI!\n\nTo secure your wallet, we sent a 6-digit verification code to your phone via SMS. Please reply with that code.\n(Code expires in 5 minutes)`
+          reply(
+            twiml,
+            `👋 Welcome to NeuroWealth AI!\n\nTo secure your wallet, we sent a 6-digit verification code to your phone via SMS. Please reply with that code.\n(Code expires in 5 minutes)`,
           );
         } catch (error) {
-          logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to send OTP SMS');
-          reply(twiml, '❌ We could not send your verification code. Please try again in a few minutes.');
+          logger.error(
+            { error: error instanceof Error ? error.message : error },
+            "Failed to send OTP SMS",
+          );
+          reply(
+            twiml,
+            "❌ We could not send your verification code. Please try again in a few minutes.",
+          );
         }
       } else {
-        reply(twiml, 'Welcome to NeuroWealth! Send "hi" to begin account verification.');
+        reply(
+          twiml,
+          'Welcome to NeuroWealth! Send "hi" to begin account verification.',
+        );
       }
       return twiml.toString();
     }
@@ -261,23 +373,36 @@ async function processWhatsAppMessage(
     // Flow 2: AWAITING_OTP -> Verify OTP input code or allow "hi" to request new code
     if (session.state === UserState.AWAITING_OTP) {
       // Allow "hi" to request a new OTP code (helps users recover from lockout/expiry)
-      if (intent.type === 'GREETING' || intent.type === 'UNKNOWN') {
+      if (intent.type === "GREETING" || intent.type === "UNKNOWN") {
         await guard.begin();
         const otpCode = await generateOTP(phoneHash);
 
         try {
-          await sendOtpSms(rawPhoneNumber, otpCode);
-          reply(twiml,
-            `🔑 A new verification code was sent to your phone via SMS.\n\n(Code expires in 5 minutes)`
+          const messageSid = await sendOtpSms(rawPhoneNumber, otpCode);
+          // Register initial delivery row so retry/escalation can track this SMS
+          await applyDeliveryStatus({
+            messageSid,
+            status: "queued",
+            to: rawPhoneNumber,
+          });
+          reply(
+            twiml,
+            `🔑 A new verification code was sent to your phone via SMS.\n\n(Code expires in 5 minutes)`,
           );
         } catch (error) {
-          logger.error({ error: error instanceof Error ? error.message : error }, 'Failed to send OTP SMS');
-          reply(twiml, '❌ We could not send your verification code. Please try again in a few minutes.');
+          logger.error(
+            { error: error instanceof Error ? error.message : error },
+            "Failed to send OTP SMS",
+          );
+          reply(
+            twiml,
+            "❌ We could not send your verification code. Please try again in a few minutes.",
+          );
         }
         return twiml.toString();
       }
 
-      if (intent.type === 'OTP_CODE' && intent.otpCode) {
+      if (intent.type === "OTP_CODE" && intent.otpCode) {
         // verifyOTP consumes attempts / the code itself.
         await guard.begin();
         const verification = await verifyOTP(phoneHash, intent.otpCode);
@@ -290,14 +415,15 @@ async function processWhatsAppMessage(
             ? `🔒 Created your secure custodial Stellar wallet:\nPublic Key: ${shortKey}`
             : `👋 Welcome back! Your existing wallet:\nPublic Key: ${shortKey}`;
 
-          reply(twiml,
+          reply(
+            twiml,
             `✅ Phone number verified!\n\n` +
-            `${walletLine}\n\n` +
-            `You can now interact with NeuroWealth entirely through WhatsApp:\n` +
-            `• "deposit 100 USDC"\n` +
-            `• "what's my balance"\n` +
-            `• "withdraw 50"\n` +
-            `• "switch to growth"`
+              `${walletLine}\n\n` +
+              `You can now interact with NeuroWealth entirely through WhatsApp:\n` +
+              `• "deposit 100 USDC"\n` +
+              `• "what's my balance"\n` +
+              `• "withdraw 50"\n` +
+              `• "switch to growth"`,
           );
         } else {
           // Reset session to UNVERIFIED on lockout or expiry to unblock the user
@@ -307,7 +433,10 @@ async function processWhatsAppMessage(
           reply(twiml, `❌ ${verification.message}`);
         }
       } else {
-        reply(twiml, 'Please enter the 6-digit verification code sent to your phone (valid for 5 minutes), or send "hi" to request a new code.');
+        reply(
+          twiml,
+          'Please enter the 6-digit verification code sent to your phone (valid for 5 minutes), or send "hi" to request a new code.',
+        );
       }
       return twiml.toString();
     }
@@ -319,7 +448,10 @@ async function processWhatsAppMessage(
         // Fallback state sync
         await guard.begin();
         await updateState(phoneHash, UserState.UNVERIFIED);
-        reply(twiml, 'Session expired. Please send "hi" to start verification.');
+        reply(
+          twiml,
+          'Session expired. Please send "hi" to start verification.',
+        );
         return twiml.toString();
       }
 
@@ -332,64 +464,78 @@ async function processWhatsAppMessage(
       }
 
       switch (intent.type) {
-        case 'GREETING': {
-          reply(twiml, 
+        case "GREETING": {
+          reply(
+            twiml,
             `🤖 Hi! I'm your NeuroWealth AI Agent.\n\n` +
-            `How can I assist your portfolio today?\n` +
-            `1. "balance" - View current portfolio\n` +
-            `2. "deposit 100 USDC" - Deposit funds\n` +
-            `3. "withdraw 50" - Cash out\n` +
-            `4. "switch to growth" - Update strategy`
+              `How can I assist your portfolio today?\n` +
+              `1. "balance" - View current portfolio\n` +
+              `2. "deposit 100 USDC" - Deposit funds\n` +
+              `3. "withdraw 50" - Cash out\n` +
+              `4. "switch to growth" - Update strategy`,
           );
           break;
         }
 
-        case 'BALANCE':
-        case 'EARNINGS':
-        case 'APY': {
+        case "BALANCE":
+        case "EARNINGS":
+        case "APY": {
           const portfolio = await getPortfolio(phoneHash);
-          reply(twiml, 
+          reply(
+            twiml,
             `💰 Your NeuroWealth Portfolio\n\n` +
-            `Balance: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
-            `Earnings today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
-            `Current APY: ${portfolio.apy}%\n` +
-            `Strategy: ${portfolio.strategy}`
+              `Balance: ${portfolio.balance.toFixed(2)} USDC ($${portfolio.usdEquivalent.toFixed(2)})\n` +
+              `Earnings today: +$${portfolio.dailyEarnings.toFixed(2)}\n` +
+              `Current APY: ${portfolio.apy}%\n` +
+              `Strategy: ${portfolio.strategy}`,
           );
           break;
         }
 
-        case 'DEPOSIT': {
+        case "DEPOSIT": {
           await guard.begin();
-          const result = await handleDeposit(phoneHash, intent.amount as number, intent.strategy);
+          const result = await handleDeposit(
+            phoneHash,
+            intent.amount as number,
+            intent.strategy,
+          );
           reply(twiml, `🤖 ${result.message}`);
           break;
         }
 
-        case 'WITHDRAW': {
+        case "WITHDRAW": {
           await guard.begin();
-          const result = await handleWithdraw(phoneHash, intent.amount, intent.withdrawAll);
+          const result = await handleWithdraw(
+            phoneHash,
+            intent.amount,
+            intent.withdrawAll,
+          );
           reply(twiml, `🤖 ${result.message}`);
           break;
         }
 
-        case 'STRATEGY': {
+        case "STRATEGY": {
           if (!intent.strategy) {
-            reply(twiml, '❌ Please specify a valid strategy.');
+            reply(twiml, "❌ Please specify a valid strategy.");
             break;
           }
           await guard.begin();
           const result = await handleStrategyUpdate(phoneHash, intent.strategy);
-          reply(twiml, result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
+          reply(
+            twiml,
+            result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+          );
           break;
         }
 
         default: {
-          reply(twiml, 
+          reply(
+            twiml,
             `I didn't quite catch that. Try commands like:\n` +
-            `• "deposit 50 USDC"\n` +
-            `• "what's my balance"\n` +
-            `• "withdraw all"\n` +
-            `• "switch to conservative"`
+              `• "deposit 50 USDC"\n` +
+              `• "what's my balance"\n` +
+              `• "withdraw all"\n` +
+              `• "switch to conservative"`,
           );
           break;
         }
@@ -400,15 +546,27 @@ async function processWhatsAppMessage(
     if (!guard.hasStarted && isTransientError(error)) {
       throw error instanceof RetryableWebhookError
         ? error
-        : new RetryableWebhookError('Transient failure before any side effect', { cause: error });
+        : new RetryableWebhookError(
+            "Transient failure before any side effect",
+            { cause: error },
+          );
     }
 
     const reqId = `req-${Math.random().toString(36).substring(2, 9)}`;
     logger.error(
-      { error, phoneHash, intentType: intent.type, state: session.state, reqId },
-      'Error processing webhook request'
+      {
+        error,
+        phoneHash,
+        intentType: intent.type,
+        state: session.state,
+        reqId,
+      },
+      "Error processing webhook request",
     );
-    reply(twiml, `❌ An error occurred processing your request. Please try again in a few moments. (Ref: ${reqId})`);
+    reply(
+      twiml,
+      `❌ An error occurred processing your request. Please try again in a few moments. (Ref: ${reqId})`,
+    );
   }
 
   return twiml.toString();
