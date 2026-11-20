@@ -183,6 +183,59 @@ export class PostgresRebalanceOperationRepository implements RebalanceOperationR
       ],
     ).then(() => undefined), 'rebalance.update');
   }
+
+  /**
+   * Sweeps nonterminal operations that have been stale for longer than
+   * `olderThanMs`. Without this, a deadline that fired while the reservation
+   * was in flight leaves a `prepared` row that nothing ever advances.
+   *
+   * - `prepared` rows have no tx_hash yet and nothing to reconcile, so they
+   *   are resolved terminally as `rejected`.
+   * - `submitting` rows may have committed on chain; they are routed through
+   *   `reconciling` so the caller-driven reconcile path can resolve them on a
+   *   future cycle with the same decisionId.
+   *
+   * Returns the number of swept rows.
+   */
+  async sweepStale(input: { olderThanMs: number }): Promise<number> {
+    const threshold = new Date(Date.now() - input.olderThanMs);
+    const client = await this.pool.connect();
+    try {
+      const stale = await client.query<RebalanceOperation>(
+        `SELECT operation_id, status FROM agent_rebalance_operations
+         WHERE status IN ('prepared', 'submitting') AND created_at < $1
+         ORDER BY created_at ASC
+         LIMIT 50`,
+        [threshold],
+      );
+      let swept = 0;
+      for (const row of stale.rows) {
+        if (row.status === 'prepared') {
+          await client.query(
+            `UPDATE agent_rebalance_operations
+             SET status = 'rejected',
+                 last_error = $2,
+                 updated_at = NOW()
+             WHERE operation_id = $1 AND status = 'prepared'`,
+            [row.operation_id, 'Swept: prepared operation stalled past the deadline; nothing was submitted'],
+          );
+        } else {
+          await client.query(
+            `UPDATE agent_rebalance_operations
+             SET status = 'reconciling',
+                 last_error = $2,
+                 updated_at = NOW()
+             WHERE operation_id = $1 AND status = 'submitting'`,
+            [row.operation_id, 'Swept: submitting operation stalled past the deadline; reconcile via tx_hash'],
+          );
+        }
+        swept += 1;
+      }
+      return swept;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 export interface OperationSimulation {

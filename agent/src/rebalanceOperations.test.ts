@@ -153,6 +153,36 @@ describe('rebalance operation idempotency (#861)', () => {
     );
   });
 
+  it('sweeps stale prepared/submitting operations', async () => {
+    const staleRows = [
+      { operation_id: 'op-prepared', status: 'prepared' },
+      { operation_id: 'op-submitting', status: 'submitting' },
+    ];
+    const updates: Array<{ sql: string; values: unknown[] }> = [];
+    const pool = {
+      async connect() {
+        return {
+          async query<T = Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<{ rows: T[] }> {
+            if (sql.startsWith('SELECT operation_id, status')) return { rows: staleRows as T[] };
+            updates.push({ sql, values });
+            return { rows: [] };
+          },
+          release() {},
+        };
+      },
+      async query<T = Record<string, unknown>>(): Promise<{ rows: T[] }> { return { rows: [] }; },
+    };
+    const repository = new PostgresRebalanceOperationRepository(pool);
+
+    const swept = await repository.sweepStale({ olderThanMs: 60_000 });
+
+    assert.strictEqual(swept, 2);
+    const rejectedUpdate = updates.find((u) => u.sql.includes("status = 'rejected'"))!;
+    const reconcilingUpdate = updates.find((u) => u.sql.includes("status = 'reconciling'"))!;
+    assert.strictEqual(rejectedUpdate.values[0], 'op-prepared');
+    assert.strictEqual(reconcilingUpdate.values[0], 'op-submitting');
+  });
+
   it('reconciles a timeout after network acceptance without a second send', async () => {
     const repository = new MemoryRepository();
     let accepted = false;

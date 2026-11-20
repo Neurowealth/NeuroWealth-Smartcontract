@@ -1,5 +1,6 @@
 import type { RebalanceDecision } from './userStrategies';
 import logger from './logger';
+import { Account, Contract, Networks, rpc, scValToNative, TransactionBuilder } from '@stellar/stellar-sdk';
 
 export interface ProtocolYieldData {
   protocolId: string;
@@ -168,6 +169,11 @@ function allocateByWeight(weights: number[]): number[] {
 /** Minimum APY improvement, in percentage points, before a rebalance is proposed. */
 export const MIN_REBALANCE_IMPROVEMENT_PCT = 0.5;
 
+/** Inclusion fee for APY read-only simulations (stroops). */
+const APY_SIMULATION_FEE = '100';
+/** Timeout for APY simulations in seconds. */
+const APY_SIMULATION_TIMEOUT_SECONDS = 30;
+
 interface CachedApy {
   value: number;
   timestamp: number;
@@ -178,8 +184,42 @@ const blendCache: CachedApy = { value: 0, timestamp: 0 };
 const dexCache: CachedApy = { value: 0, timestamp: 0 };
 
 /**
- * Fetches real Blend supply APR from the pool contract.
- * Results are cached with staleness detection. A failed or stale fetch returns null.
+ * Reads a contract's numeric return value via a read-only
+ * `simulateTransaction` call — the same pattern as `fetchVaultTotalAssets` in
+ * sorobanTx.ts. Returns null when the contract cannot be read, so callers
+ * never fall back to fabricated APYs.
+ */
+async function simulateContractApy(contractId: string, method: string): Promise<number | null> {
+  const { server } = await import('./eventListener');
+  const sourcePublicKey = process.env.SOROBAN_PUBLIC_KEY;
+  if (!contractId || !sourcePublicKey) return null;
+
+  try {
+    const tx = new TransactionBuilder(new Account(sourcePublicKey, '0'), {
+      fee: APY_SIMULATION_FEE,
+      networkPassphrase: process.env.SOROBAN_NETWORK_PASSPHRASE || Networks.TESTNET,
+    })
+      .addOperation(new Contract(contractId).call(method))
+      .setTimeout(APY_SIMULATION_TIMEOUT_SECONDS)
+      .build();
+    const simulation = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result?.retval) return null;
+    const value = Number(scValToNative(simulation.result.retval));
+    if (!Number.isFinite(value) || value < 0) {
+      logger?.warn({ contractId, method, value }, `${method} returned an invalid APY`);
+      return null;
+    }
+    return value;
+  } catch (error) {
+    logger?.warn({ error: error instanceof Error ? error.message : String(error), contractId, method }, `Failed to simulate ${method}`);
+    return null;
+  }
+}
+
+/**
+ * Fetches the real Blend supply APR from the pool contract via a
+ * `get_supply_apr` RPC simulation. Results are cached with staleness
+ * detection. A failed or stale fetch returns null.
  */
 export async function fetchBlendApy(): Promise<number | null> {
   const stalenessMs = parseInt(process.env.BLEND_APY_STALENESS_MS || String(DEFAULT_STALENESS_MS), 10);
@@ -198,11 +238,14 @@ export async function fetchBlendApy(): Promise<number | null> {
     }
 
     // Query the Blend pool contract for supply APR
-    // In production, this would call the contract's get_supply_apr() method
-    // Typical Blend pools expose a get_supply_apr() or similar method
-    // For now, we return null to trigger the fail-safe (no rebalance on stale data)
-    logger?.warn('Blend APY fetch not yet implemented with real RPC; returning null (no rebalance)');
-    return null;
+    const apy = await simulateContractApy(blendContractId, 'get_supply_apr');
+    if (apy === null) {
+      logger?.warn('Blend APY simulation failed; using null APY (no rebalance)');
+      return null;
+    }
+    blendCache.value = apy;
+    blendCache.timestamp = now;
+    return apy;
   } catch (error) {
     logger?.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to fetch Blend APY');
     return null;
@@ -219,8 +262,9 @@ export function _setBlendApyCache(value: number): void {
 }
 
 /**
- * Fetches real DEX fee APR from pool state or an indexer.
- * Results are cached with staleness detection. A failed or stale fetch returns null.
+ * Fetches the real DEX fee APR from the pool contract via a `get_fee_apr` RPC
+ * simulation. Results are cached with staleness detection. A failed or stale
+ * fetch returns null.
  */
 export async function fetchDexApy(): Promise<number | null> {
   const stalenessMs = parseInt(process.env.DEX_APY_STALENESS_MS || String(DEFAULT_STALENESS_MS), 10);
@@ -239,11 +283,14 @@ export async function fetchDexApy(): Promise<number | null> {
     }
 
     // Query the DEX pool for fee APR
-    // In production, this would call the pool's get_fee_apr() method or query an indexer
-    // Typical DEX pools expose fee data through state or indexer queries
-    // For now, we return null to trigger the fail-safe (no rebalance on stale data)
-    logger?.warn('DEX APY fetch not yet implemented with real RPC; returning null (no rebalance)');
-    return null;
+    const apy = await simulateContractApy(dexPoolId, 'get_fee_apr');
+    if (apy === null) {
+      logger?.warn('DEX APY simulation failed; using null APY (no rebalance)');
+      return null;
+    }
+    dexCache.value = apy;
+    dexCache.timestamp = now;
+    return apy;
   } catch (error) {
     logger?.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to fetch DEX APY');
     return null;

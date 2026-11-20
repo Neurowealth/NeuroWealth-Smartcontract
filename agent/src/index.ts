@@ -8,7 +8,7 @@ import healthRouter, { configureHealthChecks } from './health';
 import logger from './logger';
 import { initializeTracing } from './tracing';
 import { submitAutoCompoundTx, submitRebalanceTx } from './sorobanTx';
-import { createDecisionId } from './rebalanceOperations';
+import { createDecisionId, PostgresRebalanceOperationRepository } from './rebalanceOperations';
 import { resolveExecutionMode } from './executionMode';
 import { RollupScheduler } from './dataRollup';
 import { WithdrawalKeeperScheduler } from './withdrawalKeeper';
@@ -195,6 +195,29 @@ async function main() {
   } else {
     logger.warn('DATABASE_URL is not set; nightly rollup/cleanup job disabled');
   }
+
+  // Sweep rebalance operations orphaned by deadlines that fired while the DB
+  // transaction was still in flight (#1120): a `prepared` row would otherwise
+  // never advance.
+  const STALE_OPERATION_AGE_MS = Number.parseInt(
+    process.env.AGENT_STALE_OPERATION_AGE_MS || String(24 * 60 * 60 * 1000),
+    10,
+  );
+  const STALE_OPERATION_SWEEP_MS = 30 * 60 * 1000;
+  const sweepStaleOperations = async (): Promise<void> => {
+    try {
+      const repository = new PostgresRebalanceOperationRepository(pool);
+      const swept = await repository.sweepStale({ olderThanMs: STALE_OPERATION_AGE_MS });
+      if (swept > 0) logger.info({ swept }, 'Swept stale rebalance operations');
+    } catch (error) {
+      logger.warn(
+        { error: error instanceof Error ? error.message : String(error) },
+        'Stale rebalance operation sweep failed',
+      );
+    }
+  };
+  void sweepStaleOperations();
+  setInterval(() => { void sweepStaleOperations(); }, STALE_OPERATION_SWEEP_MS).unref?.();
 
   // Initialize withdrawal queue keeper if vault contract and agent key are configured
   const vaultContractId = process.env.VAULT_CONTRACT_ID;

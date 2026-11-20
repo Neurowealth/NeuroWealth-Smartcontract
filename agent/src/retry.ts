@@ -107,10 +107,15 @@ export async function withDatabaseRetry<T>(
 
     attempts += 1;
     databaseRetryMetrics.attempts += 1;
+    const operationPromise = operation();
+    // The deadline race can reject while the operation is still in flight and
+    // the operation may still commit afterwards. Attach a handler now so its
+    // eventual rejection is never unhandled; the timeout path also awaits it.
+    void operationPromise.catch(() => undefined);
     try {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([
-        operation(),
+        operationPromise,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new DatabaseRetryDeadlineError(label)), remainingMs);
         }),
@@ -122,6 +127,15 @@ export async function withDatabaseRetry<T>(
     } catch (error) {
       const elapsedMs = opts.now() - startedAt;
       if (error instanceof DatabaseRetryDeadlineError || elapsedMs >= opts.totalDeadlineMs) {
+        if (error instanceof DatabaseRetryDeadlineError) {
+          // Await the in-flight operation before propagating the timeout: the
+          // DB work can still commit after the deadline fires, so let it
+          // settle so its outcome is observed rather than leaving a wedged
+          // row that nothing will ever reconcile. Rows that stay wedged
+          // across a crash are swept by the stale-operation sweep in
+          // rebalanceOperations.ts.
+          await operationPromise.catch(() => undefined);
+        }
         databaseRetryMetrics.deadlineExceeded += 1;
         logger.error({ label, attempts, elapsedMs, error }, 'Database operation deadline exceeded');
         throw error instanceof DatabaseRetryDeadlineError ? error : new DatabaseRetryDeadlineError(label);

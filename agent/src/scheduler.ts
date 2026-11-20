@@ -49,7 +49,7 @@ export interface RebalanceExecution {
   trigger: RebalanceTrigger;
   executedAt: number;
   success: boolean;
-  skipped?: 'gas_price_too_high';
+  skipped?: 'gas_price_too_high' | 'gas_price_probe_failed';
   beforeApy?: number;
   afterApy?: number;
   apyDelta?: number;
@@ -291,7 +291,9 @@ export class RebalanceScheduler {
     const executed = this.history.filter((h) => !h.skipped);
     const succeeded = executed.filter((h) => h.success);
     const failed = executed.filter((h) => !h.success);
-    const skippedGas = this.history.filter((h) => h.skipped === 'gas_price_too_high');
+    const skippedGas = this.history.filter(
+      (h) => h.skipped === 'gas_price_too_high' || h.skipped === 'gas_price_probe_failed',
+    );
     const gasCosts = executed.map((h) => h.gasCostStroops ?? 0);
     const apyDeltas = executed
       .map((h) => h.apyDelta)
@@ -346,9 +348,26 @@ export class RebalanceScheduler {
         }
       } catch (err) {
         logger.warn(
-          { err: err instanceof Error ? err.message : err },
-          'Gas price probe failed; proceeding with rebalance',
+          { err: err instanceof Error ? err.message : String(err) },
+          'Gas price probe failed; skipping rebalance to honor the fee ceiling',
         );
+        const skipped: RebalanceExecution = {
+          jobId: job.id,
+          trigger: job.trigger,
+          executedAt: now,
+          success: false,
+          skipped: 'gas_price_probe_failed',
+        };
+        this.history.push(skipped);
+        this.emitAlert(
+          'rebalance_skipped_gas',
+          `Gas price probe failed; skipped rebalance for ${job.id}`,
+          {
+            jobId: job.id,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+        return skipped;
       }
     }
 

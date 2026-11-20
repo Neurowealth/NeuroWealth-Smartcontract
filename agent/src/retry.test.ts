@@ -64,4 +64,28 @@ describe('database retry policy (#865)', () => {
     assert.strictEqual(calls, 1);
     assert.strictEqual(getDatabaseRetryMetrics().deadlineExceeded, 1);
   });
+
+  it('awaits the in-flight operation before propagating the deadline error', async () => {
+    resetDatabaseRetryMetrics();
+    let operationSettled = false;
+    const operation = () => new Promise<string>((resolve) => {
+      setTimeout(() => {
+        operationSettled = true;
+        resolve('done');
+      }, 20);
+    });
+
+    await assert.rejects(
+      withDatabaseRetry(operation, 'test.deadline-await', {
+        totalDeadlineMs: 5,
+        baseDelayMs: 10,
+        maxDelayMs: 10,
+        random: () => 0,
+        sleep: async () => undefined,
+      }),
+      DatabaseRetryDeadlineError,
+    );
+    assert.strictEqual(operationSettled, true);
+    assert.strictEqual(getDatabaseRetryMetrics().deadlineExceeded, 1);
+  });
 });

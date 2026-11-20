@@ -6,7 +6,8 @@
 
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Keypair, xdr } from '@stellar/stellar-sdk';
+import { server } from './eventListener';
 import {
   WithdrawalKeeperScheduler,
   DEFAULT_KEEPER_CONFIG,
@@ -14,13 +15,40 @@ import {
   type WithdrawalKeeperConfig,
 } from './withdrawalKeeper';
 
+const serverAny = server as unknown as Record<string, unknown>;
+
+/** Builds a `wq_add`-style event the way the keeper parses it. */
+function queueEvent(
+  kind: 'wq_add' | 'wq_cancel' | 'wq_done',
+  payload: { requestId: number; timestamp?: number },
+): unknown {
+  return {
+    topic: [xdr.ScVal.scvSymbol(kind)],
+    value: {
+      request_id: payload.requestId,
+      user: 'GABCKEEPER',
+      amount: 1n,
+      timestamp: BigInt(payload.timestamp ?? 0),
+    },
+  };
+}
+
+// Default stubs so unit tests never hit the network; the submission test
+// below overrides them with live-mode responses.
+serverAny.simulateTransaction = async () => {
+  throw new Error('simulateTransaction stub not set');
+};
+serverAny.getEvents = async () => {
+  throw new Error('getEvents stub not set');
+};
+
 describe('Withdrawal queue keeper (#1005)', () => {
   let vaultContractId: string;
   let agentKeypair: Keypair;
   let config: WithdrawalKeeperConfig;
 
   beforeEach(() => {
-    vaultContractId = 'CVAULTTEST';
+    vaultContractId = 'CAPEE5AAN3ASTJSL6ZQMRGZULOB32W2VJPAY52RKXM2TOC6WH3PCJSW7';
     agentKeypair = Keypair.random();
     config = { ...DEFAULT_KEEPER_CONFIG };
   });
@@ -89,5 +117,49 @@ describe('Withdrawal queue keeper (#1005)', () => {
     // With invalid contract ID, it should return an error result
     const result = await runWithdrawalKeeper('INVALID', agentKeypair, config);
     assert.ok(result.error !== undefined || result.queueDepth === 0);
+  });
+
+  it('submits process_withdrawal_queue when the queue has depth and idle liquidity', async () => {
+    process.env.AGENT_EXECUTION_MODE = 'live';
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    let submitCount = 0;
+
+    serverAny.getAccount = async () => ({ sequenceNumber: () => '0' });
+    serverAny.getEvents = async () => ({
+      events: [
+        queueEvent('wq_add', { requestId: 7, timestamp: nowSeconds - 20 }),
+        queueEvent('wq_add', { requestId: 8, timestamp: nowSeconds - 5 }),
+      ],
+      cursor: '',
+      latestLedger: 2000,
+      oldestLedger: 0,
+      latestLedgerCloseTime: '0',
+      oldestLedgerCloseTime: '0',
+    });
+    serverAny.simulateTransaction = async () => {
+      const retval = xdr.ScVal.scvU64(new xdr.Uint64(500_000_000));
+      return {
+        transactionData: undefined,
+        result: { retval },
+        results: [{ xdr: retval.toXDR('base64'), auth: [] }],
+      };
+    };
+    serverAny.sendTransaction = async () => {
+      submitCount += 1;
+      return { status: 'PENDING', hash: 'abcd1234' };
+    };
+    serverAny.getTransaction = async () => ({
+      status: 'SUCCESS',
+      returnValue: xdr.ScVal.scvU64(new xdr.Uint64(2)),
+    });
+
+    const result = await runWithdrawalKeeper('CAPEE5AAN3ASTJSL6ZQMRGZULOB32W2VJPAY52RKXM2TOC6WH3PCJSW7', agentKeypair, config, () => Date.now());
+
+    assert.strictEqual(result.queueDepth, 2);
+    assert.ok(result.oldestRequestAgeMs >= 4_000);
+    assert.ok(result.idleLiquidity >= 500_000_000);
+    assert.strictEqual(result.processed, 2);
+    assert.strictEqual(submitCount, 1);
+    delete process.env.AGENT_EXECUTION_MODE;
   });
 });

@@ -13,7 +13,7 @@ const HOUR = INTERVAL_MS.hourly;
 function makeScheduler(
   executorResults: RebalanceExecutionResult[],
   now: { t: number },
-  opts: { gasPrice?: number; interval?: 'hourly' | '4h' | 'daily'; threshold?: number } = {},
+  opts: { gasPrice?: number; gasPriceError?: string; interval?: 'hourly' | '4h' | 'daily'; threshold?: number } = {},
 ) {
   const alerts: SchedulerAlert[] = [];
   let call = 0;
@@ -32,7 +32,14 @@ function makeScheduler(
         call += 1;
         return result;
       },
-      gasPriceProvider: opts.gasPrice !== undefined ? async () => opts.gasPrice! : undefined,
+      gasPriceProvider:
+        opts.gasPriceError !== undefined
+          ? async () => {
+              throw new Error(opts.gasPriceError!);
+            }
+          : opts.gasPrice !== undefined
+            ? async () => opts.gasPrice!
+            : undefined,
       onAlert: (a) => alerts.push(a),
       now: () => now.t,
     },
@@ -81,6 +88,18 @@ describe('Rebalance scheduler (Issue #651)', () => {
     const executions = await scheduler.tick(now.t);
     assert.strictEqual(executions.length, 1);
     assert.strictEqual(executions[0].skipped, 'gas_price_too_high');
+    assert.strictEqual(executedJobs.length, 0);
+    assert.ok(alerts.some((a) => a.type === 'rebalance_skipped_gas'));
+    assert.strictEqual(scheduler.getStats().totalSkippedGas, 1);
+  });
+
+  it('skips scheduled rebalances when the gas price probe fails (fail-closed)', async () => {
+    const now = { t: 1_000_000 };
+    const { scheduler, alerts, executedJobs } = makeScheduler([OK], now, { gasPriceError: 'rpc unavailable' });
+
+    const executions = await scheduler.tick(now.t);
+    assert.strictEqual(executions.length, 1);
+    assert.strictEqual(executions[0].skipped, 'gas_price_probe_failed');
     assert.strictEqual(executedJobs.length, 0);
     assert.ok(alerts.some((a) => a.type === 'rebalance_skipped_gas'));
     assert.strictEqual(scheduler.getStats().totalSkippedGas, 1);
