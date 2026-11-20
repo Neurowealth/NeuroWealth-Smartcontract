@@ -7,12 +7,23 @@
  *
  * Features:
  * - Periodic queue processing when non-empty and liquidity available
- * - Metrics: queue depth, oldest request age, processed count
+ * - Metrics: queue depth, oldest request age, processed count, idle liquidity
  * - Alert when oldest request approaches TTL
  */
 
 import logger from './logger';
-import { Keypair } from '@stellar/stellar-sdk';
+import { server } from './eventListener';
+import { submitProcessWithdrawalQueueTx } from './sorobanTx';
+import {
+  Account,
+  Contract,
+  Keypair,
+  Networks,
+  TransactionBuilder,
+  rpc,
+  scValToNative,
+  xdr,
+} from '@stellar/stellar-sdk';
 
 export interface WithdrawalKeeperConfig {
   /** Interval between queue checks in milliseconds (default: 5 minutes) */
@@ -45,36 +56,113 @@ export interface WithdrawalKeeperResult {
   processed: number;
   queueDepth: number;
   oldestRequestAgeMs: number;
+  idleLiquidity: number;
   error?: string;
 }
 
-interface _QueueEntry {
-  request_id: number;
-  user: string;
-  amount: number;
-  timestamp: number;
-  ttl_ledger: number;
+const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE || Networks.TESTNET;
+const TX_INCLUSION_FEE = '100';
+const TX_TIMEOUT_SECONDS = 60;
+const QUEUE_EVENTS_PAGE_LIMIT = 500;
+const MAX_QUEUE_EVENT_PAGES = 10;
+
+/**
+ * Reads the vault's idle liquidity via a read-only `get_idle_balance`
+ * simulation. Returns 0 when the value is unavailable so the keeper never
+ * gates on fabricated state.
+ */
+async function readIdleLiquidity(vaultContractId: string, sourcePublicKey: string | undefined): Promise<number> {
+  if (!vaultContractId || !sourcePublicKey) return 0;
+  try {
+    const tx = new TransactionBuilder(new Account(sourcePublicKey, '0'), {
+      fee: TX_INCLUSION_FEE,
+      networkPassphrase,
+    })
+      .addOperation(new Contract(vaultContractId).call('get_idle_balance'))
+      .setTimeout(TX_TIMEOUT_SECONDS)
+      .build();
+    const simulation = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result?.retval) return 0;
+    const value = Number(scValToNative(simulation.result.retval));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch (error) {
+    logger.debug({ error: error instanceof Error ? error.message : String(error) }, 'Failed to read vault idle liquidity');
+    return 0;
+  }
+}
+
+/** Converts an event topic/value ScVal to native, or returns the value as-is. */
+function toNativeEvent(value: unknown): unknown {
+  if (value instanceof xdr.ScVal) {
+    try {
+      return scValToNative(value);
+    } catch {
+      return null;
+    }
+  }
+  return value;
 }
 
 /**
- * Fetches current withdrawal queue state from the vault contract.
- * Returns queue depth, oldest request age, and idle liquidity.
+ * Reconstructs queue depth and the oldest pending request age from the
+ * `wq_add` / `wq_cancel` / `wq_done` events (#757): every `wq_add` opens a
+ * pending request and `wq_cancel` / `wq_done` close theirs.
+ */
+async function readQueueStateFromEvents(vaultContractId: string): Promise<{ depth: number; oldestAgeMs: number }> {
+  const pending = new Map<number, number>();
+  try {
+    const filters: rpc.Api.EventFilter[] = [{ type: 'contract', contractIds: [vaultContractId] }];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_QUEUE_EVENT_PAGES; page += 1) {
+      const request: rpc.Api.GetEventsRequest = cursor
+        ? { filters, cursor, limit: QUEUE_EVENTS_PAGE_LIMIT }
+        : { filters, startLedger: 0, limit: QUEUE_EVENTS_PAGE_LIMIT };
+      const response = await server.getEvents(request);
+      for (const event of response.events) {
+        const kind = toNativeEvent(event.topic[0]);
+        if (kind !== 'wq_add' && kind !== 'wq_cancel' && kind !== 'wq_done') continue;
+        const payload = toNativeEvent(event.value);
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+        const record = payload as Record<string, unknown>;
+        const requestId = Number(record.request_id ?? 0);
+        if (!Number.isFinite(requestId)) continue;
+        if (kind === 'wq_add') {
+          const timestamp = Number(record.timestamp ?? 0);
+          if (Number.isFinite(timestamp)) pending.set(requestId, timestamp);
+        } else {
+          pending.delete(requestId);
+        }
+      }
+      cursor = response.cursor || undefined;
+      if (!cursor) break;
+    }
+  } catch (error) {
+    logger.debug({ error: error instanceof Error ? error.message : String(error) }, 'Failed to read withdrawal queue events');
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  let oldestAgeMs = 0;
+  for (const timestamp of pending.values()) {
+    const ageMs = Math.max(0, (nowSeconds - timestamp) * 1000);
+    oldestAgeMs = Math.max(oldestAgeMs, ageMs);
+  }
+  return { depth: pending.size, oldestAgeMs };
+}
+
+/**
+ * Fetches current withdrawal queue state from the vault contract: queue
+ * depth, oldest request age, and idle liquidity.
  */
 async function getQueueState(
   vaultContractId: string,
+  agentKeypair: Keypair,
 ): Promise<{ queueDepth: number; oldestRequestAgeMs: number; idleLiquidity: number }> {
   try {
-    // Query queue depth (this is a placeholder - actual implementation depends on contract)
-    // In production, this would call a get_queue_state() or similar method
-    const queueDepth = 0; // Placeholder
-
-    // Query oldest request timestamp
-    const oldestRequestAgeMs = 0; // Placeholder
-
-    // Query idle liquidity
-    const idleLiquidity = 0; // Placeholder
-
-    return { queueDepth, oldestRequestAgeMs, idleLiquidity };
+    const sourcePublicKey = agentKeypair?.publicKey() || process.env.SOROBAN_PUBLIC_KEY;
+    const [idleLiquidity, queueState] = await Promise.all([
+      readIdleLiquidity(vaultContractId, sourcePublicKey),
+      readQueueStateFromEvents(vaultContractId),
+    ]);
+    return { queueDepth: queueState.depth, oldestRequestAgeMs: queueState.oldestAgeMs, idleLiquidity };
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to fetch queue state');
     return { queueDepth: 0, oldestRequestAgeMs: 0, idleLiquidity: 0 };
@@ -82,7 +170,9 @@ async function getQueueState(
 }
 
 /**
- * Processes the withdrawal queue by calling process_withdrawal_queue on the vault contract.
+ * Processes the withdrawal queue by calling `process_withdrawal_queue` on the
+ * vault contract with the agent's signing key. Returns the number of
+ * requests the contract reports as processed.
  */
 async function processWithdrawalQueue(
   vaultContractId: string,
@@ -90,11 +180,24 @@ async function processWithdrawalQueue(
   batchSize: number,
 ): Promise<number> {
   try {
-    // Note: This is a placeholder - actual implementation needs to build and submit a transaction
-    // In production, this would use the transaction building logic from sorobanTx.ts
-    logger.info({ vaultContractId, batchSize }, 'process_withdrawal_queue called');
-
-    return 0; // Placeholder: number of requests processed
+    if (process.env.AGENT_EXECUTION_MODE === 'dry-run') {
+      logger.info({ vaultContractId, batchSize }, 'process_withdrawal_queue skipped in dry-run mode');
+      return 0;
+    }
+    const result = await submitProcessWithdrawalQueueTx(vaultContractId, agentKeypair, batchSize);
+    if (result.status !== 'submitted' && result.status !== 'reconciling') {
+      logger.warn(
+        { status: result.status, rejectionReasons: result.rejectionReasons },
+        'process_withdrawal_queue not submitted',
+      );
+      return 0;
+    }
+    if (!result.txHash) return 0;
+    const txResp = await server.getTransaction(result.txHash);
+    const retval = (txResp as rpc.Api.GetSuccessfulTransactionResponse).returnValue;
+    const processed = retval ? Number(scValToNative(retval) ?? 0) : 0;
+    logger.info({ vaultContractId, batchSize, processed }, 'process_withdrawal_queue submitted');
+    return processed;
   } catch (error) {
     logger.error({ error: error instanceof Error ? error.message : String(error) }, 'Failed to process withdrawal queue');
     return 0;
@@ -114,7 +217,7 @@ export async function runWithdrawalKeeper(
 
   try {
     // Fetch current queue state
-    const { queueDepth, oldestRequestAgeMs, idleLiquidity } = await getQueueState(vaultContractId);
+    const { queueDepth, oldestRequestAgeMs, idleLiquidity } = await getQueueState(vaultContractId, agentKeypair);
 
     // Alert if oldest request is approaching TTL
     if (oldestRequestAgeMs > 0 && oldestRequestAgeMs > config.ttlAlertThresholdMs) {
@@ -141,6 +244,7 @@ export async function runWithdrawalKeeper(
       processed,
       queueDepth,
       oldestRequestAgeMs,
+      idleLiquidity,
     };
 
     logger.info({ result }, 'Withdrawal keeper cycle completed');
@@ -153,6 +257,7 @@ export async function runWithdrawalKeeper(
       processed: 0,
       queueDepth: 0,
       oldestRequestAgeMs: 0,
+      idleLiquidity: 0,
       error: message,
     };
   }
@@ -211,13 +316,13 @@ export class WithdrawalKeeperScheduler {
       this.metrics.queueDepth = result.queueDepth;
       this.metrics.oldestRequestAgeMs = result.oldestRequestAgeMs;
       this.metrics.processedCount += result.processed;
-      this.metrics.idleLiquidity = 0; // Would be updated from actual query
+      this.metrics.idleLiquidity = result.idleLiquidity;
       if (result.processed > 0) {
         this.metrics.lastProcessedAt = result.runAt;
       }
     } catch (err) {
       logger.error(
-        { error: err instanceof Error ? err.message : err },
+        { error: err instanceof Error ? err.message : String(err) },
         'Withdrawal keeper run threw unexpectedly',
       );
     }

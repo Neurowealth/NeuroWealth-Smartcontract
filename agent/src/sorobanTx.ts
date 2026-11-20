@@ -40,6 +40,10 @@ export interface VaultSubmissionOptions {
   decisionId?: string;
   snapshot?: unknown;
   retryReason?: string;
+  /** Signing key; defaults to the module-level SOROBAN_SECRET_KEY keypair. */
+  agentKeypair?: Keypair;
+  /** Contract to submit to; defaults to VAULT_CONTRACT_ID. */
+  vaultContractId?: string;
 }
 
 function rejectedResult(reason: string): OperationResult {
@@ -53,17 +57,19 @@ async function submitVaultTransaction(
   options: VaultSubmissionOptions = {},
 ): Promise<OperationResult> {
   const mode = options.mode ?? resolveExecutionMode();
-  const sourcePublicKey = agentKeypair?.publicKey() || process.env.SOROBAN_PUBLIC_KEY;
+  const keypair = options.agentKeypair ?? agentKeypair;
+  const sourcePublicKey = keypair?.publicKey() || process.env.SOROBAN_PUBLIC_KEY;
 
   try {
     let tx: ReturnType<TransactionBuilder['build']> | undefined;
     let simulation: Awaited<ReturnType<typeof server.simulateTransaction>> | undefined;
     const ensureTx = async () => {
       if (!tx) {
-        if (!VAULT_CONTRACT_ID) throw new Error('VAULT_CONTRACT_ID is not configured');
+        const contractId = options.vaultContractId ?? VAULT_CONTRACT_ID;
+        if (!contractId) throw new Error('VAULT_CONTRACT_ID is not configured');
         if (!sourcePublicKey) throw new Error('SOROBAN_PUBLIC_KEY or SOROBAN_SECRET_KEY is required');
         const account = await loadAccount(sourcePublicKey);
-        const contract = new Contract(VAULT_CONTRACT_ID);
+        const contract = new Contract(contractId);
         const op = contract.call(method, ...args);
         tx = new TransactionBuilder(account, { fee: String(TX_INCLUSION_FEE), networkPassphrase })
           .addOperation(op)
@@ -95,12 +101,12 @@ async function submitVaultTransaction(
         if (!simulation || rpc.Api.isSimulationError(simulation)) {
           throw new Error('A successful simulation is required before signing');
         }
-        if (!agentKeypair) throw new Error('SOROBAN_SECRET_KEY is required in live mode');
+        if (!keypair) throw new Error('SOROBAN_SECRET_KEY is required in live mode');
         // Use resource fee from simulation and add inclusion fee
         const resourceFee = Number(simulation.minResourceFee) || 0;
         const _totalFee = resourceFee + TX_INCLUSION_FEE;
         const signedTx = rpc.assembleTransaction(unsignedTx, simulation).build();
-        signedTx.sign(agentKeypair);
+        signedTx.sign(keypair);
         const txHash = signedTx.hash().toString('hex');
         return {
           txHash,
@@ -247,6 +253,23 @@ export async function submitRebalanceTx(
 
   const args = buildRebalanceArgs(agentPublicKey, targetProtocol, expectedApyBps);
   return submitVaultTransaction('rebalance', args, options);
+}
+
+/**
+ * Submits the vault's `process_withdrawal_queue(agent, batch_size)` entrypoint,
+ * fulfilling queued withdrawal requests.
+ */
+export async function submitProcessWithdrawalQueueTx(
+  vaultContractId: string,
+  agentKeypair: Keypair,
+  batchSize: number,
+  options: VaultSubmissionOptions = {},
+): Promise<OperationResult> {
+  const args = [
+    new Address(agentKeypair.publicKey()).toScVal(),
+    nativeToScVal(batchSize, { type: 'u32' }),
+  ];
+  return submitVaultTransaction('process_withdrawal_queue', args, { ...options, agentKeypair, vaultContractId });
 }
 
 /**
