@@ -16,6 +16,11 @@ CREATE TABLE IF NOT EXISTS whatsapp_otps (
 CREATE INDEX IF NOT EXISTS idx_whatsapp_otps_expires_at_ms
     ON whatsapp_otps (expires_at_ms);
 
+ALTER TABLE whatsapp_otps ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY whatsapp_otps_service_role_all ON whatsapp_otps
+    AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);
+
 -- Conversation sessions (state machine position + per-phone rate-limit window).
 -- Holds no secrets; the phone number is only ever present as a salted hash.
 CREATE TABLE IF NOT EXISTS whatsapp_sessions (
@@ -29,6 +34,11 @@ CREATE TABLE IF NOT EXISTS whatsapp_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_last_message_ms
     ON whatsapp_sessions (last_message_ms);
+
+ALTER TABLE whatsapp_sessions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY whatsapp_sessions_service_role_all ON whatsapp_sessions
+    AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 -- Envelope encryption: each wallet secret (encrypted_data/iv/tag) is encrypted
 -- with its own random data key; the data key is wrapped by a key-encryption

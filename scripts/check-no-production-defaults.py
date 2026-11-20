@@ -16,6 +16,7 @@ CHECKS = {
     "whatsapp/src/twilioSignature.ts": ("TWILIO_AUTH_TOKEN",),
     "frontend/src/lib/stellar.ts": ("NEXT_PUBLIC_VAULT_CONTRACT_ID",),
     "whatsapp/src/vaultRouter.ts": ("VAULT_CONTRACT_ID",),
+    "db/client.ts": ("DATABASE_URL",),
 }
 
 # Entry points that must run the shared boot-time env validation (#945). Each

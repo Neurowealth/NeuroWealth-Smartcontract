@@ -25,3 +25,8 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_message_deliveries_status
 
 CREATE INDEX IF NOT EXISTS idx_whatsapp_message_deliveries_phone_hash
     ON whatsapp_message_deliveries (phone_hash);
+
+ALTER TABLE whatsapp_message_deliveries ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY whatsapp_message_deliveries_service_role_all ON whatsapp_message_deliveries
+    AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);
