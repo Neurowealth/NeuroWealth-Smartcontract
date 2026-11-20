@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::utils::*;
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env};
 
 #[allow(clippy::too_many_arguments)]
 fn assert_withdrawal_state(
@@ -331,4 +331,106 @@ fn test_queue_withdrawal_accepts_exact_full_balance_with_multiple_holders() {
     let req_id = client.queue_withdrawal(&user_b, &full_balance_b);
     let req = client.get_withdrawal_request(&req_id);
     assert_eq!(req.amount, full_balance_b);
+}
+
+// ── #1089: queued withdrawals reserve shares against locking and spending ────
+//
+// `queue_withdrawal` only reserves *assets*; the shares backing a request stay
+// in the user's balance. `lock_shares` (and the direct withdrawal paths) used
+// to ignore that reservation, so a user could queue a withdrawal and then lock
+// or spend the same shares. When the queue reached the head request,
+// `burn_and_pay` rejected the burn and the panic aborted the whole batch.
+
+/// Regression test (#1089): shares reserved by a queued request cannot be
+/// locked, and a lock on the unreserved remainder does not block the payout.
+#[test]
+fn test_lock_shares_cannot_lock_shares_reserved_by_queue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+    let deposit = 1_000_0000000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
+    client.set_queue_config(&10u32, &3600u64);
+    // Clear the default 120-ledger MinHoldingPeriod so payouts can run (#975).
+    env.ledger().set_sequence_number(200u32);
+
+    let request_id = client.queue_withdrawal(&user, &900_0000000_i128);
+
+    // The request reserves 900 USDC worth of shares; locking either the
+    // reserved amount or the full balance would strand it.
+    assert!(client
+        .try_lock_shares(&user, &900_0000000_i128, &30u32)
+        .is_err());
+    assert!(client.try_lock_shares(&user, &deposit, &30u32).is_err());
+    assert_eq!(client.get_locked_shares(&user), (0, 0));
+
+    // Only the unreserved remainder can be locked.
+    client.lock_shares(&user, &100_0000000_i128, &30u32);
+    assert_eq!(client.get_locked_shares(&user).0, 100_0000000_i128);
+
+    // The queued request still pays out; the partial lock does not block it.
+    assert_eq!(client.process_withdrawal_queue(&agent, &10u32), 1);
+    assert!(client.try_get_withdrawal_request(&request_id).is_err());
+    assert_eq!(token.balance(&user), 900_0000000_i128);
+    assert_eq!(client.get_shares(&user), 100_0000000_i128);
+}
+
+/// Regression test (#1089): a direct withdrawal cannot spend shares that back
+/// a pending queue request, and the request still fulfils afterwards.
+#[test]
+fn test_withdraw_cannot_spend_shares_reserved_by_queue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+    let deposit = 1_000_0000000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
+    client.set_queue_config(&10u32, &3600u64);
+    // Clear the default 120-ledger MinHoldingPeriod so payouts can run (#975).
+    env.ledger().set_sequence_number(200u32);
+
+    let request_id = client.queue_withdrawal(&user, &900_0000000_i128);
+
+    // 100 USDC of the balance is still free; anything beyond that would eat
+    // into the shares the queued request depends on.
+    assert!(client.try_withdraw(&user, &150_0000000_i128).is_err());
+    client.withdraw(&user, &50_0000000_i128);
+    assert_eq!(client.get_shares(&user), 950_0000000_i128);
+
+    assert_eq!(client.process_withdrawal_queue(&agent, &10u32), 1);
+    assert!(client.try_get_withdrawal_request(&request_id).is_err());
+    assert_eq!(client.get_shares(&user), 50_0000000_i128);
+    assert_eq!(token.balance(&user), 950_0000000_i128);
+}
+
+/// Regression test (#1089): `withdraw_all` redeems only the unreserved shares
+/// and leaves the queued request's shares in place for the queue to pay.
+#[test]
+fn test_withdraw_all_keeps_shares_reserved_by_queue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+    let deposit = 1_000_0000000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
+    client.set_queue_config(&10u32, &3600u64);
+    // Clear the default 120-ledger MinHoldingPeriod so payouts can run (#975).
+    env.ledger().set_sequence_number(200u32);
+
+    let request_id = client.queue_withdrawal(&user, &200_0000000_i128);
+
+    assert_eq!(client.withdraw_all(&user), 800_0000000_i128);
+    assert_eq!(client.get_shares(&user), 200_0000000_i128);
+
+    assert_eq!(client.process_withdrawal_queue(&agent, &10u32), 1);
+    assert!(client.try_get_withdrawal_request(&request_id).is_err());
+    assert_eq!(client.get_shares(&user), 0);
+    assert_eq!(token.balance(&user), deposit);
 }
