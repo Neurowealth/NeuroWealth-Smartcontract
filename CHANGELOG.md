@@ -10,7 +10,14 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
-- **Deprecate `set_limits` (Issue #991; no behavior change):** `set_limits` is
+- **Fix `queue_withdrawal` divide-by-zero (Issue #1090):** when shares exist but
+  `TotalAssets` is zero (reachable after an owner-cosigned write-down),
+  `queue_withdrawal` now fails with `VaultError::NoAssetsToWithdraw` (code 9)
+  instead of aborting on a raw division by zero. No new error code.
+- **Fix `emergency_harvest` in multi-protocol mode (Issue #1091):** when
+  `CurrentProtocol` is `"multi"`, the withdrawn amount is now re-supplied to Blend
+  and the DEX by the stored allocation, mirroring `harvest`. Previously both venues
+  were fully exited and nothing was re-supplied, leaving all funds idle.- **Deprecate `set_limits` (Issue #991; no behavior change):** `set_limits` is
   marked `#[deprecated]` in favor of `set_caps` (or `set_tvl_cap`/
   `set_user_deposit_cap`/`set_deposit_limits` individually), which use
   clearer parameter names and a consistent `panic_with_error!` convention
