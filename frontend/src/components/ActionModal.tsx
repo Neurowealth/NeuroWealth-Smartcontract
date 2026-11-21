@@ -35,9 +35,10 @@ const RPC_URL =
 const NETWORK_PASSPHRASE =
   process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE ||
   "Test SDF Network ; September 2015";
-const VAULT_CONTRACT_ID =
-  process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID ||
-  "CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T";
+// No hard-coded fallback: using an unknown contract would silently operate on
+// the wrong vault. The modal disables itself and surfaces an error when this
+// env var is absent, matching the guard in stellar.ts.
+const VAULT_CONTRACT_ID = process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID ?? null;
 
 type TxErrorKind =
   | Exclude<WalletErrorKind, "user_rejected">
@@ -151,6 +152,15 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     if (!userPublicKey || numAmount <= 0 || activeSubmissions.current[type])
       return;
 
+    // Guard: refuse to submit without a known contract ID (#1098)
+    if (!VAULT_CONTRACT_ID) {
+      setTxError({
+        kind: "submission_failed",
+        message: t("submissionFailed"),
+      });
+      return;
+    }
+
     const actionType = type;
     const requestId = crypto.randomUUID();
     activeSubmissions.current[actionType] = requestId;
@@ -161,9 +171,19 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
     setTxSuccess(false);
     setTxError(null);
-    let canRetry = false;
     let submissionStarted = false;
     let optimisticBalanceDelta = 0;
+
+    // Helper: clear the submission lock for this request.
+    const clearLock = () => {
+      if (activeSubmissions.current[actionType] === requestId) {
+        activeSubmissions.current[actionType] = null;
+        setSubmissions((current) => ({
+          ...current,
+          [actionType]: { phase: "idle", requestId: null },
+        }));
+      }
+    };
 
     try {
       const amountInBaseUnits = BigInt(Math.round(numAmount * 1e7));
@@ -208,7 +228,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         if (err instanceof WalletSigningError && err.kind === "user_rejected") {
           // A cancelled signature is a normal, recoverable state: reset quietly
           // and never fabricate a failure transaction hash for it.
-          canRetry = true;
+          clearLock();
           return;
         }
         const kind =
@@ -222,7 +242,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
           unknown: t("transactionFailed"),
         };
         setTxError({ kind, message: errorMessages[kind] });
-        canRetry = true;
+        clearLock();
         return;
       }
 
@@ -245,7 +265,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
           kind: "submission_failed",
           message: t("submissionFailed"),
         });
-        canRetry = true;
+        clearLock();
         return;
       }
 
@@ -263,7 +283,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
       if (confirmation.status === "SUCCESS") {
         setTxSuccess(true);
-        canRetry = true;
+        clearLock();
         onTransactionConfirmed?.();
       } else if (confirmation.status === "FAILED") {
         onOptimisticBalanceChange?.(-optimisticBalanceDelta);
@@ -271,20 +291,17 @@ export const ActionModal: React.FC<ActionModalProps> = ({
           kind: "submission_failed",
           message: t("submissionFailed"),
         });
-        canRetry = true;
+        clearLock();
       }
     } catch (err) {
       console.error("Transaction execution failed:", err);
-      setTxError({ kind: "unknown", message: t("transactionFailed") });
-      canRetry = !submissionStarted;
-    } finally {
-      if (canRetry && activeSubmissions.current[actionType] === requestId) {
-        activeSubmissions.current[actionType] = null;
-        setSubmissions((current) => ({
-          ...current,
-          [actionType]: { phase: "idle", requestId: null },
-        }));
+      // Roll back any optimistic balance delta applied before the throw.
+      if (submissionStarted && optimisticBalanceDelta !== 0) {
+        onOptimisticBalanceChange?.(-optimisticBalanceDelta);
       }
+      setTxError({ kind: "unknown", message: t("transactionFailed") });
+      // Always clear the lock so the button is never permanently disabled (#1099).
+      clearLock();
     }
   };
 
@@ -301,13 +318,17 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   };
 
   const handleResetAndClose = () => {
-    if (!loading) {
-      setAmount("");
-      setTxSuccess(false);
-      setTxHash("");
-      setTxError(null);
-    }
-
+    // Always reset state when closing, even if a submission was in progress,
+    // so reopening the modal starts fresh (#1099).
+    activeSubmissions.current[type] = null;
+    setSubmissions((current) => ({
+      ...current,
+      [type]: { phase: "idle", requestId: null },
+    }));
+    setAmount("");
+    setTxSuccess(false);
+    setTxHash("");
+    setTxError(null);
     onClose();
   };
 
@@ -495,6 +516,16 @@ export const ActionModal: React.FC<ActionModalProps> = ({
                 </div>
               </div>
 
+              {!VAULT_CONTRACT_ID && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-xl p-3 mb-4"
+                >
+                  <ShieldAlert size={16} className="shrink-0 mt-0.5" />
+                  <p>{t("vaultNotConfigured")}</p>
+                </div>
+              )}
+
               {txError && (
                 <div
                   role="alert"
@@ -556,7 +587,7 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
               <button
                 type="submit"
-                disabled={loading || numAmount <= 0}
+                disabled={loading || numAmount <= 0 || !VAULT_CONTRACT_ID}
                 data-client-request-id={submission.requestId ?? undefined}
                 className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-3.5 rounded-xl transition-all shadow-glow-emerald disabled:opacity-50 disabled:cursor-not-allowed"
               >
