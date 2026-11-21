@@ -376,11 +376,44 @@ jobs:
 
               # Validate storage layout compatibility gate
               mkdir -p scripts/e2e-artifacts
-              python3 scripts/check-storage-layout.py \
-                "$WASM_FILE" \
-                "$WASM_FILE" \
-                --migration-doc docs/UPGRADE_MIGRATION.md \
-                --output scripts/e2e-artifacts/storage_layout_diff.txt
+              BASELINE_WASM=""
+              if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && git rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+                BASELINE_WORKTREE="$RUNNER_TEMP/baseline-repo"
+                mkdir -p "$BASELINE_WORKTREE"
+                git archive "origin/$BASE_BRANCH" neurowealth-vault | tar -x -C "$BASELINE_WORKTREE"
+                if [ -d "$BASELINE_WORKTREE/neurowealth-vault" ]; then
+                  echo "Building baseline WASM from origin/$BASE_BRANCH..."
+                  (
+                    cd "$BASELINE_WORKTREE/neurowealth-vault"
+                    RUSTFLAGS="-C target-cpu=mvp" cargo build \
+                      -p neurowealth-vault \
+                      --target wasm32-unknown-unknown \
+                      --release \
+                      --target-dir "$RUNNER_TEMP/baseline-target"
+                  ) || true
+                  BASELINE_CANDIDATE="$RUNNER_TEMP/baseline-target/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+                  if [ -f "$BASELINE_CANDIDATE" ]; then
+                    wasm-opt --strip-target-features "$BASELINE_CANDIDATE" -o "$BASELINE_CANDIDATE" || true
+                    BASELINE_WASM="$BASELINE_CANDIDATE"
+                  fi
+                fi
+              fi
+
+              if [ -n "$BASELINE_WASM" ] && [ -f "$BASELINE_WASM" ]; then
+                echo "Running storage layout compatibility gate against baseline WASM..."
+                python3 scripts/check-storage-layout.py \
+                  "$BASELINE_WASM" \
+                  "$WASM_FILE" \
+                  --migration-doc docs/UPGRADE_MIGRATION.md \
+                  --output scripts/e2e-artifacts/storage_layout_diff.txt
+              else
+                echo "No baseline WASM available. Inspecting candidate WASM DataKey schema..."
+                python3 scripts/check-storage-layout.py \
+                  "$WASM_FILE" \
+                  "$WASM_FILE" \
+                  --allow-identical \
+                  --output scripts/e2e-artifacts/storage_layout_diff.txt
+              fi
 
               # Export the WASM path for the artifact upload step.
               echo "WASM_FILE=$WASM_FILE" >> "$GITHUB_ENV"

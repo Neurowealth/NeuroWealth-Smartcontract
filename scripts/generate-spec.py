@@ -575,9 +575,9 @@ FUNCTION_METADATA = {
     },
     "touch_user_ttl": {
         "category": "maintenance",
-        "access": "public",
+        "access": "user",
         "description": "Extend persistent TTL for user shares entry with a per-user rate limit",
-        "requires_auth": False,
+        "requires_auth": True,
         "state_changing": True,
         "storage_type": "mixed",
         "query_only": False

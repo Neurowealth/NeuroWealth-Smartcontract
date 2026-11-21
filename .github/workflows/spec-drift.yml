@@ -26,11 +26,16 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Validate checked-in spec
+        run: |
+          echo "Validating checked-in contract-spec.json..."
+          python3 scripts/validate-spec.py
+
       - name: Generate fresh contract spec
         run: |
           python3 scripts/generate-spec.py
 
-      - name: Validate spec
+      - name: Validate regenerated spec
         run: |
           python3 scripts/validate-spec.py
 

@@ -838,177 +838,91 @@ export interface QueueConfigUpdatedEvent {
 
 /** Numeric error codes returned by the NeuroWealth Vault contract. */
 export const VaultErrorCode = {
-  /** Vault has already been initialized. */
   AlreadyInitialized: 4,
-  /** Initializer is not the expected deployer. */
   UnauthorizedDeployer: 5,
-  /** Minted shares must be positive. */
   SharesToMintMustBePositive: 6,
-  /** Vault has no liquidity for the requested withdrawal. */
   InsufficientLiquidity: 7,
-  /** User has insufficient shares. */
   InsufficientShares: 8,
-  /** Vault has no assets to withdraw. */
   NoAssetsToWithdraw: 9,
-  /** Burned shares must be positive. */
   SharesToBurnMustBePositive: 10,
-  /** User has insufficient shares for the requested amount. */
   InsufficientSharesForAmount: 11,
-  /** User has no shares to withdraw. */
   NoSharesToWithdraw: 12,
-  /** Vault has no liquidity available. */
   NoLiquidityAvailable: 13,
-  /** Vault has no assets to return. */
   NoAssetsToReturn: 14,
-  /** Vault has no shares to burn. */
   NoSharesToBurn: 15,
-  /** min_out must be non-negative. */
   MinOutMustBeNonNegative: 16,
-  /** Protocol is not supported. */
   UnsupportedProtocol: 17,
-  /** Blend pool is not configured. */
   BlendPoolNotConfigured: 18,
-  /** Caller is not allowed to pause. */
   OnlyOwnerCanPause: 19,
-  /** Caller is not allowed to unpause. */
   OnlyOwnerCanUnpause: 20,
-  /** Vault is not paused. */
   NotPaused: 21,
-  /** Caller is not allowed to emergency pause. */
   OnlyOwnerCanEmergencyPause: 22,
-  /** TVL cap cannot be negative. */
   TvlCapCannotBeNegative: 23,
-  /** User deposit cap cannot be negative. */
   UserDepositCapCannotBeNegative: 24,
-  /** TVL cap must be greater than or equal to user deposit cap. */
   TvlCapBelowUserDepositCap: 25,
-  /** Caller is not allowed to configure a protocol pool. */
   OnlyOwnerCanConfigurePool: 28,
-  /** Caller is not the pending owner (or no pending ownership transfer exists). */
   CallerIsNotPendingOwner: 29,
-  /** Caller is not allowed to update total assets. */
   OnlyAgentCanUpdateTotalAssets: 30,
-  /** Total assets decrease requires explicit allowance. */
   TotalAssetsDecreaseNotAllowed: 31,
-  /** Total assets decrease exceeds configured maximum bps. */
   DecreaseExceedsMaximumAllowedBps: 32,
-  /** Vault balance is insufficient for reported assets. */
   InsufficientBalanceForAssets: 33,
-  /** Caller is not the owner. */
   CallerIsNotOwner: 34,
-  /** Vault is paused. */
   Paused: 35,
-  /** Vault is not initialized. */
   NotInitialized: 36,
-  /** Amount must be positive. */
   AmountMustBePositive: 37,
-  /** Deposit is below the configured minimum. */
   BelowMinimumDeposit: 38,
-  /** Deposit exceeds the configured maximum. */
   MaximumDepositExceeded: 39,
-  /** Deposit exceeds user cap. */
   ExceedsUserDepositCap: 40,
-  /** Deposit exceeds TVL cap. */
   ExceedsTvlCap: 41,
-  /** A protocol leg returned less than min_out. */
   MinOutNotMet: 42,
-  /** Rebalance called before the configured cooldown has elapsed. */
   RebalanceCooldownActive: 43,
-  /** Approval TTL is below the allowed floor. */
   ApprovalTtlTooLow: 44,
-  /** Approval TTL is above the allowed ceiling. */
   ApprovalTtlTooHigh: 45,
-  /** DEX liquidity pool is not configured. */
   DexPoolNotConfigured: 46,
-  /** Strategy must be one of "conservative", "balanced", or "growth". */
   InvalidStrategy: 47,
-  /** A timelocked proposal (agent update or upgrade) is already pending.  Shared by the agent timelock (#317) and the upgrade timelock (#316). The SDK caps `#[contracterror]` enums at 50 cases, so both two-step flows reuse one set of generic timelock error codes rather than each defining their own. */
   TimelockAlreadyPending: 48,
-  /** No timelocked proposal exists to confirm/execute or cancel. */
   NoTimelockPending: 49,
-  /** The timelock delay has not yet elapsed. */
   TimelockNotExpired: 50,
-  /** Deployer address supplied to `initialize` is the zero address. */
   DeployerCannotBeZeroAddress: 62,
-  /** Owner address supplied to `initialize` is the zero address. */
   OwnerCannotBeZeroAddress: 63,
-  /** Agent address supplied to `initialize` is the zero address. */
   AgentCannotBeZeroAddress: 64,
-  /** USDC token address supplied to `initialize` is the zero address. */
   UsdcTokenCannotBeZeroAddress: 65,
-  /** Maximum per-transaction deposit exceeds the absolute configured ceiling. */
   MaximumDepositExceedsCeiling: 66,
-  /** Migration is paused by the owner. */
   MigrationPaused: 67,
-  /** Migration target vault address is not set by owner. */
   InvalidMigrationTarget: 68,
-  /** User has no shares to migrate. */
   NoSharesToMigrate: 69,
-  /** Shares are already locked. */
   SharesAlreadyLocked: 70,
-  /** Lock period has not ended. */
   LockPeriodNotEnded: 71,
-  /** Lock duration is not supported. */
   InvalidLockDuration: 72,
-  /** Insufficient unlocked shares to lock. */
   InsufficientUnlockedShares: 73,
-  /** Emergency withdrawal not allowed (vault not paused). */
   EmergencyWithdrawalNotAllowed: 74,
-  /** Withdrawal rejected: minimum holding period since last deposit has not elapsed (#659). */
   HoldingPeriodNotElapsed: 75,
-  /** Holding period configuration is invalid (must be non-negative) (#659). */
   InvalidHoldingPeriod: 76,
-  /** Multi-protocol allocation is invalid: a leg is out of the 0..=10_000 basis-point range, or the legs sum to more than 10_000. */
   InvalidAllocation: 77,
-  /** The call requires multi-protocol allocation mode, which is not enabled. */
   MultiProtocolNotEnabled: 78,
-  /** The call requires single-protocol mode, but multi-protocol mode is active. */
   MultiProtocolEnabledError: 79,
-  /** A batch contains more entries than the configured maximum. */
   BatchSizeExceeded: 80,
-  /** No adapter contract is configured for the requested protocol (#656). */
   ProtocolAdapterNotConfigured: 81,
-  /** The requested protocol is not on the owner-managed whitelist (#656). */
   ProtocolNotWhitelisted: 82,
-  /** The token is not configured for the requested vault asset operation. */
   UnsupportedAsset: 83,
-  /** The configured call rate for an operation has been exhausted. */
   RateLimitExceeded: 84,
-  /** The owner supplied an unsupported rate-limit category. */
   InvalidRateLimitCategory: 85,
-  /** A rate-limit window must be non-zero when a limit is enabled. */
   InvalidRateLimitConfig: 86,
-  /** The withdrawal request has already been fulfilled. */
   WithdrawalRequestAlreadyFulfilled: 87,
-  /** The withdrawal request has already been cancelled. */
   WithdrawalRequestAlreadyCancelled: 88,
-  /** The caller is not the address that created this withdrawal request. */
   NotRequestOwner: 89,
-  /** The caller is neither the primary agent nor the standby agent (#653). */
-  UnauthorizedAgentError: 90,
-  /** `pause()` was called while the vault is already paused (#988). */
+  LegacyUnauthorizedAgentError: 90,
   AlreadyPaused: 91,
-  /** `update_standby_agent` was called with the primary agent's own address. Neither `NotInitialized` nor `InvalidStrategy` (the two variants this call site used interchangeably before) describes this case; both are unrelated error conditions reused by mistake. */
   StandbyMatchesPrimaryAgent: 92,
-  /** The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead. */
   DepositRejectedZeroAssetsWithShares: 93,
-  /** General validation error */
   ValidationError: 100,
-  /** Vault is paused, deposits and withdrawals disabled */
   PausedError: 101,
-  /** Only authorized AI agent can call this function */
   UnauthorizedAgentError: 102,
-  /** Only contract owner can call this function */
   UnauthorizedOwnerError: 103,
-  /** User has insufficient balance for withdrawal */
   InsufficientBalanceError: 104,
-  /** Amount is invalid (zero, negative, or outside limits) */
   InvalidAmountError: 105,
-  /** User deposit cap exceeded */
   DepositCapExceededError: 106,
-  /** Total value locked cap exceeded */
   TvlCapExceededError: 107,
-  /** Output less than minimum expected (slippage protection) */
   SlippageError: 108,
 } as const;
 
@@ -1460,6 +1374,54 @@ export class VaultClient {
   async get_protocol_breakdown(sourcePublicKey: string): Promise<unknown> {
     const args: StellarSdk.xdr.ScVal[] = [];
     return this.simulate<unknown>('get_protocol_breakdown', args, sourcePublicKey);
+  }
+
+  /**
+   * Function set_protocol_adapter
+   * @param owner
+   * @param protocol
+   * @param adapter
+   */
+  async set_protocol_adapter(signer: StellarSdk.Keypair, owner: string, protocol: string, adapter: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal(), nativeToScVal(protocol, { type: 'symbol' }), new StellarSdk.Address(adapter).toScVal()];
+    return this.invoke<void>('set_protocol_adapter', args, signer);
+  }
+
+  /**
+   * Function get_protocol_adapter
+   * @param protocol
+   */
+  async get_protocol_adapter(protocol: string, sourcePublicKey: string): Promise<string | null> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' })];
+    return this.simulate<string | null>('get_protocol_adapter', args, sourcePublicKey);
+  }
+
+  /**
+   * Function set_protocol_whitelisted
+   * @param owner
+   * @param protocol
+   * @param enabled
+   */
+  async set_protocol_whitelisted(signer: StellarSdk.Keypair, owner: string, protocol: string, enabled: boolean): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal(), nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(enabled, { type: 'bool' })];
+    return this.invoke<void>('set_protocol_whitelisted', args, signer);
+  }
+
+  /**
+   * Function get_protocol_whitelisted
+   * @param protocol
+   */
+  async get_protocol_whitelisted(protocol: string, sourcePublicKey: string): Promise<boolean> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' })];
+    return this.simulate<boolean>('get_protocol_whitelisted', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_protocol_whitelist
+   */
+  async get_protocol_whitelist(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_protocol_whitelist', args, sourcePublicKey);
   }
 
   /**
