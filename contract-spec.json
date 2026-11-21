@@ -538,6 +538,113 @@
       "state_changing": false
     },
     {
+      "name": "set_protocol_adapter",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_protocol_adapter",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "adapter",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_protocol_adapter",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_adapter",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "Option<Address>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_protocol_whitelisted",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_protocol_whitelisted",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_protocol_whitelisted",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_whitelisted",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_protocol_whitelist",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_whitelist",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Vec<Symbol>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "set_protocol_apy",
       "category": "management",
       "access": "agent-only",
@@ -2368,6 +2475,29 @@
       "state_changing": true,
       "storage_type": "mixed",
       "query_only": false
+    },
+    {
+      "name": "touch_user_asset_ttl",
+      "category": "management",
+      "access": "public",
+      "description": "Function touch_user_asset_ttl",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": true,
+      "state_changing": false
     },
     {
       "name": "get_user_info",
