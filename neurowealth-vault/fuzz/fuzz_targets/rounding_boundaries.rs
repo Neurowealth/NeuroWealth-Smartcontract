@@ -201,8 +201,8 @@ fuzz_target!(|data: &[u8]| {
                     }
 
                     let amount = match raw % 4 {
-                        0 => 1, // Withdraw just 1 stroop
-                        1 => balance, // Withdraw all
+                        0 => 1,           // Withdraw just 1 stroop
+                        1 => balance,     // Withdraw all
                         2 => balance - 1, // Withdraw all but 1
                         _ => (i128::from(raw) % balance) + 1,
                     };

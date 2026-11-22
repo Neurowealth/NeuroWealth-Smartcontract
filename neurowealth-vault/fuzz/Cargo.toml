@@ -60,3 +60,9 @@ name = "user_strategy"
 path = "fuzz_targets/user_strategy.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "harvest_sequence"
+path = "fuzz_targets/harvest_sequence.rs"
+test = false
+doc = false

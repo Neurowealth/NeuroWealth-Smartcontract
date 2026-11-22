@@ -13,7 +13,7 @@ const RETRY_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
 export class BridgeMonitor {
   private logger = pino();
-  private monitoringInterval: NodeJS.Timer | null = null;
+  private monitoringInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private bridgeManager: BridgeManager,
@@ -22,6 +22,11 @@ export class BridgeMonitor {
 
   async start(): Promise<void> {
     this.logger.info("Starting bridge monitor");
+
+    // #848 - Rebuild the in-memory view from durable state first: after a
+    // restart the manager only knows about transfers it can read back from
+    // the store, otherwise the first polling pass would see nothing to do.
+    await this.bridgeManager.loadDurableState();
 
     // Poll every minute
     this.monitoringInterval = setInterval(() => {
@@ -134,7 +139,8 @@ export class BridgeMonitor {
     let confirmedCount = 0;
 
     for (const transfer of Array.from(
-      this.store["transfers"]?.values?.() || [],
+      (this.store as unknown as { transfers?: Map<string, StoredBridgeTransfer> })
+        .transfers?.values() ?? [],
     ) as StoredBridgeTransfer[]) {
       if (transfer.status === "confirmed" && transfer.estimatedArrivalTime) {
         totalTime += transfer.estimatedArrivalTime - transfer.createdAt;

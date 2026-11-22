@@ -9,14 +9,14 @@ fn test_agent_can_update_total_assets() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let token_client = TestTokenClient::new(&env, &usec_token);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
 
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     // Simulate yield: mint tokens to vault first so balance check passes
     let yield_amount = 5_000_000_i128;
@@ -34,12 +34,12 @@ fn test_non_agent_cannot_update_total_assets() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     let non_agent = Address::generate(&env);
     // update_total_assets asserts agent == stored_agent before anything else
@@ -51,13 +51,13 @@ fn test_yield_increases_user_asset_balance() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let token_client = TestTokenClient::new(&env, &usec_token);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     let balance_before_yield = client.get_balance(&user);
     assert_eq!(balance_before_yield, deposit_amount);
@@ -84,17 +84,17 @@ fn test_yield_distributed_proportionally_between_users() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let token_client = TestTokenClient::new(&env, &usec_token);
 
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
     let deposit1 = 10_000_000_i128;
     let deposit2 = 5_000_000_i128;
 
-    mint_and_deposit(&env, &client, &usdc_token, &user1, deposit1);
-    mint_and_deposit(&env, &client, &usdc_token, &user2, deposit2);
+    mint_and_deposit(&env, &client, &usec_token, &user1, deposit1);
+    mint_and_deposit(&env, &client, &usec_token, &user2, deposit2);
 
     let total_deposits = deposit1 + deposit2;
 
@@ -107,8 +107,8 @@ fn test_yield_distributed_proportionally_between_users() {
     let balance1_after = client.get_balance(&user1);
     let balance2_after = client.get_balance(&user2);
 
-    // User1 has 2/3 of total shares → gets 2/3 of new_total_assets
-    // User2 has 1/3 of total shares → gets 1/3 of new_total_assets
+    // User1 has 2/3 of total shares ↀ gets 2/3 of new_total_assets
+    // User2 has 1/3 of total shares ↀ gets 1/3 of new_total_assets
     let expected_balance1 = deposit1 + (yield_amount * 2) / 3;
     let expected_balance2 = deposit2 + yield_amount / 3;
 
@@ -134,13 +134,13 @@ fn test_yield_emits_event() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
-    let token_client = TestTokenClient::new(&env, &usdc_token);
+    let token_client = TestTokenClient::new(&env, &usec_token);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     let yield_amount = 5_000_000_i128;
     let new_total = deposit_amount + yield_amount;
@@ -148,18 +148,25 @@ fn test_yield_emits_event() {
     client.update_total_assets(&agent, &new_total, &false, &0);
 
     let assets_events = find_events_by_topic(env.events().all(), &env, TOPIC_ASSETS_UPDATED);
-    assert_eq!(assets_events.len(), 1, "Exactly one assets event should be emitted");
+    assert_eq!(
+        assets_events.len(),
+        1,
+        "Exactly one assets event should be emitted"
+    );
 
     let (_, _, data) = &assets_events[0];
-    let event = AssetsUpdatedEvent::try_from_val(&env, data)
-        .expect("Should be a valid AssetsUpdatedEvent");
-    assert_eq!(event.old_total, deposit_amount, "old_total should be the deposit amount");
+    let event =
+        AssetsUpdatedEvent::try_from_val(&env, data).expect("Should be a valid AssetsUpdatedEvent");
+    assert_eq!(
+        event.old_total, deposit_amount,
+        "old_total should be the deposit amount"
+    );
     assert_eq!(event.new_total, new_total, "new_total should reflect yield");
 }
 
-// ============================================================================
+// ==================================================================================
 // LOSS REPORTING — ALLOWED DECREASE
-// ============================================================================
+// ==================================================================================
 
 /// Agent + owner both present: a decrease within the cap succeeds and the new
 /// (lower) total is persisted.
@@ -168,12 +175,12 @@ fn test_decrease_allowed_with_owner_cosign_within_cap() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128; // 10 USDC
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     // Loss of 5% — within default 10% cap.
     let loss_amount = 500_000_i128; // 0.5 USDC
@@ -191,12 +198,12 @@ fn test_decrease_blocked_exceeding_cap() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     // 20% loss (2 USDC) with a 10% cap (1000 bps) — must panic.
     let new_total = deposit_amount - 2_000_000_i128;
@@ -211,12 +218,12 @@ fn test_decrease_blocked_without_allow_decrease_flag() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     // allow_decrease=false but new_total is lower — must panic.
     let new_total = deposit_amount - 500_000_i128;
@@ -230,14 +237,24 @@ fn test_no_change_does_not_require_owner_cosign() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usec_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
-    mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
+    mint_and_deposit(&env, &client, &usec_token, &user, deposit_amount);
 
     // Same total — no decrease path, no owner co-sign needed.
     client.update_total_assets(&agent, &deposit_amount, &false, &0);
     assert_eq!(client.get_total_assets(), deposit_amount);
 }
+
+// ==================================================================================
+// AUTO-COMPOUND — REINVEST YIELD
+// =================================================================================
+//
+// NOTE: There is no `auto_compound` entry point in this contract. Yield is
+// reported via `update_total_assets` called by the agent; there is no
+// separate "withdraw yield, re-deposit it" step. The 3 tests that used to
+// live here called a function that was never implemented and have been
+// removed rather than left broken.

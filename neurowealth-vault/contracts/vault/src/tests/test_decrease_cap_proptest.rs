@@ -32,11 +32,13 @@ use proptest::prelude::*;
 // Pure-math helpers — mirror the exact formulas from lib.rs
 // ---------------------------------------------------------------------------
 
-/// Computes the effective cap bps with the 100 bps floor.
+/// Computes the effective cap bps with the 100 bps floor and 10_000 bps
+/// ceiling.
 ///
-/// From lib.rs line 3245: `let effective_cap_bps = max_decrease_bps.max(100);`
+/// From lib.rs's `update_total_assets`:
+/// `let effective_cap_bps = max_decrease_bps.clamp(100, Self::BPS_DENOMINATOR);`
 fn effective_cap_bps(max_decrease_bps: u32) -> u32 {
-    max_decrease_bps.max(100)
+    max_decrease_bps.clamp(100, 10_000)
 }
 
 /// Computes the maximum allowed decrease amount.
@@ -45,9 +47,9 @@ fn effective_cap_bps(max_decrease_bps: u32) -> u32 {
 /// ```rust
 /// let max_decrease = old_total
 ///     .checked_mul(effective_cap_bps as i128)
-///     .expect("vault: max decrease mul overflow")
+///     .expect("vault: total available overflow")
 ///     .checked_div(10_000)
-///     .expect("vault: max decrease div overflow");
+///     .expect("vault: total available overflow");
 /// ```
 fn max_decrease(old_total: i128, max_decrease_bps: u32) -> Option<i128> {
     let cap = effective_cap_bps(max_decrease_bps) as i128;
@@ -197,7 +199,7 @@ proptest! {
     ) {
         let max_dec = match max_decrease(old_total, max_decrease_bps) {
             Some(d) => d,
-            None => return, // Skip overflow cases
+            None => return Ok(()), // Skip overflow cases
         };
 
         // Compute a new_total that may or may not be allowed
@@ -225,7 +227,7 @@ proptest! {
         max_decrease_bps in 0u32..=10_000,
     ) {
         let result = max_decrease(old_total, max_decrease_bps);
-        
+
         // For the tested range, overflow should not occur
         prop_assert!(
             result.is_some(),
@@ -275,7 +277,7 @@ proptest! {
     ) {
         let max_dec = match max_decrease(old_total, max_decrease_bps) {
             Some(d) => d,
-            None => return, // Skip overflow cases
+            None => return Ok(()), // Skip overflow cases
         };
 
         // Exactly at cap should succeed

@@ -10,8 +10,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, Address, BytesN, Env, Symbol,
-    TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, testutils::Address as _, Address, BytesN, Env, Map,
+    Symbol, TryFromVal, Val, Vec,
 };
 
 // Re-export so each submodule only needs `use super::utils::*;`
@@ -40,6 +40,12 @@ enum BlendMockDataKey {
     /// Override the return value of submit_with_allowance without changing the
     /// actual transferred amount. Used to test balance-delta accounting.
     ReportedSupplyOverride,
+    /// The asset most recently supplied via `submit_with_allowance`, so
+    /// `get_reserve`/`get_positions` can report real Blend-shaped data for
+    /// it instead of needing an explicit asset parameter (real Blend keys
+    /// reserves by asset; this mock only ever tracks one at a time, which
+    /// matches every test's actual usage).
+    TrackedAsset,
 }
 
 #[derive(Clone)]
@@ -233,6 +239,10 @@ pub mod blend {
                 request.amount
             };
 
+            env.storage()
+                .persistent()
+                .set(&BlendMockDataKey::TrackedAsset, &request.address);
+
             if actual_amount > 0 {
                 token_client.transfer_from(
                     &env.current_contract_address(),
@@ -280,14 +290,20 @@ pub mod blend {
         }
 
         /// Sets a max withdraw limit to simulate withdrawal failures/stuck funds.
-        /// 0 = no limit (default behavior)
+        /// 0 = no limit; negative = reject all withdrawals.
         pub fn set_max_withdraw_limit(env: Env, limit: i128) {
             env.storage()
                 .persistent()
                 .set(&BlendMockDataKey::MaxWithdrawLimit, &limit);
         }
 
-        pub fn submit(env: Env, from: Address, to: Address, requests: Vec<crate::BlendRequest>) {
+        pub fn submit(
+            env: Env,
+            from: Address,
+            _spender: Address,
+            to: Address,
+            requests: Vec<crate::BlendRequest>,
+        ) {
             from.require_auth();
 
             assert_eq!(requests.len(), 1, "expected one request");
@@ -308,7 +324,9 @@ pub mod blend {
                         .get(&BlendMockDataKey::MaxWithdrawLimit)
                         .unwrap_or(0);
 
-                    let actual_withdraw = if max_withdraw_limit > 0 {
+                    let actual_withdraw = if max_withdraw_limit < 0 {
+                        0
+                    } else if max_withdraw_limit > 0 {
                         core::cmp::min(amount_to_withdraw, max_withdraw_limit)
                     } else {
                         amount_to_withdraw
@@ -354,8 +372,66 @@ pub mod blend {
             actual_to_return
         }
 
-        pub fn balance(env: Env, asset: Address, _user: Address) -> i128 {
-            TestTokenClient::new(&env, &asset).balance(&env.current_contract_address())
+        /// Real Blend has no `balance(asset, user)` function at all — reading
+        /// a position requires `get_reserve(asset)` (for the b-rate/index)
+        /// plus `get_positions(user)` (for the b-token amount), per #986's
+        /// research against blend-capital/blend-contracts-v2. This mock
+        /// mirrors that shape; see `blend_pool_balance` below for the
+        /// combined read helper tests should call instead of a direct
+        /// `balance`.
+        pub fn get_reserve(_env: Env, asset: Address) -> crate::BlendReserve {
+            crate::BlendReserve {
+                asset,
+                config: crate::BlendReserveConfig {
+                    index: 0,
+                    decimals: 7,
+                    c_factor: 0,
+                    l_factor: 0,
+                    util: 0,
+                    max_util: 0,
+                    r_base: 0,
+                    r_one: 0,
+                    r_two: 0,
+                    r_three: 0,
+                    reactivity: 0,
+                    supply_cap: 0,
+                    enabled: true,
+                },
+                data: crate::BlendReserveData {
+                    d_rate: crate::BLEND_RATE_SCALAR,
+                    b_rate: crate::BLEND_RATE_SCALAR,
+                    ir_mod: 0,
+                    b_supply: 0,
+                    d_supply: 0,
+                    backstop_credit: 0,
+                    last_time: 0,
+                },
+                scalar: 10_000_000,
+            }
+        }
+
+        /// Reports the mock's actual token balance as the user's full
+        /// b-token "supply" position at index 0 (this mock only ever tracks
+        /// one asset/one position at a time, via `TrackedAsset`). Falls
+        /// back to empty maps when no asset has ever been supplied yet —
+        /// `set_blend_pool` probes this at configuration time, before any
+        /// real supply has happened, and must not panic.
+        pub fn get_positions(env: Env, _user: Address) -> crate::BlendPositions {
+            let tracked_asset: Option<Address> = env
+                .storage()
+                .persistent()
+                .get(&BlendMockDataKey::TrackedAsset);
+            let mut supply = Map::new(&env);
+            if let Some(asset) = tracked_asset {
+                let pool_balance =
+                    TestTokenClient::new(&env, &asset).balance(&env.current_contract_address());
+                supply.set(0u32, pool_balance);
+            }
+            crate::BlendPositions {
+                liabilities: Map::new(&env),
+                collateral: Map::new(&env),
+                supply,
+            }
         }
 
         pub fn supplied(env: Env, asset: Address) -> i128 {
@@ -631,4 +707,198 @@ pub fn mint_and_deposit(
     let token_client = TestTokenClient::new(env, token_address);
     token_client.mint(user, &amount);
     vault_client.deposit(user, &amount);
+}
+
+/// Reads a user's underlying-asset balance in the mock Blend pool the same
+/// way the real `BlendPoolClient::get_balance` does (#986): combine
+/// `get_reserve` (for the b-rate/index) with `get_positions` (for the
+/// b-token amount), then convert. Tests should call this instead of a
+/// direct `balance` call, which no longer exists on either the real Blend
+/// pool or this mock.
+pub fn blend_pool_balance(
+    env: &Env,
+    pool_address: &Address,
+    asset: &Address,
+    user: &Address,
+) -> i128 {
+    let pool_client = blend::MockBlendPoolClient::new(env, pool_address);
+    let reserve = pool_client.get_reserve(asset);
+    let positions = pool_client.get_positions(user);
+    let b_tokens = positions.supply.get(reserve.config.index).unwrap_or(0);
+    if b_tokens == 0 {
+        return 0;
+    }
+    b_tokens * reserve.data.b_rate / crate::BLEND_RATE_SCALAR
+}
+
+// ============================================================================
+// STORAGE-DIFF HARNESS (Issue #596 — adversarial-agent simulation)
+// ============================================================================
+
+/// A snapshot of every publicly observable field of vault state, read back
+/// entirely through the contract's own getter entrypoints (never by reaching
+/// into `env.storage()` directly, since Soroban has no API to enumerate a
+/// contract's storage keys generically).
+///
+/// Used by the adversarial-agent simulation to prove that a call which was
+/// supposed to be rejected produced **zero** observable mutation, and that a
+/// call which is legitimately permitted only touched the fields it is
+/// allowed to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VaultStateSnapshot {
+    pub owner: Address,
+    pub agent: Address,
+    pub paused: bool,
+    pub tvl_cap: i128,
+    pub user_deposit_cap: i128,
+    pub min_deposit: i128,
+    pub max_deposit: i128,
+    pub rebalance_cooldown: u32,
+    pub max_consecutive_failures: u32,
+    pub consecutive_failures: u32,
+    pub approval_ttl: u32,
+    pub blend_pool: Option<Address>,
+    pub dex_pool: Option<Address>,
+    pub blend_approval_ttl: u32,
+    pub pending_owner: Option<Address>,
+    pub pending_agent_update: Option<(Address, u32)>,
+    pub pending_upgrade: Option<(BytesN<32>, u32)>,
+    pub total_assets: i128,
+    pub total_shares: i128,
+    pub current_protocol: Symbol,
+    pub last_rebalance_ledger: u32,
+    pub version: u32,
+    /// `(address, get_balance, get_shares, get_user_strategy)` for each
+    /// address the caller asked to watch. Kept separate from the top-level
+    /// fields above because it is per-address rather than singleton state.
+    pub watched: std::vec::Vec<(Address, i128, i128, Symbol)>,
+}
+
+/// Reads back the full observable state of `client`'s vault, including
+/// per-address data for every address in `watch`.
+pub fn snapshot_vault_state(
+    client: &NeuroWealthVaultClient,
+    watch: &[Address],
+) -> VaultStateSnapshot {
+    VaultStateSnapshot {
+        owner: client.get_owner(),
+        agent: client.get_agent(),
+        paused: client.is_paused(),
+        tvl_cap: client.get_tvl_cap(),
+        user_deposit_cap: client.get_user_deposit_cap(),
+        min_deposit: client.get_min_deposit(),
+        max_deposit: client.get_max_deposit(),
+        rebalance_cooldown: client.get_rebalance_cooldown(),
+        max_consecutive_failures: client.get_max_consecutive_failures(),
+        consecutive_failures: client.get_consecutive_failures(),
+        approval_ttl: client.get_approval_ttl(),
+        blend_pool: client.get_blend_pool(),
+        dex_pool: client.get_dex_pool(),
+        blend_approval_ttl: client.get_blend_approval_ttl(),
+        pending_owner: client.get_pending_owner(),
+        pending_agent_update: client.get_pending_agent_update(),
+        pending_upgrade: client.get_pending_upgrade(),
+        total_assets: client.get_total_assets(),
+        total_shares: client.get_total_shares(),
+        current_protocol: client.get_current_protocol(),
+        last_rebalance_ledger: client.get_last_rebalance_ledger(),
+        version: client.get_version(),
+        watched: watch
+            .iter()
+            .map(|a| {
+                (
+                    a.clone(),
+                    client.get_balance(a),
+                    client.get_shares(a),
+                    client.get_user_strategy(a),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Returns the names of every top-level (singleton) field that differs
+/// between two snapshots. Per-address data is reported separately by
+/// [`diff_watched_addresses`] since it is keyed rather than singleton.
+pub fn diff_vault_state(
+    before: &VaultStateSnapshot,
+    after: &VaultStateSnapshot,
+) -> std::vec::Vec<&'static str> {
+    let mut changed = std::vec::Vec::new();
+    macro_rules! check {
+        ($field:ident) => {
+            if before.$field != after.$field {
+                changed.push(stringify!($field));
+            }
+        };
+    }
+    check!(owner);
+    check!(agent);
+    check!(paused);
+    check!(tvl_cap);
+    check!(user_deposit_cap);
+    check!(min_deposit);
+    check!(max_deposit);
+    check!(rebalance_cooldown);
+    check!(max_consecutive_failures);
+    check!(consecutive_failures);
+    check!(approval_ttl);
+    check!(blend_pool);
+    check!(dex_pool);
+    check!(blend_approval_ttl);
+    check!(pending_owner);
+    check!(pending_agent_update);
+    check!(pending_upgrade);
+    check!(total_assets);
+    check!(total_shares);
+    check!(current_protocol);
+    check!(last_rebalance_ledger);
+    check!(version);
+    changed
+}
+
+/// Returns the watched addresses whose `(balance, shares, strategy)` tuple
+/// changed between two snapshots. `before` and `after` must have been taken
+/// with the same `watch` list, in the same order.
+pub fn diff_watched_addresses(
+    before: &VaultStateSnapshot,
+    after: &VaultStateSnapshot,
+) -> std::vec::Vec<Address> {
+    before
+        .watched
+        .iter()
+        .zip(after.watched.iter())
+        .filter(|(b, a)| b.1 != a.1 || b.2 != a.2 || b.3 != a.3)
+        .map(|(b, _)| b.0.clone())
+        .collect()
+}
+
+/// Scopes Soroban authorization to *only* `signer`'s signature for exactly
+/// one contract invocation (`fn_name` + `args` on `contract_id`), with no
+/// sub-invocations authorized either.
+///
+/// This is the tool that makes the "compromised agent" simulation honest: a
+/// real compromised agent controls only its own signing key, never the
+/// owner's. `env.mock_all_auths()` cannot express that distinction because it
+/// authorizes every address unconditionally, so entrypoints that fetch their
+/// authorizing address from storage (`require_is_owner`, `require_is_agent`)
+/// would appear to accept any caller. Scoping the mock to exactly the agent's
+/// address, with no owner entry present, makes those entrypoints fail auth
+/// resolution exactly as they would on a real network.
+pub fn mock_agent_only_auth(
+    env: &Env,
+    contract_id: &Address,
+    agent: &Address,
+    fn_name: &'static str,
+    args: Vec<Val>,
+) {
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: agent,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: contract_id,
+            fn_name,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
 }

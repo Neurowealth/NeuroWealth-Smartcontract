@@ -25,5 +25,3 @@
 # Lint levels recognised by .clippy.toml (requires Rust ≥ 1.75).
 # Note: these are advisory — the CI job also passes -D on the command line
 # so the build fails even if this file is out of date.
-[lints.clippy]
-integer_arithmetic = "deny"

@@ -1,7 +1,7 @@
 //! Tests for deposit limits and caps
 
 use super::utils::*;
-use crate::{DataKey, VaultError, DEFAULT_MIN_DEPOSIT, MAX_DEPOSIT_CEILING};
+use crate::{DataKey, DEFAULT_MIN_DEPOSIT, MAX_DEPOSIT_CEILING};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 #[test]
@@ -104,7 +104,7 @@ fn test_set_deposit_limits() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #26)")]
+#[should_panic(expected = "Error(Contract, #38)")]
 fn test_set_deposit_limits_min_too_low() {
     let env = Env::default();
     env.mock_all_auths();
@@ -119,7 +119,7 @@ fn test_set_deposit_limits_min_too_low() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #27)")]
+#[should_panic(expected = "Error(Contract, #39)")]
 fn test_set_deposit_limits_max_less_than_min() {
     let env = Env::default();
     env.mock_all_auths();
@@ -351,50 +351,6 @@ fn test_set_user_deposit_cap_accepts_zero() {
     assert_eq!(client.get_user_deposit_cap(), 0);
 }
 
-// ---- set_limits (deprecated) ------------------------------------------------
-
-#[test]
-#[should_panic(expected = "Error(Contract, #1)")]
-fn test_set_limits_rejects_negative_min() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    #[allow(deprecated)]
-    client.set_limits(&-1_i128, &100_000_000_i128);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #2)")]
-fn test_set_limits_rejects_negative_max() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    #[allow(deprecated)]
-    client.set_limits(&0_i128, &-1_i128);
-}
-
-/// Zero values for both caps are valid (means unlimited for each).
-#[test]
-fn test_set_limits_accepts_zero_values() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
-    let client = NeuroWealthVaultClient::new(&env, &contract_id);
-
-    #[allow(deprecated)]
-    client.set_limits(&0_i128, &0_i128);
-
-    assert_eq!(client.get_user_deposit_cap(), 0);
-    assert_eq!(client.get_tvl_cap(), 0);
-}
-
 // ============================================================================
 // DEPOSIT CAP — ASSETS-BASED SEMANTICS (includes accrued yield)
 // ============================================================================
@@ -536,7 +492,7 @@ fn test_lowering_user_deposit_cap_below_current_deposit_blocks_new_deposits() {
     let result = client.try_deposit(&user_a, &deposit_100);
     assert_eq!(
         result,
-        Err(Ok(VaultError::ExceedsUserDepositCap)),
+        Err(Ok(soroban_sdk::Error::from_contract_error(40))),
         "New deposit exceeding lowered cap must be blocked with VaultError::ExceedsUserDepositCap (#40)"
     );
 
@@ -567,8 +523,7 @@ fn test_lowering_user_deposit_cap_below_current_deposit_blocks_new_deposits() {
     let result_b = client.try_deposit(&user_b, &deposit_300);
     assert_eq!(
         result_b,
-        Err(Ok(VaultError::ExceedsUserDepositCap)),
+        Err(Ok(soroban_sdk::Error::from_contract_error(40))),
         "User B deposit exceeding lowered cap must be blocked with VaultError::ExceedsUserDepositCap (#40)"
     );
 }
-

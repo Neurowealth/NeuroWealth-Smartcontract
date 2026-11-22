@@ -1,15 +1,15 @@
 //! Event topic constants for the NeuroWealth Vault contract.
-//!
-//! This module is the single source of truth for every event topic emitted
-//! by the vault. `lib.rs` imports these constants directly rather than
-//! redefining its own copies, so the on-chain symbols, this file, and
-//! `EVENTS.md` cannot drift apart. Symbols are limited to 9 characters
-//! (the `symbol_short!` limit).
-//!
-//! Most events publish a single-element topic tuple, `(TOPIC_X,)`. Three
-//! events additionally publish an indexed `Address` as topic 1 so indexers can
-//! filter per user without scanning payloads: [`TOPIC_DEPOSIT`],
-//! [`TOPIC_WITHDRAW`], and [`TOPIC_USER_STRATEGY_UPDATED`].
+//
+// This module is the single source of truth for every event topic emitted
+// by the vault. `lib.rs` imports these constants directly rather than
+// redefining its own copies, so the on-chain symbols, this file, and
+// `EVENTS.md` cannot drift apart. Symbols are limited to 9 characters
+// (the `symbol_short!` limit).
+//
+// Most events publish a single-element topic tuple, `(TOPIC_X,)`. Three
+// events additionally publish an indexed `Address` as topic 1 so indexers can
+// filter per user without scanning payloads: [`TOPIC_DEPOSIT`],
+// [`TOPIC_WITHDRAW`], and [`TOPIC_USER_STRATEGY_UPDATED`].
 
 #![warn(missing_docs)]
 
@@ -24,8 +24,10 @@ pub const TOPIC_DEPOSIT: Symbol = symbol_short!("deposit");
 /// Published by both `withdraw` and `withdraw_all`.
 pub const TOPIC_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Topic for `RebalanceEvent`, published by every `rebalance` outcome
-/// (including `"noop"`).
+/// (including `"noop").
 pub const TOPIC_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Topic for `ApyPredictionSubmittedEvent`, published when the agent submits a forecast.
+pub const TOPIC_APY_PREDICTION: Symbol = symbol_short!("apy_pred");
 /// Topic for `VaultPausedEvent`, published by `pause`.
 pub const TOPIC_PAUSED: Symbol = symbol_short!("paused");
 /// Topic for `VaultUnpausedEvent`, published by `unpause`.
@@ -49,7 +51,7 @@ pub const TOPIC_CAPS_UPDATED: Symbol = symbol_short!("caps_upd");
 pub const TOPIC_AGENT_UPDATED: Symbol = symbol_short!("agent");
 /// Topic for `OwnershipTransferInitiatedEvent`, published by `transfer_ownership`.
 pub const TOPIC_OWNERSHIP_INITIATED: Symbol = symbol_short!("own_init");
-/// Topic for `OwnershipTransferredEvent`, published by `accept_ownership`.
+/// Topic for `OwnershipTransferedEvent`, published by `accept_ownership`.
 pub const TOPIC_OWNERSHIP_TRANSFERRED: Symbol = symbol_short!("own_xfer");
 /// Topic for `OwnershipTransferCancelledEvent`, published by `cancel_ownership_transfer`.
 pub const TOPIC_OWNERSHIP_CANCELLED: Symbol = symbol_short!("own_cncl");
@@ -91,8 +93,122 @@ pub const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("upg_cncl");
 pub const TOPIC_REBALANCE_COOLDOWN_UPDATED: Symbol = symbol_short!("reb_cd");
 /// Topic for `ApprovalTtlUpdatedEvent`, published by `set_approval_ttl`.
 pub const TOPIC_APPROVAL_TTL_UPDATED: Symbol = symbol_short!("ttl_upd");
-/// Topic for `HarvestEvent`, published when accrued yield is harvested and compounded.
+/// Topic for `ProtocolApprovalScheduledEvent`, published by `set_approval_ttl`
+/// and the legacy `set_blend_approval_ttl` so operators learn the approval
+/// expiry ledger without reading transaction history (#847).
+pub const TOPIC_APPROVAL_TTL_SCHEDULED: Symbol = symbol_short!("ttl_sch");
+/// Topic for `HarvestEvent`, published when a protocol position is cycled by `harvest`.
 pub const TOPIC_HARVEST: Symbol = symbol_short!("harvest");
 /// Topic for `EmergencyHarvestEvent`, published when the owner triggers an
 /// emergency harvest fallback during an agent-key outage or rotation.
 pub const TOPIC_EMERGENCY_HARVEST: Symbol = symbol_short!("em_harv");
+/// Topic for `CompoundEvent`, published when the agent auto-compounds yield.
+pub const TOPIC_COMPOUND: Symbol = symbol_short!("compound");
+/// Topic 0 for `SharesMigratedEvent`; topic 1 is the migrating user's `Address`.
+pub const TOPIC_MIGRATE: Symbol = symbol_short!("migrate");
+/// Topic 0 for `MigrationReceivedEvent`; topic 1 is the migrated user's `Address`.
+pub const TOPIC_MIGRATION_RECEIVED: Symbol = symbol_short!("mig_recv");
+/// Topic for `MigrationTargetUpdatedEvent`, published when the owner sets/updates migration target.
+pub const TOPIC_MIGRATION_TARGET_UPDATED: Symbol = symbol_short!("mig_tgt");
+/// Topic for `MigrationTargetScheduledEvent`, published by `schedule_migration_target` (#969).
+pub const TOPIC_MIGRATION_TARGET_SCHEDULED: Symbol = symbol_short!("mig_sched");
+/// Topic for `MigrationTargetCancelledEvent`, published by `cancel_migration_target` (#969).
+pub const TOPIC_MIGRATION_TARGET_CANCELLED: Symbol = symbol_short!("mig_cncl");
+/// Topic for `MigrationPausedEvent`, published when migration is paused/unpaused.
+pub const TOPIC_MIGRATION_PAUSED: Symbol = symbol_short!("mig_pse");
+/// Topic 0 for `SharesLockedEvent`; topic 1 is the user's `Address`.
+pub const TOPIC_SHARES_LOCKED: Symbol = symbol_short!("lock");
+/// Topic 0 for `SharesUnlockedEvent`; topic 1 is the user's `Address`.
+pub const TOPIC_SHARES_UNLOCKED: Symbol = symbol_short!("unlock");
+/// Topic 0 for `EmergencyWithdrawalEvent`; topic 1 is the withdrawing user's `Address`.
+pub const TOPIC_EMERGENCY_WITHDRAWAL: Symbol = symbol_short!("em_wd");
+/// Topic for `CircuitBreakerTriggeredEvent`.
+pub const TOPIC_CIRCUIT_BREAKER_TRIGGERED: Symbol = symbol_short!("cb_trig");
+/// Topic for `CircuitBreakerResetEvent`.
+pub const TOPIC_CIRCUIT_BREAKER_RESET: Symbol = symbol_short!("cb_reset");
+
+/// Topic for `ProtocolAllocationChangedEvent`, the authoritative signal that
+/// the multi-protocol allocation split changed (Phase 2 multi-protocol mode).
+pub const TOPIC_PROTOCOL_ALLOCATION_CHANGED: Symbol = symbol_short!("alloc_chg");
+/// Topic for `MultiProtocolModeChangedEvent`, published when the owner migrates
+/// the vault between single-protocol and multi-protocol allocation mode.
+pub const TOPIC_MULTI_PROTOCOL_MODE: Symbol = symbol_short!("multi_md");
+/// Topic for `ProtocolApyUpdatedEvent`, published when the agent reports a
+/// per-protocol APY used in the composite yield calculation.
+pub const TOPIC_PROTOCOL_APY_UPDATED: Symbol = symbol_short!("apy_upd");
+
+/// Topic for `MaxConsecutiveFailuresUpdatedEvent`, published by
+/// `set_max_consecutive_failures` when the circuit-breaker threshold changes.
+pub const TOPIC_MAX_FAILURES_UPDATED: Symbol = symbol_short!("maxf_upd");
+
+/// Topic for `InsuranceFundUpdatedEvent`.
+pub const TOPIC_INSURANCE_FUND_UPDATED: Symbol = symbol_short!("ins_fund");
+
+/// Topic for `RateLimitConfigUpdatedEvent`, published by `set_rate_limit`.
+pub const TOPIC_RATE_LIMIT_CONFIG_UPDATED: Symbol = symbol_short!("rate_cfg");
+/// Topic for `BatchSizeLimitUpdatedEvent`, published by `set_max_batch_size`.
+pub const TOPIC_BATCH_SIZE_LIMIT_UPDATED: Symbol = symbol_short!("batch_lim");
+/// Topic for `RateLimitExceededEvent`, published before a rate-limited call is rejected.
+pub const TOPIC_RATE_LIMIT_HIT: Symbol = symbol_short!("rate_hit");
+
+// ============================================================================
+// Multi-protocol adapter events (#656)
+// ============================================================================
+
+/// Topic for `ProtocolAdapterUpdatedEvent`, published by `set_protocol_adapter`
+/// when the owner registers or replaces a venue adapter contract.
+pub const TOPIC_PROTOCOL_ADAPTER_UPDATED: Symbol = symbol_short!("adap_cfg");
+/// Topic for `ProtocolWhitelistUpdatedEvent`, published by `set_protocol_whitelisted`.
+pub const TOPIC_PROTOCOL_WHITELIST_UPDATED: Symbol = symbol_short!("proto_wl");
+/// Topic for `ProtocolSupplyEvent`, published when a rebalance supplies USDC to
+/// a whitelisted adapter-backed protocol.
+pub const TOPIC_PROTOCOL_SUPPLY: Symbol = symbol_short!("proto_sup");
+/// Topic for `ProtocolWithdrawEvent`, published when USDC is withdrawn from a
+/// whitelisted adapter-backed protocol.
+pub const TOPIC_PROTOCOL_WITHDRAW: Symbol = symbol_short!("proto_wd");
+
+// ============================================================================
+// Agent key rotation — hot-standby pattern (#653 / #655)
+// ============================================================================
+
+/// Topic for `AgentKeyRotatedEvent`, published by `switch_to_standby_agent`
+/// when the owner performs an instant hot-standby key switchover.
+pub const TOPIC_AGENT_KEY_ROTATED: Symbol = symbol_short!("key_rot");
+/// Topic for `StandbyAgentUpdatedEvent`, published by `update_standby_agent`
+/// when the owner sets or replaces the standby agent key independently.
+pub const TOPIC_STANDBY_AGENT_UPDATED: Symbol = symbol_short!("stby_ag");
+
+// ============================================================================
+// Multi-asset support (#646)
+// ============================================================================
+
+/// Topic for `AssetDepositEvent`, published by `deposit_asset` when a user
+/// deposits a non-USDC asset (or USDC via the asset-aware path).
+pub const TOPIC_ASSET_DEPOSIT: Symbol = symbol_short!("asset_dep");
+/// Topic for `AssetWithdrawEvent`, published by `withdraw_asset` when a user
+/// withdraws a non-USDC asset (or USDC via the asset-aware path).
+pub const TOPIC_ASSET_WITHDRAW: Symbol = symbol_short!("asset_wd");
+/// Topic for `SupportedAssetsUpdatedEvent`, published when the owner adds or
+/// removes a supported deposit asset.
+pub const TOPIC_SUPPORTED_ASSETS_UPDATED: Symbol = symbol_short!("assets_up");
+
+// ============================================================================
+// Per-user yield attribution (#654)
+// ============================================================================
+
+/// Topic for `YieldAttributedEvent`, published by `update_total_assets` and
+/// `rebalance` to record per-user, per-protocol yield attribution.
+pub const TOPIC_YIELD_ATTRIBUTED: Symbol = symbol_short!("yld_attr");
+
+// ============================================================================
+// Withdrawal Queue (#757)
+// ============================================================================
+
+/// Topic for `WithdrawalQueuedEvent`, published by `queue_withdrawal`.
+pub const TOPIC_WITHDRAWAL_QUEUED: Symbol = symbol_short!("wq_add");
+/// Topic for `WithdrawalCancelledEvent`, published by `cancel_withdrawal_request`.
+pub const TOPIC_WITHDRAWAL_CANCELLED: Symbol = symbol_short!("wq_cancel");
+/// Topic for `WithdrawalFulfilledEvent`, published by `process_withdrawal_queue`.
+pub const TOPIC_WITHDRAWAL_FULFILLED: Symbol = symbol_short!("wq_done");
+/// Topic for `QueueConfigUpdatedEvent`, published by `set_queue_config`.
+pub const TOPIC_QUEUE_CONFIG_UPDATED: Symbol = symbol_short!("wq_cfg");

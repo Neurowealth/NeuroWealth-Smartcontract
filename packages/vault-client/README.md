@@ -108,7 +108,7 @@ await client.rebalance(
   agentKeypair,
   'blend',      // protocol: "blend" | "none"
   500_0000000n, // expected_apy: 500 bps * 10^7
-  990_0000000n, // min_out: slippage floor
+  50n,          // min_out: 0.5% tolerance, applied per leg
 );
 ```
 
@@ -230,6 +230,7 @@ const VaultErrorCode = {
   NegativeMin:             1,
   NegativeMax:             2,
   MaxLessThanMin:          3,
+  LegacyUnauthorizedAgentError: 90,
   ValidationError:         100,
   PausedError:             101,
   UnauthorizedAgentError:  102,
@@ -383,3 +384,16 @@ packages/vault-client/
     └── generated/
         └── vault.ts              ← AUTO-GENERATED, do not edit
 ```
+
+## Rate-limit APIs
+
+The generated client exposes `set_rate_limit(category, max_calls,
+window_ledgers)` and `get_rate_limit(category)` for the owner-configurable
+fixed-window policies. Supported categories are `deposit`, `withdraw`,
+`rebalance`, `touch_ttl`, `preview`, and `batch_dep`. It also exposes
+`get_global_rate_limit_state`, `get_user_rate_limit_state`, and
+`set_max_batch_size`/`get_max_batch_size`.
+
+The preview and conversion entrypoints consume the global `preview` bucket when
+invoked as transactions. RPC simulation does not commit a bucket, so it is
+suitable for display but cannot be used to measure committed call usage.

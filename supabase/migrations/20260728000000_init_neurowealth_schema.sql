@@ -119,7 +119,10 @@ ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 
 -- POLICIES: Authenticated users can read their own data
 CREATE POLICY "Users can view own profile" ON users FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON users FOR UPDATE USING (auth.uid() = id);
+CREATE POLICY "Users can insert own profile" ON users FOR INSERT WITH CHECK (auth.uid() = id);
+CREATE POLICY "Users can update own profile" ON users FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+CREATE POLICY "Service role can insert users" ON users FOR INSERT WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "Service role can update users" ON users FOR UPDATE USING (auth.role() = 'service_role') WITH CHECK (auth.role() = 'service_role');
 
 CREATE POLICY "Users can view own deposits" ON deposits FOR SELECT USING (user_id = auth.uid());
 CREATE POLICY "Users can view own withdrawals" ON withdrawals FOR SELECT USING (user_id = auth.uid());
@@ -128,6 +131,22 @@ CREATE POLICY "Users can view own earnings history" ON earnings_history FOR SELE
 
 -- Rebalances are public read for platform transparency
 CREATE POLICY "Rebalances are viewable by all authenticated users" ON rebalances FOR SELECT USING (true);
+
+-- Rebalances write policies: only agent and service role
+CREATE POLICY "Agent can insert rebalances" ON rebalances FOR INSERT WITH CHECK (
+    (auth.jwt() -> 'app_metadata' ->> 'role') = 'agent' OR auth.role() = 'service_role'
+);
+CREATE POLICY "Agent can update rebalances" ON rebalances FOR UPDATE USING (
+    (auth.jwt() -> 'app_metadata' ->> 'role') = 'agent' OR auth.role() = 'service_role'
+) WITH CHECK (
+    (auth.jwt() -> 'app_metadata' ->> 'role') = 'agent' OR auth.role() = 'service_role'
+);
+
+CREATE POLICY "Service role can insert audit logs" ON audit_logs FOR INSERT WITH CHECK (auth.role() = 'service_role');
+CREATE POLICY "Admins can view audit logs" ON audit_logs FOR SELECT USING (
+    auth.role() = 'service_role'
+    OR (auth.jwt() -> 'app_metadata' ->> 'role') = 'admin'
+);
 
 -- REALTIME SUBSCRIPTIONS FOR DASHBOARD UPDATES
 ALTER PUBLICATION supabase_realtime ADD TABLE deposits;

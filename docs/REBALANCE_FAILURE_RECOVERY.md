@@ -236,9 +236,57 @@ The following are guaranteed by the contract regardless of how a rebalance fails
 
 ---
 
+## MEV Sandwich Failures on DEX Rebalances
+
+### When a Sandwich Attack Causes `min_out` Rejection
+
+If the agent backend computes `min_out` off-chain based on current pool state but
+a sandwich attack inflates the pool price before the rebalance lands on-chain, the
+vault may reject the transaction:
+
+- **Failure mode**: `MinOutNotMet` (#42) error, transaction reverts, no state change.
+- **Recovery**: The vault is unharmed; funds remain in the current protocol (or
+  idle if the exit leg succeeded). The agent should wait and retry with a
+  recomputed `min_out` based on current conditions.
+
+### Example Scenario
+
+1. Agent observes pool at 100 USDC : 10 BLND.
+2. Agent computes `min_out = 80,000` for a 1M USDC supply (assuming 20% slippage).
+3. Attacker front-runs and buys 500k BLND, pushing the rate to 100 USDC : 8 BLND.
+4. Vault's `rebalance()` supplies 1M USDC, receives only 80,000 BLND.
+5. `80,000 >= min_out` (80,000), so the transaction succeeds with minimal loss.
+
+However, if the attacker's price movement exceeds the agent's tolerance:
+
+1. Pool at 100 USDC : 10 BLND.
+2. Agent computes `min_out = 95,000` (assuming 5% slippage tolerance).
+3. Attacker buys 1M BLND, pushing rate to 100 USDC : 5 BLND (50% slippage).
+4. Vault's `rebalance()` supplies 1M USDC, receives only 50,000 BLND.
+5. `50,000 < min_out` (95,000), transaction reverts.
+
+### Agent Backend Guidance
+
+To reduce sandwich-induced failures:
+
+- **Recompute `min_out` just before submitting** the transaction (within 1-2 blocks).
+- **Use conservative slippage tolerances** (0.5% - 2%) on thin pools; increase on
+  deep pools.
+- **Randomize rebalance timing** to reduce predictability. Scheduled, fixed-time
+  rebalances (e.g., every hour) are easy targets for sandwich attacks.
+- **For large deployments**, consider breaking them into multiple smaller
+  rebalances over time, reducing the profit surface for any single sandwich.
+- **Monitor pool depth** before the rebalance. If the pool is shallower than
+  expected, increase slippage tolerance or defer the rebalance.
+
+See [`DEX_INTEGRATION.md`](DEX_INTEGRATION.md) for detailed MEV analysis and
+`min_out` computation best practices.
+
+---
+
 ## Related Documents
 
 - [`SECURITY.md`](../SECURITY.md) — emergency pause and owner runbook
-- [`DEX_INTEGRATION.md`](DEX_INTEGRATION.md) — DEX slippage and exit-first routing
+- [`DEX_INTEGRATION.md`](DEX_INTEGRATION.md) — DEX slippage, exit-first routing, and MEV sandwich risk analysis
 - [`BLEND_INTEGRATION_RESEARCH.md`](BLEND_INTEGRATION_RESEARCH.md) — Blend partial-fill behaviour
 - [`../EVENTS.md`](../EVENTS.md) — `RebalanceEvent` and `RebalanceFailedEvent` schemas

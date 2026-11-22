@@ -97,10 +97,13 @@ export function ContractUpgrade({
       // Convert hex to BytesN<32>
       const hashBytes = Buffer.from(wasmHash, "hex");
       const result = await client.schedule_upgrade(
-        signer,
+        signer as any,
         signer.publicKey(),
         hashBytes as any,
       );
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
       setShowScheduleConfirm(false);
 
@@ -126,14 +129,18 @@ export function ContractUpgrade({
     setTxHash(null);
 
     try {
-      const result = await client.execute_upgrade(signer, signer.publicKey());
+      const result = await client.execute_upgrade(signer as any, signer.publicKey());
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
+      const txHash = result.hash;
 
       // Poll for confirmation
       const server = getSorobanServer(network);
       for (let i = 0; i < 60; i++) {
         try {
-          const tx = await server.getTransaction(result.hash);
+          const tx = await server.getTransaction(txHash);
           if (tx.status === "SUCCESS") break;
         } catch {
           // Not confirmed yet
@@ -158,14 +165,18 @@ export function ContractUpgrade({
     setTxHash(null);
 
     try {
-      const result = await client.cancel_upgrade(signer, signer.publicKey());
+      const result = await client.cancel_upgrade(signer as any, signer.publicKey());
+      if (!result.hash) {
+        throw new Error('Transaction did not return a hash');
+      }
       setTxHash(result.hash);
+      const txHash = result.hash;
 
       // Poll for confirmation
       const server = getSorobanServer(network);
       for (let i = 0; i < 60; i++) {
         try {
-          const tx = await server.getTransaction(result.hash);
+          const tx = await server.getTransaction(txHash);
           if (tx.status === "SUCCESS") break;
         } catch {
           // Not confirmed yet

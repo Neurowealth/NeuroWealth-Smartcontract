@@ -37,194 +37,168 @@ stateDiagram-v2
         Idle --> DEX   : rebalance("dex", ...)
         Blend --> Idle : rebalance("none", ...)
         Blend --> DEX  : rebalance("dex", ...) — exits Blend first
+        Blend --> Blend : harvest(min_out) — withdraws and re-supplies
+        Blend --> Blend : auto_compound(min_out) — withdraws and re-supplies (updates TotalAssets)
         DEX --> Idle   : rebalance("none", ...)
         DEX --> Blend  : rebalance("blend", ...) — exits DEX first
+        DEX --> DEX     : harvest(min_out) — withdraws and re-supplies
+        DEX --> DEX     : auto_compound(min_out) — withdraws and re-supplies (updates TotalAssets)
     }
 ```
 
 ---
 
+## Share Lock / Unlock, Withdrawal Request, Migration and Standby-Agent State Machines
+
+The diagram and table above predate (#636) share locking, (#757) the
+withdrawal queue, (#637/#969) vault-to-vault migration, (#653) hot-standby
+agent rotation, and (#439) the circuit breaker's auto-pause trip. Each is
+documented here, including which functions remain callable while the vault
+is paused (`DataKey::Paused`, checked by `require_not_paused`); most of
+these flows are **not** gated by the main pause flag at all, which is called
+out explicitly below since it's easy to assume otherwise.
+
+### Share locking
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unlocked
+    Unlocked --> Locked : lock_shares(user, shares, 30|90|180 days)
+    Locked --> Unlocked : unlock_shares(user), after expiry_ledger
+```
+
+| From | To | Trigger | Who | Precondition | Restricted while locked |
+|---|---|---|---|---|---|
+| Unlocked | Locked | `lock_shares(user, shares, lock_duration_days)` | user | No existing lock (`SharesAlreadyLocked` otherwise); `lock_duration_days` is exactly 30, 90 or 180 (`InvalidLockDuration` otherwise); `shares` ≤ the user's unlocked balance (`InsufficientUnlockedShares` otherwise) | `withdraw`/`withdraw_all` can only touch the user's *unlocked* shares (`burn_and_pay`'s lock-aware floor); `migrate_shares` is blocked outright while any shares are locked, not just for the locked portion (`InsufficientShares`) |
+| Locked | Unlocked | `unlock_shares(user)` | user | `current_ledger >= expiry_ledger` (`LockPeriodNotEnded` otherwise) | none |
+
+**Callable while the vault is paused?** Yes for both `lock_shares` and
+`unlock_shares`; neither calls `require_not_paused`. A paused vault still
+lets a user lock or unlock shares; it is withdrawal/deposit/rebalance that a
+pause blocks, not the lock state machine itself.
+
+### Withdrawal request lifecycle (queue)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending : queue_withdrawal(user, amount)
+    Pending --> Fulfilled : process_withdrawal_queue(agent, batch_size)
+    Pending --> Cancelled : cancel_withdrawal_request(user, request_id)
+```
+
+| From | To | Trigger | Who | Precondition | Notes |
+|---|---|---|---|---|---|
+| (none) | Pending | `queue_withdrawal(user, amount)` | user | Vault not paused (`require_not_paused`); `amount > 0`; the user's unlocked shares, minus what's already reserved by their other pending requests (`DataKeyExt::ReservedWithdrawalAmount`), cover this request; the queue is below `QueueConfig.max_size` (0 = unlimited) | Assigns the next `DataKeyExt::NextRequestId`, appends to `DataKeyExt::QueueOrder`, and increases the user's `ReservedWithdrawalAmount` so a second `queue_withdrawal` call can't double-spend the same shares (#990) |
+| Pending | Fulfilled | `process_withdrawal_queue(agent, batch_size)` | agent | Called by the agent only; processes up to `batch_size` entries in `QueueOrder` FIFO order; a request older than `QueueConfig.ttl` seconds is skipped (left pending) rather than fulfilled | Flips `WithdrawalRequest.fulfilled = true` in place (the entry is never deleted) and removes the ID from `QueueOrder` |
+| Pending | Cancelled | `cancel_withdrawal_request(user, request_id)` | user (must be the request's own submitter) | Request exists, is not already fulfilled (`WithdrawalRequestAlreadyFulfilled`) or cancelled (`WithdrawalRequestAlreadyCancelled`) | Flips `WithdrawalRequest.cancelled = true` in place, removes the ID from `QueueOrder`, and decreases the user's `ReservedWithdrawalAmount` |
+
+**Callable while the vault is paused?** `queue_withdrawal` is blocked
+(`require_not_paused`); `process_withdrawal_queue` and
+`cancel_withdrawal_request` are **not**: an existing pending request can
+still be fulfilled or cancelled during a pause, only new requests are
+blocked. `set_queue_config` (owner-only, sets `max_size`/`ttl`) is also not
+pause-gated.
+
+### Migration (vault-to-vault)
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoTarget
+    NoTarget --> TargetPending : schedule_migration_target(owner, target)
+    TargetPending --> TargetSet : execute_migration_target(owner), after timelock
+    TargetPending --> NoTarget : cancel_migration_target(owner)
+    TargetSet --> TargetPending : schedule_migration_target(owner, new_target)
+
+    state TargetSet {
+        [*] --> MigrationOpen
+        MigrationOpen --> MigrationPaused : set_migration_paused(true)
+        MigrationPaused --> MigrationOpen : set_migration_paused(false)
+        MigrationOpen --> MigrationOpen : migrate_shares(user) -- repeatable per user
+    }
+```
+
+| From | To | Trigger | Who | Precondition |
+|---|---|---|---|---|
+| NoTarget / TargetSet | TargetPending | `schedule_migration_target(owner, target)` | owner | No timelock already pending (`TimelockAlreadyPending`) |
+| TargetPending | TargetSet | `execute_migration_target(owner)` | owner | `current_ledger >= effective_ledger` (`TimelockNotExpired` otherwise); something is actually pending (`NoTimelockPending` otherwise) |
+| TargetPending | NoTarget (or back to prior TargetSet) | `cancel_migration_target(owner)` | owner | Something is pending (`NoTimelockPending` otherwise) |
+| MigrationOpen | MigrationPaused / MigrationOpen | `set_migration_paused(paused)` | owner | none |
+| (user's shares) migrated out | n/a | `migrate_shares(user)` | user | A target is set (`InvalidMigrationTarget` otherwise); migration is not paused (`MigrationPaused` otherwise); user has shares (`NoSharesToMigrate` otherwise); **user has zero locked shares** (`InsufficientShares` otherwise, since migration cannot partially exclude a locked position the way `withdraw` can) |
+
+`migrate_shares` always moves the user's entire unlocked position: it burns
+100% of `DataKey::Shares(user)`, transfers the asset-equivalent USDC to
+`migration_target`, and calls that contract's `receive_migration` entrypoint
+(not its public `deposit`, which would try to pull the funds from `user`'s
+wallet a second time, since they already moved vault-to-vault).
+
+**Callable while the vault is paused?** `schedule_migration_target`,
+`execute_migration_target`, `cancel_migration_target`, `set_migration_paused`
+and `migrate_shares` are all **not** pause-gated; only `migration_paused`
+(the migration feature's own independent flag, not the main vault pause)
+blocks `migrate_shares`. The *receiving* side is different: `receive_migration`
+on the target vault **does** call `require_not_paused`, so a paused target
+vault rejects an inbound migration even though the paused source vault would
+have happily sent it.
+
+### Hot-standby agent rotation
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoStandby
+    NoStandby --> StandbySet : update_standby_agent(owner, new_standby)
+    StandbySet --> StandbySet : update_standby_agent(owner, new_standby)
+    StandbySet --> Switched : switch_to_standby_agent(owner)
+    Switched --> Switched : switch_to_standby_agent(owner) -- repeatable, swaps primary/standby each time
+```
+
+| From | To | Trigger | Who | Precondition |
+|---|---|---|---|---|
+| NoStandby / StandbySet | StandbySet | `update_standby_agent(owner, new_standby)` | owner | `new_standby != primary` (`StandbyMatchesPrimaryAgent` otherwise) |
+| StandbySet | Switched | `switch_to_standby_agent(owner)` | owner | A standby key is configured (panics otherwise) |
+
+`switch_to_standby_agent` is deliberately timelock-free: the standby becomes
+the new primary and the old primary is demoted to standby, instantly, in one
+call, the zero-downtime counterpart to the two-step, 24-hour-delayed
+`update_agent`/`confirm_agent_update` flow used for the primary agent alone.
+Calling it again swaps primary and standby back, so it is safe to call
+repeatedly during an incident.
+
+**Callable while the vault is paused?** Yes for both; neither
+`update_standby_agent` nor `switch_to_standby_agent` is pause-gated. Agent
+key rotation remains available even during an emergency pause, which is the
+point: a compromised or lost agent key is exactly the scenario a pause might
+be covering.
+
+### Circuit breaker auto-pause and reset
+
+```mermaid
+stateDiagram-v2
+    [*] --> Healthy
+    Healthy --> Healthy : rebalance(...) succeeds -- consecutive_failures reset to 0
+    Healthy --> Healthy : rebalance(...) fails -- consecutive_failures += 1, below threshold
+    Healthy --> AutoPaused : rebalance(...) fails -- consecutive_failures reaches max_consecutive_failures
+    AutoPaused --> Healthy : owner calls reset_circuit_breaker(owner)
+```
+
+`CircuitBreakerState` is `(max_consecutive_failures, consecutive_failures)`
+(one tuple-valued key, to stay within Soroban's `#[contracttype]` variant
+cap). `max_consecutive_failures` is owner-configurable via
+`set_max_consecutive_failures`; `consecutive_failures` increments on every
+`"failed"` rebalance status and resets to 0 on any `"success"`. Reaching the
+threshold auto-pauses the vault (sets `DataKey::Paused = true`) the same way
+`emergency_pause()` does.
+
+| From | To | Trigger | Who | Precondition |
+|---|---|---|---|---|
+| Healthy | AutoPaused | `rebalance(...)` internally, once `consecutive_failures >= max_consecutive_failures` | agent (indirectly: the agent didn't ask to pause, a run of failures triggered it) | none |
+| AutoPaused | Healthy | `reset_circuit_breaker(owner)` | owner | Caller is the stored owner (`OnlyOwnerCanUnpause` otherwise) |
+
+`reset_circuit_breaker` zeroes `consecutive_failures` and unpauses in the
+same call; there is no way to unpause without also resetting the counter, so
+an operator can't clear the pause while leaving the vault one failure away
+from re-tripping without first addressing why `rebalance` kept failing.
+
 ## State Transition Table
 
-| From        | To          | Trigger                        | Who     | Precondition                              | Restricted During Transition         |
-|-------------|-------------|-------------------------------|---------|-------------------------------------------|--------------------------------------|
-| `Active`    | `Paused`    | `pause()`                     | Owner   | Vault not already paused                  | Deposits, withdrawals blocked after  |
-| `Paused`    | `Active`    | `unpause()`                   | Owner   | Vault is paused                           | —                                    |
-| `Active`    | `Rebalancing` | `rebalance()`               | Agent   | Not paused; cooldown elapsed              | None (vault accepts deposits during) |
-| `Rebalancing` | `Active`  | `rebalance()` returns         | Agent   | Automatic on function return              | —                                    |
-| `Active`    | `Emergency` | `emergency_pause()`           | Owner   | Vault not already in emergency            | Deposits, withdrawals blocked after  |
-| `Paused`    | `Emergency` | `emergency_pause()`           | Owner   | Vault is paused (re-sets same flag)       | —                                    |
-| `Emergency` | `Active`    | owner resolves + `unpause()`  | Owner   | Emergency condition manually cleared      | —                                    |
-| `Active`    | `PendingAgentUpdate` | `update_agent()` | Owner   | No pending agent update already           | New agent changes deferred until timelock |
-| `PendingAgentUpdate` | `Active` | timelock expires + `execute_agent_update()` | Agent | Timelock elapsed; pending proposal exists | —                                    |
-| `PendingAgentUpdate` | `Active` | `cancel_agent_update()` | Owner | Pending proposal exists                  | —                                    |
-| `Active`    | `PendingUpgrade` | `schedule_upgrade()` | Owner   | No pending upgrade already                | WASM changes deferred until timelock |
-| `PendingUpgrade` | `Active` | timelock expires + `execute_upgrade()` | Owner | Timelock elapsed; pending proposal exists | —                                    |
-| `PendingUpgrade` | `Active` | `cancel_upgrade()` | Owner | Pending proposal exists                  | —                                    |
-
----
-
-## Per-State Description
-
-### Active
-
-Normal operating state. The vault accepts deposits and processes withdrawals.
-Funds may be held directly in the vault or deployed via an external protocol
-(Blend or a DEX). The share price is updated via `update_total_assets()`.
-
-**Who can trigger entry:** `initialize()` (deployer), `unpause()` (owner).
-
-**Preconditions:**
-- `DataKey::Paused` is either absent or `false`.
-- `DataKey::CurrentProtocol` may be `"blend"`, `"dex"`, or `"none"`.
-
-**DEX sub-state:** When `CurrentProtocol == "dex"` the vault's USDC is
-deployed to a configured DEX liquidity pool. Rebalancing to `"blend"` or
-`"none"` exits the DEX position first (remove_liquidity), then enters the
-target protocol. A failed DEX exit leaves `CurrentProtocol` unchanged.
-
-**Blocked actions:** None — all user and admin operations available.
-
----
-
-### Paused
-
-The owner has halted normal operations. No deposits or withdrawals are processed.
-Triggered by `pause()` (error code for unauthorized caller: `OnlyOwnerCanPause = 19`).
-
-**Who can trigger entry:** Owner via `pause()`.
-
-**Preconditions:** Vault must be in `Active` state.
-
-**Blocked actions:**
-- `deposit()` — reverts with `Error(Contract, #35)`
-- `withdraw()` — reverts with `Error(Contract, #35)`
-- `withdraw_all()` — reverts with `Error(Contract, #35)`
-
-**Admin actions still allowed:** `unpause()`, `set_tvl_cap()`, `set_owner()`, `upgrade()`.
-
----
-
-### Rebalancing
-
-An implicit transient state during execution of `rebalance()`. The agent is moving
-funds between protocols (e.g., Blend → Vault or Vault → DEX). There is no
-explicit storage flag for this state; it is bounded by the single Soroban
-transaction that runs `rebalance()`.
-
-**Who can trigger entry:** Agent via `rebalance()`.
-
-**Preconditions:**
-- Vault must be in `Active` state (not paused).
-- Current ledger ≥ `LastRebalanceLedger + MinRebalanceInterval` (cooldown enforced).
-
-**Blocked actions:**
-- None — Soroban's single-threaded execution model means no concurrent
-  state mutation is possible during the transaction.
-
-**Note:** Calling `rebalance()` before the cooldown period has elapsed is
-rejected. The cooldown is tracked via `DataKey::LastRebalanceLedger` and
-`DataKey::MinRebalanceInterval`.
-
----
-
-### Emergency
-
-A distinct pause mode triggered by `emergency_pause()` when the owner detects
-an abnormal condition requiring immediate fund protection. Separate from the
-regular `pause()` path; unauthorized callers receive
-`OnlyOwnerCanEmergencyPause = 22`.
-
-**Who can trigger entry:** Owner via `emergency_pause()`.
-
-**Preconditions:** Vault is in `Active` or `Paused` state.
-
-**Blocked actions:**
-- `deposit()` — reverts with `Error(Contract, #35)`
-- `withdraw()` — reverts with `Error(Contract, #35)`
-- `withdraw_all()` — reverts with `Error(Contract, #35)`
-- `rebalance()` — blocked while paused
-
-**Resolution path:** Owner investigates the incident, applies any needed
-remediation (off-chain or via upgrade), then calls `unpause()` to return
-the vault to `Active`.
-
-> **Implementation note:** Paused and Emergency states share the same on-chain
-> storage flag (`DataKey::Paused = true`). Off-chain systems cannot distinguish
-> between a regular pause and an emergency pause by inspecting storage alone —
-> they must check emitted event topics (`"pause"` vs `"emergency_pause"`) to
-> determine which path was taken.
-
----
-
-### PendingAgentUpdate
-
-A timelocked state triggered when the owner calls `update_agent()` to propose a new agent address. The new agent does not take effect immediately; instead, a proposal is recorded with an expiry ledger. This provides a recovery window during which the proposal can be cancelled if it was made in error or maliciously.
-
-**Who can trigger entry:** Owner via `update_agent()`.
-
-**Preconditions:**
-- Vault must be in `Active` state (not paused).
-- No pending agent update already exists (`DataKey::PendingAgentUpdateHash` absent).
-
-**Blocked actions:**
-- `update_agent()` — rejected with `TimelockAlreadyPending` (#48) while another proposal is active.
-- `execute_agent_update()` — rejected with `TimelockNotElapsed` (#47) before the expiry ledger is reached.
-
-**Valid during timelock:**
-- Deposits, withdrawals, and rebalancing continue normally — the vault remains operationally `Active`.
-- `cancel_agent_update()` can be called by the owner at any time to clear the pending proposal.
-
-**Exit paths:**
-1. **Execute:** Once `ledger().sequence() >= AgentTimelockExpiry`, the agent calls `execute_agent_update()` to apply the new address. This clears the pending proposal and updates `DataKey::Agent`.
-2. **Cancel:** The owner calls `cancel_agent_update()` at any time to abandon the proposal, clearing the pending storage keys.
-
-**Storage keys:**
-- `DataKey::PendingAgentUpdateHash` — the proposed new agent address.
-- `DataKey::AgentTimelockExpiry` — the ledger sequence at which execution becomes allowed.
-
----
-
-### PendingUpgrade
-
-A timelocked state triggered when the owner calls `schedule_upgrade()` to propose a new WASM binary. Like the agent update, this defers the contract upgrade to provide a recovery window. This is the highest-stakes admin action as it replaces the contract's executable code.
-
-**Who can trigger entry:** Owner via `schedule_upgrade()`.
-
-**Preconditions:**
-- Vault must be in `Active` state (not paused).
-- No pending upgrade already exists (`DataKey::PendingUpgradeHash` absent).
-
-**Blocked actions:**
-- `schedule_upgrade()` — rejected with `TimelockAlreadyPending` (#48) while another proposal is active.
-- `execute_upgrade()` — rejected with `TimelockNotElapsed` (#47) before the expiry ledger is reached.
-
-**Valid during timelock:**
-- Deposits, withdrawals, and rebalancing continue normally — the vault remains operationally `Active`.
-- `cancel_upgrade()` can be called by the owner at any time to clear the pending proposal.
-
-**Exit paths:**
-1. **Execute:** Once `ledger().sequence() >= UpgradeTimelockExpiry`, the owner calls `execute_upgrade()` to apply the new WASM. This clears the pending proposal and invokes Soroban's built-in upgrade mechanism.
-2. **Cancel:** The owner calls `cancel_upgrade()` at any time to abandon the proposal, clearing the pending storage keys.
-
-**Storage keys:**
-- `DataKey::PendingUpgradeHash` — the hash of the proposed new WASM binary.
-- `DataKey::UpgradeTimelockExpiry` — the ledger sequence at which execution becomes allowed.
-
----
-
-## Storage Keys Referenced
-
-| Key                       | Type     | Description                                  |
-|---------------------------|----------|----------------------------------------------|
-| `DataKey::Paused`         | `bool`   | `true` while vault is paused                 |
-| `DataKey::CurrentProtocol`| `Symbol` | Active deployment target: `"blend"` / `"dex"` / `"none"` |
-| `DataKey::LastRebalanceLedger` | `u32` | Ledger sequence of last rebalance           |
-| `DataKey::MinRebalanceInterval` | `u32` | Minimum ledgers between rebalances         |
-| `DataKey::TvLCap`         | `i128`   | Maximum TotalAssets the vault will accept    |
-| `DataKey::DexPool`        | `Address`| Configured DEX liquidity pool address (optional) |
-| `DataKey::ApprovalTtl`    | `u32`    | Ledgers added to current sequence for DEX token approvals |
-| `DataKey::PendingAgentUpdateHash` | `Address` | Proposed new agent address (timelock pending) |
-| `DataKey::AgentTimelockExpiry` | `u32` | Ledger at which pending agent update becomes executable |
-| `DataKey::PendingUpgradeHash` | `BytesN<32>` | Proposed new WASM hash (timelock pending) |
-| `DataKey::UpgradeTimelockExpiry` | `u32` | Ledger at which pending upgrade becomes executable |
+| From        | To            | Trigger                        | Who     | Precondition                              | Restricted During Transition         |
+|--------------|---------------|--------------------------------------|-----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

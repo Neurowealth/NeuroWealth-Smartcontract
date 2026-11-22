@@ -7,9 +7,11 @@ on:
       - develop
     paths:
       - 'neurowealth-vault/contracts/vault/src/**'
+      - 'contract-spec.json'
       - 'scripts/generate-spec.py'
       - 'scripts/validate-spec.py'
       - 'scripts/generate-client.js'
+      - 'packages/vault-client/src/generated/vault.ts'
       - '.github/workflows/contract-spec.yml'
   pull_request:
     branches:
@@ -29,34 +31,46 @@ jobs:
     name: Generate & Validate Contract Spec
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
+      contents: read
+      issues: write
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       
       - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c
         with:
           python-version: '3.11'
       
-      - name: 🔧 Generate contract specification
+      - name: Validate checked-in contract specification
         run: |
-          echo "Generating contract specification from Soroban contract..."
-          python3 scripts/generate-spec.py
-      
-      - name: ✅ Validate contract specification
-        run: |
-          echo "Validating specification against contract implementation..."
+          echo "Validating checked-in specification before regeneration..."
           echo "Local equivalent: python3 scripts/validate-spec.py"
           python3 scripts/validate-spec.py
 
-      - name: 🔬 Detect parameter and error-shape drift
+      - name: Generate contract specification
         run: |
-          echo "Checking event field names and VaultError codes for drift..."
-          echo "Local equivalent: python3 scripts/validate-spec.py"
+          echo "Generating contract specification from Soroban contract..."
+          python3 scripts/generate-spec.py
+
+      - name: Check contract-spec.json is up-to-date
+        run: |
+          echo "Checking that checked-in contract-spec.json matches current contract source..."
+          if git diff --quiet -- contract-spec.json; then
+            echo "Contract specification is up-to-date"
+          else
+            echo "contract-spec.json is out of date with the contract source!"
+            echo "Run: python3 scripts/generate-spec.py and commit the updated file."
+            git diff -- contract-spec.json
+            exit 1
+          fi
+
+      - name: Validate regenerated contract specification
+        run: |
+          echo "Validating regenerated specification against contract implementation..."
           python3 scripts/validate-spec.py
-          echo "✅ No parameter or error-shape drift detected"
+          echo "No parameter or error-shape drift detected"
 
       - name: 📊 Check spec completeness
         run: |
@@ -96,7 +110,7 @@ jobs:
           EOF
       
       - name: 🟦 Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '20'
 
@@ -106,14 +120,12 @@ jobs:
           node scripts/generate-client.js
 
       - name: 🔍 TypeScript typecheck vault-client
-        working-directory: packages/vault-client
         run: |
           echo "Type-checking vault-client package..."
           npm ci
-          npm run typecheck
+          npm run typecheck --workspace=@neurowealth/vault-client
 
       - name: 🔍 Check TypeScript client is up-to-date
-        if: github.event_name == 'pull_request'
         run: |
           echo "Checking that generated TypeScript client matches current spec..."
           if git diff --quiet packages/vault-client/src/generated/vault.ts; then
@@ -133,7 +145,7 @@ jobs:
           fi
 
       - name: 📦 Upload spec as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: contract-spec
           path: |
@@ -141,34 +153,10 @@ jobs:
             packages/vault-client/src/generated/vault.ts
           retention-days: 30
       
-      - name: 💾 Commit spec if changed
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          
-          if git diff --quiet contract-spec.json; then
-            echo "✅ Spec unchanged"
-          else
-            echo "📝 Spec updated, committing changes..."
-            git add contract-spec.json
-            git commit -m "chore: update contract specification [skip ci]"
-            git push
-          fi
-
-          if git diff --quiet packages/vault-client/src/generated/vault.ts; then
-            echo "✅ TypeScript client unchanged"
-          else
-            echo "📝 TypeScript client updated, committing changes..."
-            git add packages/vault-client/src/generated/vault.ts
-            git commit -m "chore: regenerate TypeScript vault client [skip ci]"
-            git push
-          fi
-      
       - name: 📋 Comment PR with spec summary
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/github-script@v6
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
         with:
           script: |
             const fs = require('fs');

@@ -16,7 +16,9 @@ fn test_empty_index_returns_empty() {
     let (contract_id, _agent, _owner, _usdc) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    assert_eq!(client.get_users_with_shares(&0, &10).len(), 0);
+    let (users, next) = client.get_users_with_shares(&0, &10);
+    assert_eq!(users.len(), 0);
+    assert_eq!(next, None);
 }
 
 #[test]
@@ -33,7 +35,8 @@ fn test_lists_all_holders_with_shares() {
     mint_and_deposit(&env, &client, &usdc, &u2, 3_000_000);
     mint_and_deposit(&env, &client, &usdc, &u3, 7_000_000);
 
-    let all = client.get_users_with_shares(&0, &10);
+    let (all, next) = client.get_users_with_shares(&0, &10);
+    assert_eq!(next, None);
     assert_eq!(all.len(), 3, "all three holders should be listed");
     // First deposits are 1:1, so shares equal the deposited amounts, and the
     // index preserves deposit order.
@@ -57,21 +60,26 @@ fn test_pagination_start_and_limit() {
     mint_and_deposit(&env, &client, &usdc, &u3, 7_000_000);
 
     // Page of 2 from the start.
-    let page0 = client.get_users_with_shares(&0, &2);
+    let (page0, next0) = client.get_users_with_shares(&0, &2);
     assert_eq!(page0.len(), 2);
+    assert_eq!(next0, Some(2));
     assert_eq!(page0.get(0).unwrap(), (u1, 5_000_000));
     assert_eq!(page0.get(1).unwrap(), (u2, 3_000_000));
 
     // Second page picks up where the first left off.
-    let page1 = client.get_users_with_shares(&2, &2);
+    let (page1, next1) = client.get_users_with_shares(&next0.unwrap(), &2);
     assert_eq!(page1.len(), 1);
+    assert_eq!(next1, None);
     assert_eq!(page1.get(0).unwrap(), (u3, 7_000_000));
 
     // Beyond the end returns empty.
-    assert_eq!(client.get_users_with_shares(&4, &2).len(), 0);
+    assert_eq!(client.get_users_with_shares(&4, &2).0.len(), 0);
 
     // limit == 0 returns empty.
-    assert_eq!(client.get_users_with_shares(&0, &0).len(), 0);
+    assert_eq!(
+        client.get_users_with_shares(&0, &0),
+        (soroban_sdk::Vec::new(&env), None)
+    );
 }
 
 #[test]
@@ -88,19 +96,31 @@ fn test_zero_share_holders_are_filtered_out() {
     mint_and_deposit(&env, &client, &usdc, &u2, 3_000_000);
     mint_and_deposit(&env, &client, &usdc, &u3, 7_000_000);
 
-    // u2 fully withdraws: shares -> 0, but the index slot stays.
+    // u2 fully withdraws: shares -> 0. `prune_user_from_index` (#440) also
+    // actively removes u2 from the index, so no stale slot remains.
     client.withdraw_all(&u2);
     assert_eq!(client.get_shares(&u2), 0);
 
     // The full listing omits the zero-share holder.
-    let all = client.get_users_with_shares(&0, &10);
+    let (all, _) = client.get_users_with_shares(&0, &10);
     assert_eq!(all.len(), 2, "fully-withdrawn holder must be filtered out");
     assert_eq!(all.get(0).unwrap(), (u1.clone(), 5_000_000));
     assert_eq!(all.get(1).unwrap(), (u3.clone(), 7_000_000));
 
-    // The stale slot still occupies index position 1, so a page over just that
-    // slot returns empty even though other holders exist (documented behaviour).
-    assert_eq!(client.get_users_with_shares(&1, &1).len(), 0);
+    // `prune_user_from_index` actively compacts the index on full withdrawal
+    // (see `burn_and_pay`'s `new_user_shares == 0` branch), so u2's slot does
+    // not linger as a stale gap — u3 shifts down into index position 1.
+    let (page, next) = client.get_users_with_shares(&1, &1);
+    assert_eq!(
+        page.len(),
+        1,
+        "compacted index still has a holder at position 1"
+    );
+    assert_eq!(page.get(0).unwrap(), (u3.clone(), 7_000_000));
+    assert_eq!(
+        next, None,
+        "position 1 is the last entry in the compacted index"
+    );
 }
 
 #[test]
@@ -119,9 +139,36 @@ fn test_redeposit_does_not_duplicate_index_entry() {
     client.withdraw_all(&u2);
     mint_and_deposit(&env, &client, &usdc, &u2, 2_000_000);
 
-    let all = client.get_users_with_shares(&0, &10);
+    let (all, _) = client.get_users_with_shares(&0, &10);
     assert_eq!(all.len(), 2, "re-deposit must not create a duplicate entry");
 
     // Only two index slots exist: a page starting at slot 2 is empty.
-    assert_eq!(client.get_users_with_shares(&2, &10).len(), 0);
+    assert_eq!(client.get_users_with_shares(&2, &10).0.len(), 0);
+}
+
+#[test]
+#[ignore = "soroban-sdk 21.7.7 limitation, not a contract bug: creating 201 real deposits \
+            (zero catch_unwind involved) in one Env can itself crash Env::drop's snapshot \
+            serialization, aborting the whole test binary. Confirmed via an isolated run \
+            (--exact, no other tests) that still crashed purely from the deposit count, a \
+            distinct pure-scale trigger from the catch_unwind-after-scale crashes in \
+            test_tvl_cap_stress.rs."]
+fn test_oversized_limit_is_clamped_and_returns_next_start() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, _agent, _owner, usdc) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    for _ in 0..201 {
+        let user = Address::generate(&env);
+        mint_and_deposit(&env, &client, &usdc, &user, 1_000_000);
+    }
+
+    let (first, next) = client.get_users_with_shares(&0, &u32::MAX);
+    assert_eq!(first.len(), crate::MAX_USERS_PER_PAGE);
+    assert_eq!(next, Some(crate::MAX_USERS_PER_PAGE));
+
+    let (last, end) = client.get_users_with_shares(&next.unwrap(), &u32::MAX);
+    assert_eq!(last.len(), 1);
+    assert_eq!(end, None);
 }

@@ -1,0 +1,61 @@
+name: WhatsApp Bot Lint
+
+on:
+  pull_request:
+    paths:
+      - 'whatsapp/**'
+      - '.github/workflows/whatsapp-lint.yml'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'whatsapp/**'
+      - '.github/workflows/whatsapp-lint.yml'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    
+    defaults:
+      run:
+        working-directory: ./whatsapp
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: './whatsapp/package-lock.json'
+
+      - name: Build vault-client dependency
+        run: |
+          cd ../packages/vault-client
+          npm ci
+          npm run build
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Lockfile integrity check
+        run: |
+          # Verify package-lock.json is in sync with package.json
+          # This prevents lockfile drift that breaks npm ci
+          if ! npm ci --dry-run 2>&1 | grep -q "idealTree"; then
+            echo "::error::package-lock.json is out of sync with package.json. Run 'npm install' to regenerate it."
+            exit 1
+          fi

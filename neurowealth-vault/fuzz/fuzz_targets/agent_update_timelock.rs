@@ -100,7 +100,11 @@ fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
 }
 
 fn is_allowed_panic(msg: &str) -> bool {
-    const ALLOWED: &[&str] = &["Error(Contract, #48)", "Error(Contract, #49)", "Error(Contract, #50)"];
+    const ALLOWED: &[&str] = &[
+        "Error(Contract, #48)",
+        "Error(Contract, #49)",
+        "Error(Contract, #50)",
+    ];
     ALLOWED.iter().any(|needle| msg.contains(needle))
 }
 
@@ -118,7 +122,10 @@ fn assert_timelock_invariants(
         (Some((addr, expiry)), Some((expected_addr, expected_expiry))) => {
             assert_eq!(addr, expected_addr, "pending agent address mismatch");
             assert_eq!(expiry, expected_expiry, "pending expiry mismatch");
-            assert!(expiry > current_ledger, "effective_ledger must be in the future");
+            assert!(
+                expiry > current_ledger,
+                "effective_ledger must be in the future"
+            );
         }
         (None, None) => {}
         (Some((_, _)), None) => {
@@ -158,36 +165,37 @@ fuzz_target!(|data: &[u8]| {
             _ => Address::generate(&env),
         };
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match op {
-                0 => {
-                    client.update_agent(&proposal_agent);
-                }
-                1 => {
-                    client.confirm_agent_update();
-                }
-                2 => {
-                    client.cancel_agent_update();
-                }
-                3 => {
-                    let advance_by = match raw % 4 {
-                        0 => 1u32,
-                        1 => AGENT_TIMELOCK_LEDGERS / 2,
-                        2 => AGENT_TIMELOCK_LEDGERS,
-                        _ => AGENT_TIMELOCK_LEDGERS + 1,
-                    };
-                    let next_sequence = env.ledger().sequence().saturating_add(advance_by);
-                    env.ledger().set_sequence_number(next_sequence);
-                }
-                _ => unreachable!(),
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match op {
+            0 => {
+                client.update_agent(&proposal_agent);
             }
+            1 => {
+                client.confirm_agent_update();
+            }
+            2 => {
+                client.cancel_agent_update();
+            }
+            3 => {
+                let advance_by = match raw % 4 {
+                    0 => 1u32,
+                    1 => AGENT_TIMELOCK_LEDGERS / 2,
+                    2 => AGENT_TIMELOCK_LEDGERS,
+                    _ => AGENT_TIMELOCK_LEDGERS + 1,
+                };
+                let next_sequence = env.ledger().sequence().saturating_add(advance_by);
+                env.ledger().set_sequence_number(next_sequence);
+            }
+            _ => unreachable!(),
         }));
 
         match result {
             Ok(()) => {
                 match op {
                     0 => {
-                        let expected_expiry = env.ledger().sequence().saturating_add(AGENT_TIMELOCK_LEDGERS);
+                        let expected_expiry = env
+                            .ledger()
+                            .sequence()
+                            .saturating_add(AGENT_TIMELOCK_LEDGERS);
                         expected_pending = Some((proposal_agent.clone(), expected_expiry));
                     }
                     1 => {
@@ -218,7 +226,10 @@ fuzz_target!(|data: &[u8]| {
                     .copied()
                     .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
                     .unwrap_or("unknown panic");
-                assert!(is_allowed_panic(msg), "unexpected panic at step {step_idx}: {msg}");
+                assert!(
+                    is_allowed_panic(msg),
+                    "unexpected panic at step {step_idx}: {msg}"
+                );
             }
         }
     }

@@ -6483,3 +6483,12409 @@ impl NeuroWealthVault {
 #[cfg(test)]
 #[path = "tests/mod.rs"]
 mod comprehensive_tests;
+//! # NeuroWealth Vault Contract
+//!
+//! An ERC-4626 inspired vault contract for the NeuroWealth AI-powered DeFi yield platform on Stellar.
+//!
+//! ## Architecture Overview
+//!
+//! This contract implements a non-custodial vault where users deposit USDC and an AI agent
+//! automatically deploys those funds across various yield-generating protocols on the Stellar
+//! blockchain.
+//!
+//! ## Share Accounting Model
+//!
+//! This implementation follows an ERC-4626-inspired share-based model where:
+//! - Users deposit USDC and receive vault shares representing proportional ownership
+//! - Total shares remain constant while yield is accrued
+//! - The value of each share increases as `total_assets` grows
+//! - Withdrawals burn shares and return the user's proportional share of total assets
+//!
+//! Core math:
+//! - `shares_to_mint = (assets * total_shares) / total_assets`
+//!   - Bootstrap case: when `total_shares == 0 || total_assets == 0`, `shares_to_mint = assets`
+//! - `assets_to_return = (shares * total_assets) / total_shares`
+//!
+//! ## Rounding Policy (ERC-4626 Best Practice)
+//!
+//! This contract follows the ERC-4626 rounding convention:
+//! - **Floor mint**: When depositing, shares minted are rounded DOWN to protect the vault.
+//!   - `shares_to_mint = floor(assets * total_shares / total_assets)`
+//! - **Ceil burn**: When withdrawing, shares burned are rounded UP to protect the vault.
+//!   - `shares_to_burn = ceil(assets * total_shares / total_assets)`
+//! - **Floor return**: When converting burned shares to returned assets, assets are rounded DOWN.
+//!   - `assets_to_return = floor(shares * total_assets / total_shares)`
+//!
+//! This ensures:
+//! - The vault never loses value due to rounding
+//! - Dust attacks are prevented (at least 1 share burned when assets > 0)
+//! - Users cannot gain from rounding
+//! - Automatic yield growth tracking
+//! - Fair distribution of earnings
+//! - Mathematically consistent deposits and withdrawals
+//!
+//! ## Asset Flow
+//!
+//! ```text
+//! Deposit Flow:
+//! User → [USDC Token] → [Vault Contract] → [AI Agent monitors]
+//!                      ↓
+//!              Shares recorded per user
+//!              DepositEvent emitted
+//!
+//! Rebalance Flow (AI Agent):
+//! AI Agent → [Vault.rebalance()] → [External Protocols (Blend, DEX)]
+//!                              ↓
+//!                      RebalanceEvent emitted
+//!
+//! Withdraw Flow:
+//! User → [Vault.withdraw()] → [Vault Contract] → [USDC Token] → User
+//!         ↓
+//! Shares burned
+//! WithdrawEvent emitted
+//! ```
+//!
+//! ## Storage Layout
+//!
+//! ### Instance Storage (Contract-Wide, Expensive to Read/Write)
+//! - `Agent`: The authorized AI agent address that can call rebalance()
+//! - `UsdcToken`: The USDC token contract address
+//! - `TotalDeposits`: Total USDC principal deposited by users; never includes yield.
+//!   Use `TotalAssets` for share pricing and cap guards (see issue #299 / ARCHITECTURE.md).
+//! - `Paused`: Boolean flag for emergency pause state
+//! - `Owner`: Contract owner address for administrative functions
+//! - `TvlCap`: Maximum total value locked in the vault
+//! - `UserDepositCap`: Maximum deposit per user
+//! - `ApprovalTtl`: Shared approval lifetime in ledgers for Blend and DEX approvals
+//! - `Version`: Contract version for upgrade tracking
+//! - `MinRebalanceInterval`: Minimum ledgers between rebalances (owner-configurable, Issue #59)
+//! - `LastRebalanceLedger`: Ledger number of the most recent successful rebalance call (Issue #59)
+//! - `RateLimitConfig(Symbol)`: Owner-configured call allowance and ledger window
+//! - `RateLimitGlobalState(Symbol)`: Global rate-limit usage buckets
+//! - `RateLimitUserState(Address, Symbol)`: Per-user rate-limit usage buckets
+//! - `MaxBatchSize`: Maximum entries accepted by `batch_deposit`
+//!
+//! ### Persistent Storage (Per-User, Cheaper)
+//! - `Shares(user)`: vault shares owned by each user address
+//!
+//! ## Event Design Philosophy
+//!
+//! Events are emitted for all state-changing operations to enable:
+//! - AI agent to detect deposits/withdrawals and react accordingly
+//! - Frontend applications to track user balances in real-time
+//! - External indexers to build transaction histories
+//! - Security auditors to verify contract behavior
+//!
+//! ## Upgrade Model
+//!
+//! This contract supports upgradeability through Soroban's built-in contract upgrade
+//! mechanism. The owner can upgrade the contract code while preserving storage state.
+//! Upgrades must be performed carefully to maintain:
+//! - User balances
+//! - Total deposits
+//! - Agent and owner addresses
+//! - Configuration parameters
+//!
+//! # Examples
+//!
+//! ## Deposit USDC
+//! ```ignore
+//! let token_client = token::Client::new(&env, &usdc_token);
+//! token_client.transfer(&user, &vault_address, &amount);
+//! vault_client.deposit(&user, &amount);
+//! ```
+//!
+//! Note: This example is marked `ignore` because doctests cannot construct a live
+//! Soroban Env with the required token and contract setup. For comprehensive
+//! deposit/withdrawal testing, see `tests/test_deposit.rs` and
+//! `tests/test_rebalance_integration.rs` which cover the full lifecycle with
+//! mocked environments.
+//!
+//! ## Withdraw USDC
+//! ```ignore
+//! vault_client.withdraw(&user, &amount);
+//! ```
+
+// `missing_docs` cannot be denied crate-wide: `#[contract]`, `#[contracttype]`,
+// and `#[contracterror]` each expand to an undocumented static and associated
+// function whose spans point at the attribute itself, so no source-level
+// `#[allow]` can annotate them. The crate-level allow below exists solely to
+// suppress that macro-generated noise — it is *not* a licence to ship
+// undocumented API:
+//
+// - `#[warn(missing_docs)]` on `impl NeuroWealthVault` (see below) re-enables
+//   the lint for every public contract entrypoint. CI runs clippy with
+//   `-D warnings`, so an undocumented `pub fn` fails the build.
+// - Every hand-written public item — event structs and their fields,
+//   `DataKey` variants, `VaultError` variants — is documented explicitly.
+//
+// Per-item `#[allow(missing_docs)]` attributes were removed in favour of this
+// single, explained crate-level allow (issues #422 / #423).
+#![allow(missing_docs)]
+#![no_std]
+#![allow(clippy::pedantic)]
+#![allow(deprecated)]
+// These mixed-case aliases are part of the legacy `VaultError` API and are
+// retained for source compatibility with existing clients and tests.
+#![allow(non_upper_case_globals)]
+
+pub mod topics;
+
+use core::cmp::min;
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
+    vec, Address, BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec,
+};
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+/// Default TVL cap applied at initialization: 100,000,000,000 stroops = 100M USDC.
+///
+/// Expressed in USDC's 7-decimal representation (1 USDC = 10_000_000 stroops).
+/// The owner can raise or lower this after deployment via `set_tvl_cap`.
+const DEFAULT_TVL_CAP: i128 = 100_000_000_000;
+
+// ============================================================================
+// ERROR TYPES
+// ============================================================================
+
+// NOTE: `export = false` suppresses generation of the `SCSpecUDTErrorEnumV0`
+// spec entry. The XDR spec type caps error enums at 50 cases and this enum has
+// outgrown that limit as features landed (#316/#317/#439/#637/#659). Disabling
+// spec export keeps every error code stable and observable on-chain
+// (`Error(Contract, #N)` is still returned to callers) while allowing the
+// contract to compile. Off-chain consumers should read the codes from
+// `ERROR_STYLE_GUIDE.md` / `contract-spec.json` instead of the WASM spec blob.
+
+// Soroban's embedded contract-spec error union is limited to 50 cases. The
+// vault keeps a larger, numerically stable error surface for compatibility, so
+// the repository's generated contract spec is the source of truth for this
+// type instead of embedding an oversized union in the WASM.
+
+#[contracterror(export = false)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VaultError {
+    /// Vault has already been initialized.
+    AlreadyInitialized = 4,
+    /// Initializer is not the expected deployer.
+    UnauthorizedDeployer = 5,
+    /// Minted shares must be positive.
+    SharesToMintMustBePositive = 6,
+    /// Vault has no liquidity for the requested withdrawal.
+    InsufficientLiquidity = 7,
+    /// User has insufficient shares.
+    InsufficientShares = 8,
+    /// Vault has no assets to withdraw.
+    NoAssetsToWithdraw = 9,
+    /// Burned shares must be positive.
+    SharesToBurnMustBePositive = 10,
+    /// User has insufficient shares for the requested amount.
+    InsufficientSharesForAmount = 11,
+    /// User has no shares to withdraw.
+    NoSharesToWithdraw = 12,
+    /// Vault has no liquidity available.
+    NoLiquidityAvailable = 13,
+    /// Vault has no assets to return.
+    NoAssetsToReturn = 14,
+    /// Vault has no shares to burn.
+    NoSharesToBurn = 15,
+    /// min_out must be non-negative.
+    MinOutMustBeNonNegative = 16,
+    /// Protocol is not supported.
+    UnsupportedProtocol = 17,
+    /// Blend pool is not configured.
+    BlendPoolNotConfigured = 18,
+    /// Caller is not allowed to pause.
+    OnlyOwnerCanPause = 19,
+    /// Caller is not allowed to unpause.
+    OnlyOwnerCanUnpause = 20,
+    /// Vault is not paused.
+    NotPaused = 21,
+    /// Caller is not allowed to emergency pause.
+    OnlyOwnerCanEmergencyPause = 22,
+    /// TVL cap cannot be negative.
+    TvlCapCannotBeNegative = 23,
+    /// User deposit cap cannot be negative.
+    UserDepositCapCannotBeNegative = 24,
+    /// TVL cap must be greater than or equal to user deposit cap.
+    TvlCapBelowUserDepositCap = 25,
+    /// Caller is not allowed to configure a protocol pool.
+    OnlyOwnerCanConfigurePool = 28,
+    /// Caller is not the pending owner (or no pending ownership transfer exists).
+    CallerIsNotPendingOwner = 29,
+    /// Caller is not allowed to update total assets.
+    OnlyAgentCanUpdateTotalAssets = 30,
+    /// Total assets decrease requires explicit allowance.
+    TotalAssetsDecreaseNotAllowed = 31,
+    /// Total assets decrease exceeds configured maximum bps.
+    DecreaseExceedsMaximumAllowedBps = 32,
+    /// Vault balance is insufficient for reported assets.
+    InsufficientBalanceForAssets = 33,
+    /// Caller is not the owner.
+    CallerIsNotOwner = 34,
+    /// Vault is paused.
+    Paused = 35,
+    /// Vault is not initialized.
+    NotInitialized = 36,
+    /// Amount must be positive.
+    AmountMustBePositive = 37,
+    /// Deposit is below the configured minimum.
+    BelowMinimumDeposit = 38,
+    /// Deposit exceeds the configured maximum.
+    MaximumDepositExceeded = 39,
+    /// Deposit exceeds user cap.
+    ExceedsUserDepositCap = 40,
+    /// Deposit exceeds TVL cap.
+    ExceedsTvlCap = 41,
+    /// A protocol leg returned less than min_out.
+    MinOutNotMet = 42,
+    /// Rebalance called before the configured cooldown has elapsed.
+    RebalanceCooldownActive = 43,
+    /// Approval TTL is below the allowed floor.
+    ApprovalTtlTooLow = 44,
+    /// Approval TTL is above the allowed ceiling.
+    ApprovalTtlTooHigh = 45,
+    /// DEX liquidity pool is not configured.
+    DexPoolNotConfigured = 46,
+    /// Strategy must be one of "conservative", "balanced", or "growth".
+    InvalidStrategy = 47,
+    /// A timelocked proposal (agent update or upgrade) is already pending.
+    ///
+    /// Shared by the agent timelock (#317) and the upgrade timelock (#316).
+    /// The SDK caps `#[contracterror]` enums at 50 cases, so both two-step flows
+    /// reuse one set of generic timelock error codes rather than each defining
+    /// their own.
+    TimelockAlreadyPending = 48,
+    /// No timelocked proposal exists to confirm/execute or cancel.
+    NoTimelockPending = 49,
+    /// The timelock delay has not yet elapsed.
+    TimelockNotExpired = 50,
+    /// Deployer address supplied to `initialize` is the zero address.
+    DeployerCannotBeZeroAddress = 62,
+    /// Owner address supplied to `initialize` is the zero address.
+    OwnerCannotBeZeroAddress = 63,
+    /// Agent address supplied to `initialize` is the zero address.
+    AgentCannotBeZeroAddress = 64,
+    /// USDC token address supplied to `initialize` is the zero address.
+    UsdcTokenCannotBeZeroAddress = 65,
+    /// Maximum per-transaction deposit exceeds the absolute configured ceiling.
+    MaximumDepositExceedsCeiling = 66,
+    /// Migration is paused by the owner.
+    MigrationPaused = 67,
+    /// Migration target vault address is not set by owner.
+    InvalidMigrationTarget = 68,
+    /// User has no shares to migrate.
+    NoSharesToMigrate = 69,
+    /// Shares are already locked.
+    SharesAlreadyLocked = 70,
+    /// Lock period has not ended.
+    LockPeriodNotEnded = 71,
+    /// Lock duration is not supported.
+    InvalidLockDuration = 72,
+    /// Insufficient unlocked shares to lock.
+    InsufficientUnlockedShares = 73,
+    /// Emergency withdrawal not allowed (vault not paused).
+    EmergencyWithdrawalNotAllowed = 74,
+    /// Withdrawal rejected: minimum holding period since last deposit has not elapsed (#659).
+    HoldingPeriodNotElapsed = 75,
+    /// Holding period configuration is invalid (must be non-negative) (#659).
+    InvalidHoldingPeriod = 76,
+
+    /// Multi-protocol allocation is invalid: a leg is out of the 0..=10_000
+    /// basis-point range, or the legs sum to more than 10_000.
+    InvalidAllocation = 77,
+    /// The call requires multi-protocol allocation mode, which is not enabled.
+    MultiProtocolNotEnabled = 78,
+    /// The call requires single-protocol mode, but multi-protocol mode is active.
+    MultiProtocolEnabledError = 79,
+
+    /// A batch contains more entries than the configured maximum.
+    BatchSizeExceeded = 80,
+    /// No adapter contract is configured for the requested protocol (#656).
+    ProtocolAdapterNotConfigured = 81,
+    /// The requested protocol is not on the owner-managed whitelist (#656).
+    ProtocolNotWhitelisted = 82,
+    /// The token is not configured for the requested vault asset operation.
+    UnsupportedAsset = 83,
+    /// The configured call rate for an operation has been exhausted.
+    RateLimitExceeded = 84,
+    /// The owner supplied an unsupported rate-limit category.
+    InvalidRateLimitCategory = 85,
+    /// A rate-limit window must be non-zero when a limit is enabled.
+    InvalidRateLimitConfig = 86,
+    /// The withdrawal request has already been fulfilled.
+    WithdrawalRequestAlreadyFulfilled = 87,
+    /// The withdrawal request has already been cancelled.
+    WithdrawalRequestAlreadyCancelled = 88,
+    /// The caller is not the address that created this withdrawal request.
+    NotRequestOwner = 89,
+    /// The caller is neither the primary agent nor the standby agent (#653).
+    UnauthorizedAgentError = 90,
+    /// `pause()` was called while the vault is already paused (#988).
+    AlreadyPaused = 91,
+    /// `update_standby_agent` was called with the primary agent's own
+    /// address. Neither `NotInitialized` nor `InvalidStrategy` (the two
+    /// variants this call site used interchangeably before) describes this
+    /// case; both are unrelated error conditions reused by mistake.
+    StandbyMatchesPrimaryAgent = 92,
+    /// The bootstrap 1:1 asset-to-share conversion was about to mint shares
+    /// while existing shares are outstanding but the vault reports zero
+    /// assets (#973). Minting here would value those existing holders'
+    /// shares at zero, so the deposit is rejected instead.
+    DepositRejectedZeroAssetsWithShares = 93,
+}
+
+impl VaultError {
+    // The SDK caps `#[contracterror]` at 50 cases. Deprecated overflow and configuration
+    // error aliases have been removed. Call sites must use the primary error codes instead:
+    // - Arithmetic overflows → AmountMustBePositive or specific validation errors
+    // - Configuration validation → use specific enum variants (e.g., TvlCapBelowUserDepositCap)
+    // - Deprecated config names → use primary names (e.g., InvalidStrategy directly)
+    //
+    // Remaining aliases map to logically equivalent codes and are retained for source
+    // compatibility with existing clients and tests until they can be migrated.
+
+    pub const DeployerCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const OwnerCannotBeZeroAddress: Self = Self::CallerIsNotOwner;
+    pub const AgentCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const UsdcTokenCannotBeZeroAddress: Self = Self::UnauthorizedDeployer;
+    pub const MaximumDepositExceedsCeiling: Self = Self::MaximumDepositExceeded;
+}
+
+// ============================================================================
+// STORAGE KEYS
+// ============================================================================
+
+/// Storage keys for vault state.
+///
+/// This enum defines all keys used for both instance and persistent storage.
+/// Instance storage is used for contract-wide configuration, while persistent
+/// storage is used for per-user data that requires efficient access.
+#[contracttype]
+pub enum DataKey {
+    /// Legacy user's principal USDC balance (key: user Address).
+    ///
+    /// Deprecated: retained only to preserve the serialized `DataKey` layout
+    /// across upgrades. New accounting must not read or write this key; user
+    /// balances are derived from `Shares(user)` and the current exchange rate.
+    Balance(Address),
+    /// User's share balance (key: user Address).
+    /// Represents proportional ownership of the vault's total assets.
+    Shares(Address),
+    /// Total USDC deposits (principal) in the vault.
+    /// Stored in instance storage (single value, frequently read).
+    /// This tracks deposited principal only and does NOT include yield.
+    TotalDeposits,
+    /// Total vault shares in circulation.
+    /// Used for share-based accounting and conversions.
+    TotalShares,
+    /// Total managed assets for the vault (principal + yield).
+    /// This is the authoritative value used for share pricing.
+    TotalAssets,
+    /// Authorized AI agent address
+    /// Can only call rebalance() to move funds between yield strategies
+    Agent,
+    /// USDC token contract address
+    /// The vault accepts only this token for deposits
+    UsdcToken,
+    /// Contract pause state
+    /// When true, deposits and withdrawals are disabled
+    Paused,
+    /// Contract owner address
+    /// Can perform administrative functions (pause, upgrade, set limits)
+    Owner,
+    /// Pending owner address for two-step ownership transfer
+    PendingOwner,
+    /// Total Value Locked cap
+    /// Maximum total USDC that can be deposited in the vault
+    TvLCap,
+    /// Per-user deposit cap
+    /// Maximum amount a single user can deposit
+    UserDepositCap,
+    /// Minimum deposit amount
+    /// Minimum amount required for a single deposit
+    MinDeposit,
+    /// Maximum deposit amount
+    /// Maximum amount allowed for a single deposit
+    MaxDeposit,
+    /// Contract version for upgrade tracking
+    Version,
+    /// Blend pool contract address
+    /// The address of the Blend lending pool contract for on-chain integration
+    BlendPool,
+    /// Current protocol where funds are deployed
+    /// Symbol indicating the active protocol (e.g., "blend", "none")
+    ///
+    /// # Multi-protocol mode
+    /// When [`DataKey::MultiProtocolEnabled`] is `true` this key is maintained
+    /// as a *derived summary* of the allocation for backward compatibility:
+    /// `"blend"`/`"dex"` when a single venue holds 100% of the allocation,
+    /// `"multi"` when both hold a non-zero share, `"none"` when nothing is
+    /// allocated. Authoritative per-venue state lives in
+    /// [`DataKey::AllocationBps`].
+    CurrentProtocol,
+    /// Multi-protocol allocation mode flag (Phase 2).
+    ///
+    /// `false` (or absent) keeps the legacy mutual-exclusion behaviour where
+    /// `rebalance()` moves the whole position to a single venue. `true` enables
+    /// `rebalance_multi()` / proportional withdrawals across Blend and DEX.
+    /// Flipped by the owner via `enable_multi_protocol`.
+    MultiProtocolEnabled,
+    /// Target allocation split `(blend_bps, dex_bps)`, in basis points (0..=10_000 each).
+    ///
+    /// Only meaningful when [`DataKey::MultiProtocolEnabled`] is `true`.
+    /// `blend_bps + dex_bps <= 10_000`; any remainder is held idle in the
+    /// vault. Combined into a single tuple-valued key (formerly the separate
+    /// `BlendAllocationBps` / `DexAllocationBps` keys) because the two are
+    /// always read and written together via `read_allocation`.
+    AllocationBps,
+    /// USDC principal the vault believes is deployed `(blend, dex)`, in raw units.
+    ///
+    /// Written by every supply/withdraw leg so the vault has a local, cheap
+    /// record of per-venue deployment that does not require a cross-contract
+    /// call. Read by `read_deployed_split`. Combined into a single
+    /// tuple-valued key (formerly the separate `DeployedToBlend` /
+    /// `DeployedToDex` keys) because the two are always read and written
+    /// together.
+    DeployedSplit,
+    /// Last agent-reported APY `(blend_bps, dex_bps)`, in basis points.
+    ///
+    /// Used together with the current allocation to compute the vault's
+    /// composite (allocation-weighted) APY. Combined into a single
+    /// tuple-valued key (formerly the separate `BlendApyBps` / `DexApyBps`
+    /// keys) because the two are always read together.
+    ProtocolApyBps,
+    /// Legacy Blend-specific approval TTL key.
+    ///
+    /// Retained for backward compatibility with already-initialized instances.
+    /// The live approval path now reads `ApprovalTtl`, falling back to this key
+    /// when no shared TTL has been written yet.
+    BlendApprovalTtl,
+    /// Deployer address - the address that deployed the contract
+    /// Used for signature verification during initialization to prevent front-running
+    Deployer,
+    /// Minimum number of ledgers that must elapse between rebalance() calls.
+    /// Configurable by the owner. When absent, no cooldown is enforced.
+    /// (Issue #59)
+    MinRebalanceInterval,
+    /// Ledger sequence number of the most recent successful rebalance() call.
+    /// Written at the end of every successful rebalance.
+    /// (Issue #59)
+    LastRebalanceLedger,
+    /// Number of ledgers added to the current ledger for protocol approvals.
+    ApprovalTtl,
+    /// DEX liquidity pool contract address
+    /// The address of the Stellar DEX liquidity pool contract used by the
+    /// Balanced/Growth strategies for on-chain liquidity provision.
+    DexPool,
+    /// Per-user investment strategy preference.
+    /// Set by the user, read by the AI agent to determine yield deployment.
+    UserStrategy(Address),
+    /// Pending agent update awaiting timelock confirmation, as
+    /// `(new_agent, effective_ledger)` (#317).
+    ///
+    /// Combined into a single tuple-valued key (formerly the separate
+    /// `PendingAgent` / `AgentTimelockExpiry` keys) because the two are
+    /// always set, read, and removed together.
+    PendingAgentUpdate,
+    /// Pending contract upgrade awaiting timelock execution, as
+    /// `(new_wasm_hash, effective_ledger)` (#316).
+    ///
+    /// Combined into a single tuple-valued key (formerly the separate
+    /// `PendingUpgradeHash` / `UpgradeTimelockExpiry` keys) because the two
+    /// are always set, read, and removed together.
+    PendingUpgrade,
+    /// Pending migration target and the ledger it becomes executable at (#969).
+    PendingMigrationTarget,
+    /// Circuit-breaker state, as `(max_consecutive_failures,
+    /// consecutive_failures)` (#439).
+    ///
+    /// `max_consecutive_failures` is the owner-configurable threshold that
+    /// trips an automatic emergency pause (falls back to a default value when
+    /// unset, e.g. instances initialized before the circuit breaker existed).
+    /// `consecutive_failures` is incremented on every `"failed"` rebalance and
+    /// reset to `0` on any `"success"`; when it reaches the threshold the
+    /// vault auto-pauses. Combined into a single tuple-valued key (formerly
+    /// the separate `MaxConsecutiveFailures` / `ConsecutiveFailures` keys)
+    /// to stay within Soroban's `#[contracttype]` variant cap.
+    CircuitBreakerState,
+    /// Append-only index of addresses that have ever held non-zero shares (#440).
+    ///
+    /// Stored as a `Vec<Address>` in instance storage so it shares the vault
+    /// instance's lifetime. Read by `get_users_with_shares` for indexer
+    /// pagination; entries are never removed, so fully-withdrawn users leave a
+    /// stale slot that is filtered out at read time.
+    UserSharesIndex,
+    /// Migration state, as `(migration_target, migration_paused)` (#637).
+    ///
+    /// `migration_target` is the vault address users may migrate their shares
+    /// to, set by the owner to enable vault migration during contract
+    /// upgrades (via `migrate_shares`). `migration_paused`, when true, blocks
+    /// migration even if a target is set; the owner can pause migration
+    /// independently of the main vault pause. Combined into a single
+    /// tuple-valued key (formerly the separate `MigrationTarget` /
+    /// `MigrationPaused` keys) to stay within Soroban's `#[contracttype]`
+    /// variant cap.
+    MigrationState,
+    /// User's lock state, as `(locked_shares, expiry_ledger)` (key: user
+    /// Address) (#636).
+    ///
+    /// `locked_shares` is the number of shares locked by the user; they
+    /// cannot be withdrawn until `expiry_ledger`. Combined into a single
+    /// tuple-valued key (formerly the separate `LockedShares` / `LockExpiry`
+    /// keys) because the two represent one logical lock record.
+    LockState(Address),
+    /// Latest ML-model APY prediction for a given protocol (#650).
+    /// Written by the agent via `submit_apy_prediction`. Keyed by protocol symbol.
+    ApyPrediction(Symbol),
+    /// Cumulative suspected MEV loss and incident count, as
+    /// `(cumulative_loss_stroops, incident_count)` (#658).
+    ///
+    /// Incremented by `submit_mev_report` when the agent detects extraction.
+    /// Combined into a single tuple-valued key (formerly the separate
+    /// `CumulativeMevLoss` / `MevIncidentCount` keys) because the two are
+    /// always read and written together.
+    MevStats,
+    /// Maximum acceptable MEV loss per rebalance in stroops, configured by
+    /// the owner. When a reported loss exceeds this value, an alert event is
+    /// emitted (#658). Zero means no threshold is set.
+    MaxAcceptableMevLoss,
+    /// Minimum number of ledgers a user must wait after depositing before
+    /// they can withdraw. Configurable by the owner. When absent (or zero)
+    /// no holding period is enforced. Used for flash-loan protection (#659).
+    MinHoldingPeriod,
+    /// Ledger sequence of the most recent deposit for a given user (#659).
+    /// Written on every successful `deposit`. Used together with
+    /// `MinHoldingPeriod` to enforce the flash-loan protection window.
+    LastDepositLedger(Address),
+    /// Maximum allowed decrease in basis points for `update_total_assets` (#974).
+    /// Configured by the owner. Defaults to 1000 bps (10%) with a hard ceiling of 10_000 bps (100%).
+    /// The caller-supplied argument in `update_total_assets` is ignored after this fix.
+    MaxDecreaseBps,
+
+    /// Owner-configured call allowance and ledger window for a rate-limit category.
+    /// Appended to preserve the serialized discriminants of existing keys.
+    RateLimitConfig(Symbol),
+    /// Global fixed-window rate-limit usage for a category.
+    RateLimitGlobalState(Symbol),
+}
+
+/// Storage keys added once [`DataKey`] reached `#[contracttype]`'s 50-variant
+/// union-case limit (a hard panic in soroban-sdk 21's enum macro, not a
+/// warning — confirmed by bisecting the variant count in isolation).
+///
+/// This is a second, independent enum rather than a reshuffling of
+/// [`DataKey`]: each enum's case numbers are assigned purely by declaration
+/// position within that enum (`soroban-sdk-macros`' `derive_enum` enumerates
+/// its own `variants` from 0), so adding `DataKeyExt` leaves every existing
+/// `DataKey` variant's on-chain discriminant exactly where it was. Newer keys
+/// belong here; nothing already in `DataKey` should move.
+#[contracttype]
+pub enum DataKeyExt {
+    /// Per-user fixed-window rate-limit usage for a category.
+    RateLimitUserState(Address, Symbol),
+    /// Maximum entries accepted by `batch_deposit`; `0` means unlimited.
+    MaxBatchSize,
+    /// First-deposit snapshot for realized-APY computation (key: user Address) (#462).
+    DepositSnapshot(Address),
+    /// Adapter contract address for a protocol (key: protocol symbol) (#656).
+    ///
+    /// Set by the owner via `set_protocol_adapter`. When present, the protocol
+    /// becomes eligible for `supply`/`withdraw` through the uniform adapter
+    /// interface.
+    ProtocolAdapter(Symbol),
+    /// Whitelist flag for a protocol (key: protocol symbol) (#656).
+    ///
+    /// Set by the owner via `set_protocol_whitelisted`. Both conditions —
+    /// whitelisted AND adapter configured — must hold before `rebalance` will
+    /// deploy funds to a protocol.
+    ProtocolWhitelist(Symbol),
+    /// Append-only index of whitelisted protocol symbols for enumeration (#656).
+    ///
+    /// Stored as `Vec<Symbol>` in instance storage, updated whenever the
+    /// whitelist changes. Read by `get_protocol_whitelist`.
+    ProtocolWhitelistIndex,
+
+    // ============================================================================
+    // Agent key rotation — hot-standby pattern (#653)
+    // ============================================================================
+    /// Standby AI agent key that can also call rebalance, harvest, and
+    /// update_total_assets alongside the primary agent (#653).
+    ///
+    /// When present, `require_is_agent` accepts either the primary `Agent` or
+    /// the `StandbyAgent`. The owner may update it independently via
+    /// `update_standby_agent` and perform an instant switchover via
+    /// `switch_to_standby_agent`. Both functions are deliberately
+    /// timelock-free (hot-standby rotation is meant to be instant); only the
+    /// two-step `update_agent` / `confirm_agent_update` primary-agent flow is
+    /// time-delayed.
+    StandbyAgent,
+
+    // ============================================================================
+    // Withdrawal Queue (#757)
+    // ============================================================================
+    /// Withdrawal queue configuration: max_size and TTL in seconds.
+    QueueConfig,
+    /// Next withdrawal request ID (auto-incrementing counter).
+    NextRequestId,
+    /// A specific withdrawal request (key: request ID u32).
+    WithdrawalRequest(u32),
+    /// Ordered list of pending (non-fulfilled, non-cancelled) request IDs.
+    QueueOrder,
+    /// Withdrawal queue storage schema version used by lazy compaction.
+    WithdrawalQueueStorageVersion,
+    /// Sum of `amount` across a user's own pending (non-fulfilled,
+    /// non-cancelled) withdrawal requests, in underlying-asset units
+    /// (#990). `queue_withdrawal` checks the user's shares against this
+    /// reserved total (converted to shares) in addition to the new
+    /// request, so queuing several requests that together exceed the
+    /// user's real balance is rejected instead of silently allowed.
+    ReservedWithdrawalAmount(Address),
+}
+
+/// Owner-configured allowance for one rate-limit category.
+///
+/// `max_calls == 0` and `window_ledgers == 0` disables the category. An
+/// enabled configuration uses a fixed window that starts with the first
+/// accepted call and resets once `window_ledgers` have elapsed.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    /// Maximum number of accepted calls during one window.
+    pub max_calls: u32,
+    /// Length of the window in ledger sequences.
+    pub window_ledgers: u32,
+}
+
+/// Usage of a rate-limit bucket.
+///
+/// The state is deliberately stored independently from the configuration so
+/// changing a limit cannot rewrite or enumerate every user's bucket.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RateLimitState {
+    /// Ledger at which the current window began.
+    pub window_start: u32,
+    /// Number of accepted calls in the current window.
+    pub calls: u32,
+}
+
+// ============================================================================
+// WITHDRAWAL QUEUE (#757)
+// ============================================================================
+
+/// Owner-configured withdrawal queue settings.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueConfig {
+    /// Maximum number of pending requests the queue can hold (0 = unlimited).
+    pub max_size: u32,
+    /// Request time-to-live in seconds; expired requests are skipped during processing.
+    pub ttl: u64,
+}
+
+/// A single withdrawal request in the queue.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WithdrawalRequest {
+    /// Address that submitted the request.
+    pub user: Address,
+    /// Amount of USDC (in base units) requested for withdrawal.
+    pub amount: i128,
+    /// Whether the request has been fulfilled by the agent.
+    pub fulfilled: bool,
+    /// Whether the user cancelled the request.
+    pub cancelled: bool,
+    /// Unix timestamp (seconds) when the request was created.
+    pub created_at: u64,
+}
+
+/// First-deposit snapshot used to compute a user's realized APY (#462).
+///
+/// Written once when a user makes their first deposit (from zero shares), and
+/// read by the read-only `get_user_apy` view. Only the share balance and the
+/// deposit principal are needed: the ratio of the current value of those
+/// shares to the principal is the price growth since entry, which APY
+/// annualizes.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DepositSnapshot {
+    /// The user's total share balance immediately after their first deposit.
+    pub shares: i128,
+    /// USDC principal of that first deposit (share value at entry).
+    pub principal: i128,
+    /// Unix timestamp (seconds) of the first deposit, from the ledger.
+    pub deposited_at: u64,
+}
+
+// ============================================================================
+// MULTI-ASSET SUPPORT (#646) — CONFIGURATION & ACCOUNTING TYPES
+// ============================================================================
+
+/// Owner-managed configuration for one supported deposit asset (#646).
+///
+/// Each supported asset (`"USDC"`, `"XLM"`, `"USDT"`, `"EURC"`, ...) maps to a
+/// token contract address and its own deposit limits. Assets are registered by
+/// the owner via `add_supported_asset` and reconfigured via
+/// `update_asset_limits`.
+///
+/// When `tvl_cap == 0` the per-asset TVL cap is disabled; the asset then shares
+/// the vault-global `TvLCap` (mirrored through `TotalAssets`). When
+/// `deposit_limit == 0` the per-asset single-deposit limit is disabled and
+/// `min_deposit == 0` disables the per-asset floor.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetConfig {
+    /// Token contract address for the asset (native 0-value address for XLM).
+    pub token_address: Address,
+    /// Minimum amount accepted for a single `deposit_asset` call (`0` = none).
+    pub min_deposit: i128,
+    /// Maximum amount accepted for a single `deposit_asset` call (`0` = none).
+    pub deposit_limit: i128,
+    /// Total-value-locked cap for this asset's share pool (`0` = uncapped).
+    pub tvl_cap: i128,
+}
+
+/// Per-asset accounting totals for one asset's independent share pool (#646).
+///
+/// Each supported asset has its own share pool, so share price (and thus
+/// `assets / shares`) is computed per asset rather than vault-globally.
+/// Absent — or all zero — until the first `deposit_asset`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct AssetTotals {
+    /// Total managed value in the asset's native units (principal + yield).
+    pub assets: i128,
+    /// Total shares in circulation for this asset's share pool.
+    pub shares: i128,
+    /// Principal deposited into this asset's share pool (no yield).
+    pub deposits: i128,
+}
+
+/// Combined result for `get_asset_totals`, exposing both the per-asset pool
+/// totals and the per-user share balance (#646).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetBalance {
+    /// The user's per-asset share balance.
+    pub shares: i128,
+    /// The user's per-asset balance in the asset's native units.
+    pub assets: i128,
+    /// Total managed value in the asset's pool.
+    pub pool_assets: i128,
+    /// Total shares in the asset's pool.
+    pub pool_shares: i128,
+}
+
+// ----------------------------------------------------------------------------
+// Multi-asset storage keys (#646)
+//
+// `DataKey` is capped at 50 serialized variants by the Soroban contract-spec
+// union limit (`ScSpecUdtUnionV0.cases<50>`), and `StandbyAgent` already
+// consumes slot 50. Rather than burn the last slot on a catch-all namespaced
+// key, the multi-asset state uses this dedicated contracttype enum. Enum
+// variants serialize with their variant name as a discriminat symbol, so
+// `Config`/`Totals`/`Shares`/`SupportedAssets` can never collide with each
+// other or with the `DataKey` entries (whose first serialized element is the
+// `DataKey` variant name).
+// ----------------------------------------------------------------------------
+
+/// Storage keys for multi-asset (#646) state.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MultiAssetKey {
+    /// One asset's [`AssetConfig`] (key: asset symbol).
+    Config(Symbol),
+    /// One asset's [`AssetTotals`] (key: asset symbol).
+    Totals(Symbol),
+    /// A user's per-asset share balance (key: user, asset symbol).
+    Shares(Address, Symbol),
+    /// The append-only supported-assets index (unit key).
+    SupportedAssets,
+}
+
+// ============================================================================
+// EVENTS
+// ============================================================================
+
+/// Emitted when a user deposits USDC into the vault.
+///
+/// AI agents monitor this event to detect new deposits and initiate
+/// yield deployment. External indexers use this for transaction tracking.
+///
+/// # Topics
+/// - `0`: `SymbolShort("deposit")` (`TOPIC_DEPOSIT`) - Event identifier
+/// - `1`: `Address` - the depositing user, published as an indexed topic so
+///   indexers can filter by user without scanning payloads
+#[contracttype]
+pub struct DepositEvent {
+    /// The user who made the deposit
+    pub user: Address,
+    /// Amount of USDC deposited (7 decimal places)
+    pub amount: i128,
+    /// Number of vault shares minted for this deposit
+    pub shares: i128,
+}
+
+/// Emitted when a user withdraws USDC from the vault.
+///
+/// AI agents monitor this event to update their internal records.
+/// External indexers use this for transaction tracking.
+///
+/// # Topics
+/// - `0`: `SymbolShort("withdraw")` (`TOPIC_WITHDRAW`) - Event identifier
+/// - `1`: `Address` - the withdrawing user, published as an indexed topic so
+///   indexers can filter by user without scanning payloads
+#[contracttype]
+pub struct WithdrawEvent {
+    /// The user who made the withdrawal
+    pub user: Address,
+    /// Amount of USDC withdrawn (7 decimal places)
+    pub amount: i128,
+    /// Number of vault shares burned for this withdrawal
+    pub shares: i128,
+}
+
+/// Emitted when the AI agent rebalances funds between yield strategies.
+///
+/// This event signals that the agent is moving funds between different
+/// yield-generating protocols. The protocol symbol indicates the new
+/// target allocation.
+///
+/// # Topics
+/// - `SymbolShort("rebalance")` (`TOPIC_REBALANCE`) - Event identifier
+#[contracttype]
+pub struct RebalanceEvent {
+    /// The target protocol (supported: "blend", "none")
+    pub protocol: Symbol,
+    /// Expected APY in basis points (e.g., 850 = 8.5%)
+    pub expected_apy: i128,
+    /// Status: "success", "failed", "partial", or "noop" (no funds moved)
+    pub status: Symbol,
+    /// Amount attempted to be moved
+    pub amount_attempted: i128,
+    /// Amount actually moved
+    pub amount_moved: i128,
+    /// Amount supplied into the target protocol
+    pub amount_supplied: i128,
+    /// Amount withdrawn from the current protocol
+    pub amount_withdrawn: i128,
+}
+
+/// Emitted when a protocol position is withdrawn and resupplied by `harvest`.
+///
+/// # Topics
+/// - `SymbolShort("harvest")` (`TOPIC_HARVEST`) - Event identifier
+#[contracttype]
+pub struct HarvestEvent {
+    /// The protocol harvested from ("blend", "dex", or "multi")
+    pub protocol: Symbol,
+    /// Amount actually resupplied; this is a compounding-cycle amount, not yield.
+    pub amount_cycled: i128,
+}
+
+/// Emitted when the owner triggers an emergency harvest fallback.
+///
+/// This is a distinct event from [`HarvestEvent`] so that indexers can
+/// differentiate agent-initiated harvests from owner-initiated emergency
+/// harvests. The emergency harvest is gated by owner auth rather than agent
+/// auth, allowing yield compounding during an agent-key outage or rotation.
+///
+/// # Topics
+/// - `SymbolShort("em_harv")` (`TOPIC_EMERGENCY_HARVEST`) - Event identifier
+#[contracttype]
+pub struct EmergencyHarvestEvent {
+    /// The protocol harvested from (e.g., "blend", "dex")
+    pub protocol: Symbol,
+    /// Amount withdrawn and re-deposited
+    pub amount_harvested: i128,
+}
+
+/// Emitted when [`DataKey::CurrentProtocol`] changes.
+///
+/// Indexers should prefer this event over inferring protocol from rebalance
+/// events alone.
+///
+/// # Topics
+/// - `SymbolShort("proto_chg")` (`TOPIC_PROTOCOL_CHANGED`) - Event identifier
+#[contracttype]
+pub struct ProtocolChangedEvent {
+    /// Protocol the vault was deployed to before the change
+    /// (`"blend"`, `"dex"`, or `"none"`)
+    pub old_protocol: Symbol,
+    /// Protocol the vault is deployed to after the change
+    /// (`"blend"`, `"dex"`, or `"none"`)
+    pub new_protocol: Symbol,
+}
+
+/// Emitted whenever the multi-protocol allocation split changes.
+///
+/// This is the authoritative signal for indexers tracking diversification:
+/// it reports both the previous and the new basis-point split alongside the
+/// USDC actually sitting in each venue after the rebalance settled.
+///
+/// # Topics
+/// - `SymbolShort("alloc_chg")` (`TOPIC_PROTOCOL_ALLOCATION_CHANGED`)
+#[contracttype]
+pub struct ProtocolAllocationChangedEvent {
+    /// Blend allocation before the change, in basis points.
+    pub old_blend_bps: u32,
+    /// DEX allocation before the change, in basis points.
+    pub old_dex_bps: u32,
+    /// Blend allocation after the change, in basis points.
+    pub new_blend_bps: u32,
+    /// DEX allocation after the change, in basis points.
+    pub new_dex_bps: u32,
+    /// USDC principal deployed to Blend after the change, in raw units.
+    pub deployed_to_blend: i128,
+    /// USDC principal deployed to the DEX after the change, in raw units.
+    pub deployed_to_dex: i128,
+}
+
+/// Emitted when the vault migrates between single-protocol and multi-protocol
+/// allocation mode.
+///
+/// # Topics
+/// - `SymbolShort("multi_md")` (`TOPIC_MULTI_PROTOCOL_MODE`)
+#[contracttype]
+pub struct MultiProtocolModeChangedEvent {
+    /// `true` when multi-protocol allocation is now active.
+    pub enabled: bool,
+    /// Blend allocation seeded by the migration, in basis points.
+    pub blend_bps: u32,
+    /// DEX allocation seeded by the migration, in basis points.
+    pub dex_bps: u32,
+}
+
+/// Emitted when the agent reports a per-protocol APY.
+///
+/// # Topics
+/// - `SymbolShort("apy_upd")` (`TOPIC_PROTOCOL_APY_UPDATED`)
+#[contracttype]
+pub struct ProtocolApyUpdatedEvent {
+    /// Protocol the APY applies to (`"blend"` or `"dex"`).
+    pub protocol: Symbol,
+    /// Reported APY in basis points.
+    pub apy_bps: u32,
+}
+
+/// Combined pause/unpause payload.
+///
+/// # Reserved
+/// This struct is part of the contract type surface but is **not currently
+/// emitted**. `pause`, `unpause`, and `emergency_pause` publish the dedicated
+/// [`VaultPausedEvent`], [`VaultUnpausedEvent`], and [`EmergencyPausedEvent`]
+/// payloads instead. Indexers should not subscribe to this type.
+///
+/// # Topics
+/// - None (never published).
+#[contracttype]
+pub struct PauseEvent {
+    /// `true` if the vault is now paused, `false` if it is now unpaused
+    pub paused: bool,
+    /// Address that triggered the pause/unpause transition
+    pub caller: Address,
+}
+
+/// Emitted once when the vault is initialized via `initialize`.
+///
+/// # Topics
+/// - `SymbolShort("init")` (`TOPIC_INIT`) - Event identifier
+#[contracttype]
+pub struct VaultInitializedEvent {
+    /// Initial owner address, authorized for every administrative entrypoint
+    /// (pause, caps, pool configuration, upgrades, ownership transfer)
+    pub owner: Address,
+    /// Authorized AI agent address; the only address allowed to call
+    /// `rebalance` and `update_total_assets`
+    pub agent: Address,
+    /// USDC token contract address; the only token the vault accepts
+    pub usdc_token: Address,
+    /// TVL cap applied at initialization, in USDC raw units (7 decimals)
+    pub tvl_cap: i128,
+}
+
+/// Initialization-failure payload.
+///
+/// # Reserved
+/// This struct is part of the contract type surface but is **not currently
+/// emitted**. A failed `initialize` panics with a [`VaultError`] and the
+/// transaction is reverted, so no event survives. Indexers should observe the
+/// transaction result code instead.
+///
+/// # Topics
+/// - None (never published).
+#[contracttype]
+pub struct InitFailedEvent {
+    /// Address that attempted the initialization
+    pub caller: Address,
+    /// Short reason code describing why initialization was rejected
+    pub reason: Symbol,
+}
+
+/// Emitted when the vault is paused via `pause`.
+///
+/// # Topics
+/// - `SymbolShort("paused")` (`TOPIC_PAUSED`) - Event identifier
+#[contracttype]
+pub struct VaultPausedEvent {
+    /// Owner address that triggered the pause (read from storage, not the caller argument)
+    pub owner: Address,
+}
+
+/// Emitted when the vault is unpaused via `unpause`.
+///
+/// # Topics
+/// - `SymbolShort("unpaused")` (`TOPIC_UNPAUSED`) - Event identifier
+#[contracttype]
+pub struct VaultUnpausedEvent {
+    /// Owner address that triggered the unpause (read from storage, not the caller argument)
+    pub owner: Address,
+}
+
+/// Emitted when the vault is emergency-paused via `emergency_pause`.
+///
+/// Distinguished from [`VaultPausedEvent`] so monitoring can alert on
+/// emergency halts specifically.
+///
+/// # Topics
+/// - `SymbolShort("emerg")` (`TOPIC_EMERGENCY_PAUSED`) - Event identifier
+#[contracttype]
+pub struct EmergencyPausedEvent {
+    /// Owner address that triggered the emergency pause (read from storage, not the caller argument)
+    pub owner: Address,
+}
+
+#[contracttype]
+pub struct CircuitBreakerTriggeredEvent {
+    pub reason: String,
+    pub threshold_value: i128,
+}
+
+#[contracttype]
+pub struct CircuitBreakerResetEvent {
+    pub owner: Address,
+}
+
+/// Emitted when the TVL cap is updated via `set_tvl_cap`.
+///
+/// # Topics
+/// - `SymbolShort("tvl_cap")` (`TOPIC_TVL_CAP_UPDATED`) - Event identifier
+#[contracttype]
+pub struct TvlCapUpdatedEvent {
+    /// TVL cap before the change, in USDC raw units (7 decimals)
+    pub old_cap: i128,
+    /// TVL cap after the change, in USDC raw units (7 decimals)
+    pub new_cap: i128,
+    /// Ledger timestamp when the cap was changed
+    pub timestamp: u64,
+}
+
+/// Emitted when the per-user deposit cap is updated via `set_user_deposit_cap`.
+///
+/// # Topics
+/// - `SymbolShort("user_cap")` (`TOPIC_USER_CAP_UPDATED`) - Event identifier
+#[contracttype]
+pub struct UserDepositCapUpdatedEvent {
+    /// Per-user deposit cap before the change, in USDC raw units (7 decimals)
+    pub old_cap: i128,
+    /// Per-user deposit cap after the change, in USDC raw units (7 decimals)
+    pub new_cap: i128,
+    /// Ledger timestamp when the cap was changed
+    pub timestamp: u64,
+}
+
+/// Emitted when both user deposit cap and TVL cap are updated.
+///
+/// # Topics
+/// - `SymbolShort("caps_upd")` (`TOPIC_CAPS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct CapsUpdatedEvent {
+    /// Per-user deposit cap before the change, in USDC raw units (7 decimals)
+    pub old_user_cap: i128,
+    /// Per-user deposit cap after the change, in USDC raw units (7 decimals)
+    pub new_user_cap: i128,
+    /// TVL cap before the change, in USDC raw units (7 decimals)
+    pub old_tvl_cap: i128,
+    /// TVL cap after the change, in USDC raw units (7 decimals)
+    pub new_tvl_cap: i128,
+}
+
+/// Emitted by the deprecated `set_limits` function only.
+///
+/// # Deprecated
+/// Use `DepositLimitsUpdatedEvent` (topic `"dep_lim"`) for per-transaction
+/// deposit-limit changes, and `TvlCapUpdatedEvent` / `UserDepositCapUpdatedEvent`
+/// for cap changes. This event is retained only for backward compatibility with
+/// indexers that still observe the `set_limits` call path.
+///
+/// # Topics
+/// - `SymbolShort("l_upd")` (`TOPIC_LIMITS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct LimitsUpdatedEvent {
+    /// Minimum per-transaction deposit before the change, in USDC raw units (7 decimals)
+    pub old_min: i128,
+    /// Minimum per-transaction deposit after the change, in USDC raw units (7 decimals)
+    pub new_min: i128,
+    /// Maximum per-transaction deposit before the change, in USDC raw units (7 decimals)
+    pub old_max: i128,
+    /// Maximum per-transaction deposit after the change, in USDC raw units (7 decimals)
+    pub new_max: i128,
+}
+
+/// Emitted when per-transaction deposit limits (min/max per deposit) are updated
+/// via `set_deposit_limits`.
+///
+/// # Topics
+/// - `SymbolShort("dep_lim")` (`TOPIC_DEPOSIT_LIMITS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct DepositLimitsUpdatedEvent {
+    /// Minimum per-transaction deposit before the change, in USDC raw units (7 decimals)
+    pub old_min: i128,
+    /// Minimum per-transaction deposit after the change, in USDC raw units (7 decimals)
+    pub new_min: i128,
+    /// Maximum per-transaction deposit before the change, in USDC raw units (7 decimals)
+    pub old_max: i128,
+    /// Maximum per-transaction deposit after the change, in USDC raw units (7 decimals)
+    pub new_max: i128,
+}
+
+/// Emitted when the minimum rebalance cooldown is updated via
+/// `set_rebalance_cooldown`.
+///
+/// # Topics
+/// - `SymbolShort("reb_cd")` (`TOPIC_REBALANCE_COOLDOWN_UPDATED`) - Event identifier
+#[contracttype]
+pub struct RebalanceCooldownUpdatedEvent {
+    /// Minimum ledgers between rebalances before the change, or `0` if disabled
+    pub old_interval: u32,
+    /// Minimum ledgers between rebalances after the change, or `0` if disabled
+    pub new_interval: u32,
+}
+
+/// Emitted when the shared Blend/DEX approval TTL is updated via
+/// `set_approval_ttl`.
+///
+/// # Topics
+/// - `SymbolShort("ttl_upd")` (`TOPIC_APPROVAL_TTL_UPDATED`) - Event identifier
+#[contracttype]
+pub struct ApprovalTtlUpdatedEvent {
+    /// Approval TTL in ledgers before the change
+    pub old_ttl: u32,
+    /// Approval TTL in ledgers after the change
+    pub new_ttl: u32,
+}
+
+/// Emitted alongside [`ApprovalTtlUpdatedEvent`] whenever the shared protocol
+/// approval TTL is persisted, so operators can schedule a renewal *before* the
+/// approval window closes instead of discovering the lapse through a failed
+/// rebalance (Issue #847).
+///
+/// The event is purely informational: emitting it never extends, renews, or
+/// otherwise mutates an on-chain approval. The only write performed by the
+/// emitting call is the `DataKey::ApprovalTtl` update itself.
+///
+/// # Renewal lead time
+///
+/// Consumers compute the renewal schedule directly from the payload:
+///
+/// ```text
+/// expiry_ledger          = current_ledger + approval_ttl   (already in the payload)
+/// available_window       = expiry_ledger - current_ledger
+/// renewal_deadline_ledger = expiry_ledger - lead_time      (already in the payload)
+/// ```
+///
+/// Scheduling a renewal transaction for `renewal_deadline_ledger` leaves
+/// `lead_time` ledgers (~7 h at ~5 s per ledger) of slack for the renewal
+/// transaction to land before the approval expires. When the configured TTL is
+/// shorter than the lead time the contract reports the full window as lead time
+/// and `renewal_deadline_ledger == current_ledger`, i.e. renew immediately.
+///
+/// # Topics
+/// - `SymbolShort("ttl_sch")` (`TOPIC_APPROVAL_TTL_SCHEDULED`) - Event identifier
+#[contracttype]
+pub struct ProtocolApprovalScheduledEvent {
+    /// Protocol whose approval window is described: `SymbolShort("blend")` for
+    /// the legacy Blend-only setter, `SymbolShort("dex")` for a DEX-only
+    /// window, or `SymbolShort("both")` when the shared TTL covers every
+    /// protocol approval the vault can issue.
+    pub protocol: Symbol,
+    /// Ledger in which the emitting call was executed
+    pub current_ledger: u32,
+    /// Persisted approval TTL in ledgers, equal to `get_approval_ttl()`
+    pub approval_ttl: u32,
+    /// Ledger at which the approval granted with this TTL expires
+    pub expiry_ledger: u32,
+    /// Ledgers of usable window between now and expiry (`expiry_ledger -
+    /// current_ledger`)
+    pub available_window: u32,
+    /// Ledgers of lead time reserved for the renewal transaction
+    pub lead_time: u32,
+    /// Ledger by which a renewal should be submitted so the approval never
+    /// lapses (`expiry_ledger - lead_time`)
+    pub renewal_deadline_ledger: u32,
+}
+
+/// Emitted when the owner changes the circuit-breaker threshold via
+/// `set_max_consecutive_failures`.
+///
+/// # Topics
+/// - `SymbolShort("maxf_upd")` (`TOPIC_MAX_FAILURES_UPDATED`) - Event identifier
+#[contracttype]
+pub struct MaxConsecutiveFailuresUpdatedEvent {
+    /// Effective threshold before the change (the default if never configured)
+    pub old_threshold: u32,
+    /// Threshold after the change
+    pub new_threshold: u32,
+}
+
+/// Emitted when the AI agent address changes.
+///
+/// Published alongside [`AgentUpdateConfirmedEvent`] by `confirm_agent_update`
+/// so legacy indexers that only track this topic keep working.
+///
+/// # Topics
+/// - `SymbolShort("agent")` (`TOPIC_AGENT_UPDATED`) - Event identifier
+#[contracttype]
+pub struct AgentUpdatedEvent {
+    /// Agent address that was authorized before the change
+    pub old_agent: Address,
+    /// Agent address authorized after the change
+    pub new_agent: Address,
+}
+
+/// Emitted when an agent update is proposed via `update_agent()` (timelock step 1).
+///
+/// # Topics
+/// - `SymbolShort("agt_prop")` (`TOPIC_AGENT_UPDATE_PROPOSED`) - Event identifier
+#[contracttype]
+pub struct AgentUpdateProposedEvent {
+    /// Agent address currently authorized; remains active for the whole timelock window
+    pub old_agent: Address,
+    /// Proposed agent address, activated only by `confirm_agent_update`
+    pub new_agent: Address,
+    /// Ledger at which `confirm_agent_update()` becomes callable.
+    pub effective_ledger: u32,
+}
+
+/// Emitted when a pending agent update is confirmed via `confirm_agent_update()` (timelock step 2).
+///
+/// # Topics
+/// - `SymbolShort("agt_conf")` (`TOPIC_AGENT_UPDATE_CONFIRMED`) - Event identifier
+#[contracttype]
+pub struct AgentUpdateConfirmedEvent {
+    /// Agent address that was authorized before confirmation
+    pub old_agent: Address,
+    /// Agent address now authorized to call `rebalance` and `update_total_assets`
+    pub new_agent: Address,
+}
+
+/// Emitted when a pending agent update is cancelled via `cancel_agent_update()`.
+///
+/// # Topics
+/// - `SymbolShort("agt_cncl")` (`TOPIC_AGENT_UPDATE_CANCELLED`) - Event identifier
+#[contracttype]
+pub struct AgentUpdateCancelledEvent {
+    /// Agent address that stays authorized; cancelling never changes the active agent
+    pub old_agent: Address,
+    /// Agent address that had been proposed and is now discarded
+    pub proposed_new_agent: Address,
+}
+
+/// Emitted when an ownership transfer is initiated via `transfer_ownership`
+/// (step 1 of the two-step transfer).
+///
+/// # Topics
+/// - `SymbolShort("own_init")` (`TOPIC_OWNERSHIP_INITIATED`) - Event identifier
+#[contracttype]
+pub struct OwnershipTransferInitiatedEvent {
+    /// Owner address that remains in control until the transfer is accepted
+    pub current_owner: Address,
+    /// Proposed owner address that must call `accept_ownership` to take over
+    pub pending_owner: Address,
+}
+
+/// Emitted when an ownership transfer completes via `accept_ownership`
+/// (step 2 of the two-step transfer).
+///
+/// # Topics
+/// - `SymbolShort("own_xfer")` (`TOPIC_OWNERSHIP_TRANSFERRED`) - Event identifier
+#[contracttype]
+pub struct OwnershipTransferredEvent {
+    /// Owner address that held control before the transfer
+    pub old_owner: Address,
+    /// Owner address now authorized for administrative entrypoints
+    pub new_owner: Address,
+}
+
+/// Emitted when a pending ownership transfer is cancelled via
+/// `cancel_ownership_transfer`.
+///
+/// # Topics
+/// - `SymbolShort("own_cncl")` (`TOPIC_OWNERSHIP_CANCELLED`) - Event identifier
+#[contracttype]
+pub struct OwnershipTransferCancelledEvent {
+    /// Owner address that stays in control; cancelling never changes the owner
+    pub owner: Address,
+    /// Pending owner address that was discarded
+    pub cancelled_pending: Address,
+}
+
+/// Information about a pending ownership transfer.
+///
+/// Returned by `get_pending_ownership` when a transfer is in progress.
+#[contracttype]
+pub struct PendingOwnershipInfo {
+    pub pending_owner: Address,
+    pub timelock_expiry: u64,
+}
+
+/// Emitted when the agent reports new total assets via `update_total_assets`
+/// (yield accrual or loss reporting).
+///
+/// Because share price is derived from `TotalAssets`, this event is the
+/// authoritative signal that the exchange rate has moved.
+///
+/// # Topics
+/// - `SymbolShort("assets")` (`TOPIC_ASSETS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct AssetsUpdatedEvent {
+    /// Total managed assets before the update, in USDC raw units (7 decimals)
+    pub old_total: i128,
+    /// Total managed assets after the update, in USDC raw units (7 decimals)
+    pub new_total: i128,
+}
+
+/// Emitted when the contract is upgraded to a new WASM implementation.
+///
+/// # Topics
+/// - `SymbolShort("upgraded")` (`TOPIC_UPGRADED`) - Event identifier
+#[contracttype]
+pub struct UpgradedEvent {
+    /// The contract version before the upgrade
+    pub old_version: u32,
+    /// The contract version after the upgrade
+    pub new_version: u32,
+}
+
+/// Emitted when an upgrade is scheduled via `schedule_upgrade()` (timelock step 1). (#316)
+///
+/// # Topics
+/// - `SymbolShort("upg_sched")` (`TOPIC_UPGRADE_SCHEDULED`) - Event identifier
+#[contracttype]
+pub struct UpgradeScheduledEvent {
+    /// Hash of the WASM binary that will be activated once the timelock elapses.
+    pub new_wasm_hash: BytesN<32>,
+    /// Ledger at which `execute_upgrade()` becomes callable.
+    pub effective_ledger: u32,
+}
+
+/// Emitted when a pending upgrade is cancelled via `cancel_upgrade()`. (#316)
+///
+/// # Topics
+/// - `SymbolShort("upg_cncl")` (`TOPIC_UPGRADE_CANCELLED`) - Event identifier
+#[contracttype]
+pub struct UpgradeCancelledEvent {
+    /// Hash of the WASM binary whose pending upgrade was cancelled.
+    pub cancelled_wasm_hash: BytesN<32>,
+}
+
+/// Emitted when assets are supplied to Blend protocol.
+///
+/// # Topics
+/// - `SymbolShort("blend_sup")` (`TOPIC_BLEND_SUPPLY`) - Event identifier
+#[contracttype]
+pub struct BlendSupplyEvent {
+    /// The asset address (USDC)
+    pub asset: Address,
+    /// Actual amount transferred to Blend (may be less than requested due to pool limits)
+    pub amount_actual: i128,
+    /// Whether the supply was successful
+    pub success: bool,
+}
+
+/// Emitted when assets are withdrawn from Blend protocol.
+///
+/// # Topics
+/// - `SymbolShort("blend_wd")` (`TOPIC_BLEND_WITHDRAW`) - Event identifier
+#[contracttype]
+pub struct BlendWithdrawEvent {
+    /// The asset address (USDC)
+    pub asset: Address,
+    /// Actual amount received from Blend (may be less than requested due to pool liquidity)
+    pub amount_actual: i128,
+    /// Whether the withdrawal succeeded
+    pub success: bool,
+}
+
+/// Emitted when the Blend pool address is configured.
+///
+/// # Topics
+/// - `SymbolShort("blend_cfg")` (`TOPIC_BLEND_POOL_CONFIGURED`) - Event identifier
+#[contracttype]
+pub struct BlendPoolConfiguredEvent {
+    /// Previous Blend pool address, or None if it was not configured
+    pub old_pool: Option<Address>,
+    /// Newly configured Blend pool address
+    pub new_pool: Address,
+    /// Owner who triggered the configuration change
+    pub owner: Address,
+}
+
+/// Emitted when assets are supplied to a DEX liquidity pool.
+///
+/// # Topics
+/// - `SymbolShort("dex_sup")` (`TOPIC_DEX_SUPPLY`) - Event identifier
+#[contracttype]
+pub struct DexSupplyEvent {
+    /// The asset address (USDC)
+    pub asset: Address,
+    /// Actual amount transferred to the DEX pool (may be less than requested due to slippage/limits)
+    pub amount_actual: i128,
+    /// Whether the supply was successful
+    pub success: bool,
+}
+
+/// Emitted when assets are withdrawn from a DEX liquidity pool.
+///
+/// # Topics
+/// - `SymbolShort("dex_wd")` (`TOPIC_DEX_WITHDRAW`) - Event identifier
+#[contracttype]
+pub struct DexWithdrawEvent {
+    /// The asset address (USDC)
+    pub asset: Address,
+    /// Actual amount received from the DEX pool (may be less than requested due to liquidity)
+    pub amount_actual: i128,
+    /// Whether the withdrawal succeeded
+    pub success: bool,
+}
+
+/// Emitted when the DEX pool address is configured.
+///
+/// # Topics
+/// - `SymbolShort("dex_cfg")` (`TOPIC_DEX_POOL_CONFIGURED`) - Event identifier
+#[contracttype]
+pub struct DexPoolConfiguredEvent {
+    /// Previous DEX pool address, or None if it was not configured
+    pub old_pool: Option<Address>,
+    /// Newly configured DEX pool address
+    pub new_pool: Address,
+    /// Owner who triggered the configuration change
+    pub owner: Address,
+}
+
+/// Emitted when the owner registers or replaces a protocol adapter contract (#656).
+///
+/// # Topics
+/// - `SymbolShort("adap_cfg")` (`TOPIC_PROTOCOL_ADAPTER_UPDATED`) - Event identifier
+#[contracttype]
+pub struct ProtocolAdapterUpdatedEvent {
+    /// The protocol symbol the adapter serves (e.g. `"phoenix"`).
+    pub protocol: Symbol,
+    /// Previous adapter address, or None if it was not configured.
+    pub old_address: Option<Address>,
+    /// Newly configured adapter contract address.
+    pub new_address: Address,
+    /// Owner who triggered the configuration change.
+    pub owner: Address,
+}
+
+/// Emitted when the owner adds or removes a protocol on the whitelist (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_wl")` (`TOPIC_PROTOCOL_WHITELIST_UPDATED`) - Event identifier
+#[contracttype]
+pub struct ProtocolWhitelistUpdatedEvent {
+    /// The protocol symbol whose whitelist state changed.
+    pub protocol: Symbol,
+    /// Whether the protocol is now whitelisted.
+    pub enabled: bool,
+    /// Owner who triggered the whitelist change.
+    pub owner: Address,
+}
+
+/// Emitted when funds are supplied to a whitelisted adapter-backed protocol (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_sup")` (`TOPIC_PROTOCOL_SUPPLY`) - Event identifier
+#[contracttype]
+pub struct ProtocolSupplyEvent {
+    /// The asset address (USDC).
+    pub asset: Address,
+    /// The protocol symbol the funds were supplied to.
+    pub protocol: Symbol,
+    /// Actual amount transferred (may be less than requested due to venue limits).
+    pub amount_actual: i128,
+    /// Whether the supply was successful.
+    pub success: bool,
+}
+
+/// Emitted when funds are withdrawn from a whitelisted adapter-backed protocol (#656).
+///
+/// # Topics
+/// - `SymbolShort("proto_wd")` (`TOPIC_PROTOCOL_WITHDRAW`) - Event identifier
+#[contracttype]
+pub struct ProtocolWithdrawEvent {
+    /// The asset address (USDC).
+    pub asset: Address,
+    /// The protocol symbol the funds were withdrawn from.
+    pub protocol: Symbol,
+    /// Actual amount received (may be less than requested due to venue liquidity).
+    pub amount_actual: i128,
+    /// Whether the withdrawal was successful.
+    pub success: bool,
+}
+
+/// Emitted when the owner performs an instant hot-standby agent key switchover (#653).
+///
+/// The standby agent becomes the new primary agent, and the old primary agent
+/// is demoted to standby (or cleared if the owner opts for a clean cutover).
+/// This is the zero-downtime rotation path — no timelock, no 24-hour wait.
+///
+/// # Topics
+/// - `SymbolShort("key_rot")` (`TOPIC_AGENT_KEY_ROTATED`) - Event identifier
+#[contracttype]
+pub struct AgentKeyRotatedEvent {
+    /// Primary agent address before the switchover.
+    pub old_primary: Address,
+    /// Primary agent address after the switchover (the former standby).
+    pub new_primary: Address,
+    /// Standby agent address after the switchover (the former primary, or a
+    /// new address supplied by the owner).
+    pub new_standby: Address,
+    /// Owner who triggered the switchover.
+    pub owner: Address,
+    /// Ledger timestamp of the switchover.
+    pub timestamp: u64,
+}
+
+/// Emitted when the owner sets or replaces the standby agent key independently (#653).
+///
+/// Unlike the primary agent update flow (`update_agent` / `confirm_agent_update`),
+/// the standby key can be changed instantly without a timelock — it is a
+/// hot-standby key, not the active rebalancing key. This lets the operator
+/// rotate the standby key on a regular cadence without any downtime.
+///
+/// # Topics
+/// - `SymbolShort("stby_ag")` (`TOPIC_STANDBY_AGENT_UPDATED`) - Event identifier
+#[contracttype]
+pub struct StandbyAgentUpdatedEvent {
+    /// Standby agent address before the change, or None if not configured.
+    pub old_standby: Option<Address>,
+    /// Standby agent address after the change.
+    pub new_standby: Address,
+    /// Owner who triggered the change.
+    pub owner: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
+}
+
+/// Emitted to record per-user, per-protocol yield attribution (#654).
+///
+/// Published by `update_total_assets` when yield increases and by `rebalance`
+/// when funds move between protocols. The off-chain indexer aggregates these
+/// events into per-user, per-protocol, per-period earnings reports.
+///
+/// # Topics
+/// - `0`: `SymbolShort("yld_attr")` (`TOPIC_YIELD_ATTRIBUTED`) - Event identifier
+/// - `1`: `Address` - the user whose yield is being attributed, published as an
+///   indexed topic so indexers can filter by user without scanning payloads
+#[contracttype]
+pub struct YieldAttributedEvent {
+    /// The user whose yield is being attributed.
+    pub user: Address,
+    /// The protocol where the yield was earned (e.g. `"blend"`, `"dex"`).
+    pub protocol: Symbol,
+    /// Amount of yield attributed, in the asset's native units.
+    pub amount: i128,
+    /// Time period label: `"daily"`, `"weekly"`, `"monthly"`, or `"since_dep"`.
+    pub period: Symbol,
+    /// Ledger timestamp of the attribution.
+    pub timestamp: u64,
+}
+
+/// Emitted when a user deposits a supported asset into its per-asset share
+/// pool via `deposit_asset` (#646).
+///
+/// The asset symbol is published as an indexed topic so indexers can filter
+/// per asset, and the depositing user is the second topic.
+///
+/// # Topics
+/// - `0`: `SymbolShort("asset_dep")` (`TOPIC_ASSET_DEPOSIT`) - Event identifier
+/// - `1`: `Address` - the depositing user, published as an indexed topic
+/// - `2`: `Symbol` - the deposited asset, published as an indexed topic
+#[contracttype]
+pub struct AssetDepositEvent {
+    /// The user who made the deposit.
+    pub user: Address,
+    /// The asset deposited (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    pub asset: Symbol,
+    /// Amount of the asset deposited (native units).
+    pub amount: i128,
+    /// Number of shares minted in the asset's per-asset share pool.
+    pub shares: i128,
+}
+
+/// Emitted when a user withdraws a supported asset from its per-asset share
+/// pool via `withdraw_asset` (#646).
+///
+/// # Topics
+/// - `0`: `SymbolShort("asset_wd")` (`TOPIC_ASSET_WITHDRAW`) - Event identifier
+/// - `1`: `Address` - the withdrawing user, published as an indexed topic
+/// - `2`: `Symbol` - the withdrawn asset, published as an indexed topic
+#[contracttype]
+pub struct AssetWithdrawEvent {
+    /// The user who made the withdrawal.
+    pub user: Address,
+    /// The asset withdrawn (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    pub asset: Symbol,
+    /// Amount of the asset returned (native units, after liquidity shortfall).
+    pub amount: i128,
+    /// Number of shares burned in the asset's per-asset share pool.
+    pub shares: i128,
+}
+
+/// Emitted when the owner adds or removes a supported deposit asset (#646).
+///
+/// # Topics
+/// - `SymbolShort("assets_up")` (`TOPIC_SUPPORTED_ASSETS_UPDATED`) - Event identifier
+#[contracttype]
+pub struct SupportedAssetsUpdatedEvent {
+    /// The asset symbol whose support state changed.
+    pub asset: Symbol,
+    /// `true` when the asset was added, `false` when it was removed.
+    pub added: bool,
+    /// Owner who triggered the change.
+    pub owner: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
+}
+
+/// Emitted when a rebalance aborts due to a protocol exit failure.
+///
+/// Emitted instead of panicking so the failure is observable on-chain without
+/// reverting the transaction. State remains unchanged when this event fires.
+///
+/// # Topics
+/// - `SymbolShort("reb_fail")` (`TOPIC_REBALANCE_FAILED`) - Event identifier
+#[contracttype]
+pub struct RebalanceFailedEvent {
+    /// The protocol the vault was trying to exit
+    pub from_protocol: Symbol,
+    /// Short reason code ("exit_fail" = incomplete withdrawal)
+    pub reason: Symbol,
+}
+
+/// Emitted when a user updates their investment strategy preference.
+///
+/// AI agents read this event to adjust yield deployment per user.
+///
+/// # Topics
+/// - `0`: `SymbolShort("usr_strat")` (`TOPIC_USER_STRATEGY_UPDATED`) - Event identifier
+/// - `1`: `Address` - the user whose strategy changed, published as an indexed
+///   topic so agents can subscribe per user
+#[contracttype]
+pub struct UserStrategyUpdatedEvent {
+    /// The user who updated their strategy
+    pub user: Address,
+    /// Previous strategy symbol ("conservative", "balanced", "growth", or "")
+    pub old_strategy: Symbol,
+    /// New strategy symbol
+    pub new_strategy: Symbol,
+}
+
+/// Aggregate view of a single user's position, returned by
+/// [`NeuroWealthVault::get_user_info`].
+///
+/// This is a return type, not an event: it is never published to the event log.
+#[contracttype]
+pub struct UserInfo {
+    /// Deprecated compatibility field.
+    ///
+    /// This value is now the user's share-derived asset balance, not a separate
+    /// stored principal record. Use `shares` plus share conversion helpers when
+    /// exact accounting provenance matters.
+    pub principal: i128,
+    /// The user's vault share balance, representing proportional ownership of
+    /// `TotalAssets`. Convert to USDC with
+    /// [`NeuroWealthVault::convert_to_assets`].
+    pub shares: i128,
+}
+
+/// Read-only snapshot of vault health and operational state (#838).
+///
+/// Returned by [`NeuroWealthVault::get_vault_health_snapshot`]. This snapshot
+/// consolidates multiple health indicators into a single atomic read to avoid
+/// cross-ledger inconsistencies when monitoring vault status.
+///
+/// This is a return type, not an event: it is never published to the event log.
+#[contracttype]
+pub struct VaultHealthSnapshot {
+    /// Whether the vault has been initialized.
+    pub initialized: bool,
+    /// Emergency pause state.
+    pub paused: bool,
+    /// Maximum total value locked (USDC in 7-decimal units).
+    pub tvl_cap: i128,
+    /// Total managed assets (principal + yield) in USDC 7-decimal units.
+    pub total_assets: i128,
+    /// Total vault shares in circulation.
+    pub total_shares: i128,
+    /// Idle USDC balance (funds not deployed to protocols).
+    pub idle_assets: i128,
+    /// USDC deployed to external yield protocols.
+    pub deployed_assets: i128,
+    /// Active protocol summary ("blend", "dex", "multi", "none").
+    pub current_protocol: Symbol,
+    /// Count of consecutive failed rebalances (circuit-breaker state).
+    pub active_failure_count: u32,
+    /// Whether an agent rotation is pending (timelock in progress).
+    pub pending_agent_update: bool,
+    /// Whether a contract upgrade is pending (timelock in progress).
+    pub pending_upgrade: bool,
+    /// Whether an ownership transfer is pending.
+    pub pending_ownership_transfer: bool,
+}
+
+/// Withdrawal eligibility information for a user (#846).
+///
+/// Returned by [`NeuroWealthVault::get_withdrawal_eligibility`]. This indicates
+/// when a user can next withdraw based on queue state, cooldowns, and pause status.
+///
+/// This is a return type, not an event: it is never published to the event log.
+#[contracttype]
+pub struct WithdrawalEligibility {
+    /// The ledger at which the user can next withdraw.
+    /// If `eligible_now` is true, this is the current ledger.
+    /// If `eligible_now` is false, this is the future ledger when eligibility resumes.
+    pub eligible_ledger: u32,
+    /// Whether the user can withdraw immediately.
+    pub eligible_now: bool,
+    /// Reason for ineligibility (empty if eligible).
+    /// Possible values: "paused", "cooldown", "queue", "insufficient_shares".
+    pub reason: Symbol,
+}
+
+/// Emitted when a user migrates their shares to a new vault (#637).
+///
+/// # Topics
+/// - `SymbolShort("migrate")` (`TOPIC_MIGRATE`) - Event identifier
+/// - `Address` - the migrating user, published as an indexed topic
+#[contracttype]
+pub struct SharesMigratedEvent {
+    /// The user who migrated their shares
+    pub user: Address,
+    /// Old vault contract address
+    pub old_vault: Address,
+    /// New vault contract address
+    pub new_vault: Address,
+    /// Number of shares burned from old vault
+    pub shares_burned: i128,
+    /// Amount of assets (USDC) transferred to new vault
+    pub assets_transferred: i128,
+}
+
+/// Emitted by the receiving vault when it credits a migrated position via
+/// `receive_migration` (#987). The mirror-image event to
+/// `SharesMigratedEvent`, which the sending vault publishes.
+///
+/// # Topics
+/// - `SymbolShort("mig_recv")` (`TOPIC_MIGRATION_RECEIVED`) - Event identifier
+/// - `Address` - the migrated user, published as an indexed topic
+#[contracttype]
+pub struct MigrationReceivedEvent {
+    /// The user whose position was credited
+    pub user: Address,
+    /// The vault that sent the migrated funds
+    pub source_vault: Address,
+    /// Amount of assets (USDC) credited
+    pub amount: i128,
+    /// Shares minted for the credited amount
+    pub shares_minted: i128,
+}
+
+/// Emitted when a scheduled migration target change is executed (#637, #969).
+///
+/// # Topics
+/// - `SymbolShort("mig_tgt")` (`TOPIC_MIGRATION_TARGET_UPDATED`) - Event identifier
+#[contracttype]
+pub struct MigrationTargetUpdatedEvent {
+    /// Previous migration target address, or None if not set
+    pub old_target: Option<Address>,
+    /// New migration target address
+    pub new_target: Address,
+    /// Owner who triggered the change
+    pub owner: Address,
+}
+
+/// Emitted when the owner schedules a migration target change (#969).
+///
+/// # Topics
+/// - `SymbolShort("mig_sched")` (`TOPIC_MIGRATION_TARGET_SCHEDULED`) - Event identifier
+#[contracttype]
+pub struct MigrationTargetScheduledEvent {
+    /// Address that will become the migration target once executed
+    pub new_target: Address,
+    /// Ledger at which `execute_migration_target()` becomes callable
+    pub effective_ledger: u32,
+    /// Owner who scheduled the change
+    pub owner: Address,
+}
+
+/// Emitted when the owner cancels a pending migration target change (#969).
+///
+/// # Topics
+/// - `SymbolShort("mig_cncl")` (`TOPIC_MIGRATION_TARGET_CANCELLED`) - Event identifier
+#[contracttype]
+pub struct MigrationTargetCancelledEvent {
+    /// Address whose pending change was cancelled
+    pub cancelled_target: Address,
+    /// Owner who cancelled the change
+    pub owner: Address,
+}
+
+/// Emitted when migration is paused or unpaused by the owner (#637).
+///
+/// # Topics
+/// - `SymbolShort("mig_pse")` (`TOPIC_MIGRATION_PAUSED`) - Event identifier
+#[contracttype]
+pub struct MigrationPausedEvent {
+    /// `true` if migration is now paused, `false` if unpaused
+    pub paused: bool,
+    /// Owner who triggered the pause/unpause
+    pub owner: Address,
+}
+
+/// Emitted when a user locks their shares (#636).
+///
+/// # Topics
+/// - `SymbolShort("lock")` (`TOPIC_SHARES_LOCKED`) - Event identifier
+/// - `Address` - the user locking shares, published as an indexed topic
+#[contracttype]
+pub struct SharesLockedEvent {
+    /// The user who locked their shares
+    pub user: Address,
+    /// Number of shares locked
+    pub shares_locked: i128,
+    /// Lock duration in days
+    pub lock_duration_days: u32,
+    /// Ledger when lock expires
+    pub expiry_ledger: u32,
+}
+
+/// Emitted when a user unlocks their shares (#636).
+///
+/// # Topics
+/// - `SymbolShort("unlock")` (`TOPIC_SHARES_UNLOCKED`) - Event identifier
+/// - `Address` - the user unlocking shares, published as an indexed topic
+#[contracttype]
+pub struct SharesUnlockedEvent {
+    /// The user who unlocked their shares
+    pub user: Address,
+    /// Number of shares unlocked
+    pub shares_unlocked: i128,
+}
+
+/// Emitted when a user performs an emergency withdrawal while vault is paused (#635).
+///
+/// # Topics
+/// - `SymbolShort("em_wd")` (`TOPIC_EMERGENCY_WITHDRAWAL`) - Event identifier
+/// - `Address` - the withdrawing user, published as an indexed topic
+#[contracttype]
+pub struct EmergencyWithdrawalEvent {
+    /// The user who performed the emergency withdrawal
+    pub user: Address,
+    /// Amount of USDC withdrawn (7 decimal places)
+    pub amount: i128,
+    /// Number of shares burned
+    pub shares: i128,
+    /// Whether funds were taken from idle balance (true) or protocol (false)
+    pub from_idle: bool,
+}
+
+/// On-chain record of an ML model APY forecast submitted by the agent (#650).
+///
+/// The off-chain LSTM / Prophet model produces a prediction for each supported
+/// protocol. The agent writes the latest forecast on-chain so that the rebalance
+/// decision and its inputs are fully auditable.
+///
+/// `predicted_apy_bps` is in basis points (100 bps = 1%). `confidence_bps` is
+/// the model's confidence expressed the same way (e.g., 8000 bps = 80%).
+/// `horizon_ledgers` is how many ledgers ahead the prediction covers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApyPrediction {
+    /// Protocol this prediction applies to ("blend", "dex", …).
+    pub protocol: Symbol,
+    /// Predicted APY in basis points (100 bps = 1%).
+    pub predicted_apy_bps: i128,
+    /// 1-hour-ahead APY forecast in basis points.
+    pub apy_1h_bps: i128,
+    /// 6-hour-ahead APY forecast in basis points.
+    pub apy_6h_bps: i128,
+    /// 24-hour-ahead APY forecast in basis points.
+    pub apy_24h_bps: i128,
+    /// Model confidence (0–10000 bps, where 10000 = 100%).
+    pub confidence_bps: u32,
+    /// Ledger at which this prediction was submitted.
+    pub submitted_at_ledger: u32,
+}
+
+/// Emitted when the agent stores an APY prediction for an allowlisted protocol.
+///
+/// # Topics
+/// - `SymbolShort("apy_pred")` (`TOPIC_APY_PREDICTION`)
+#[contracttype]
+pub struct ApyPredictionSubmittedEvent {
+    /// Protocol this prediction applies to (`"blend"` or `"dex"`).
+    pub protocol: Symbol,
+    /// Predicted APY in basis points.
+    pub predicted_apy_bps: i128,
+    /// 1-hour-ahead APY forecast in basis points.
+    pub apy_1h_bps: i128,
+    /// 6-hour-ahead APY forecast in basis points.
+    pub apy_6h_bps: i128,
+    /// 24-hour-ahead APY forecast in basis points.
+    pub apy_24h_bps: i128,
+    /// Model confidence in basis points.
+    pub confidence_bps: u32,
+    /// Ledger at which this prediction was submitted.
+    pub submitted_at_ledger: u32,
+}
+
+/// Emitted when the off-chain agent reports suspected MEV extraction on a
+/// rebalance transaction (#658).
+///
+/// Indexers should aggregate `estimated_loss_stroops` across incidents to
+/// calculate the cumulative cost of MEV extraction to vault users.
+///
+/// # Topics
+/// - `0`: `SymbolShort("mev_alert")` — Event identifier
+#[contracttype]
+pub struct MevExtractionSuspectedEvent {
+    /// The rebalance protocol where MEV was suspected (e.g., "blend", "dex").
+    pub protocol: Symbol,
+    /// Agent-estimated amount lost to MEV in this transaction (stroops).
+    pub estimated_loss_stroops: i128,
+    /// The `min_out` value that was set for the rebalance that triggered the report.
+    pub min_out_used: i128,
+    /// Running total of suspected MEV losses since vault inception.
+    pub cumulative_loss_stroops: i128,
+    /// Number of MEV incidents recorded so far.
+    pub incident_count: u32,
+}
+
+/// Emitted when a withdrawal attempt is blocked by the flash-loan protection
+/// holding period (#659).
+///
+/// Indexers can use this event to track how often the protection triggers and
+/// to flag wallet addresses that repeatedly attempt same-ledger withdrawals.
+///
+/// # Topics
+/// - `0`: `SymbolShort("fl_block")` — Event identifier
+/// - `1`: `Address` — the user whose withdrawal was blocked (indexed topic)
+#[contracttype]
+pub struct FlashLoanProtectionTriggeredEvent {
+    /// The user whose withdrawal was rejected.
+    pub user: Address,
+    /// Ledger at which the user last deposited.
+    pub last_deposit_ledger: u32,
+    /// Current ledger at the time of the rejected withdrawal.
+    pub current_ledger: u32,
+    /// Configured minimum holding period (in ledgers).
+    pub min_holding_period: u32,
+}
+
+/// Emitted when the owner changes a call rate-limit configuration.
+///
+/// # Topics
+/// - `SymbolShort("rate_cfg")` (`TOPIC_RATE_LIMIT_CONFIG_UPDATED`)
+#[contracttype]
+pub struct RateLimitConfigUpdatedEvent {
+    /// Category whose allowance changed.
+    pub category: Symbol,
+    /// Previous maximum accepted calls per window.
+    pub old_max_calls: u32,
+    /// Previous window length in ledgers.
+    pub old_window_ledgers: u32,
+    /// New maximum accepted calls per window.
+    pub new_max_calls: u32,
+    /// New window length in ledgers.
+    pub new_window_ledgers: u32,
+    /// Owner that made the change.
+    pub owner: Address,
+}
+
+/// Emitted when the owner changes the maximum `batch_deposit` size.
+///
+/// # Topics
+/// - `SymbolShort("batch_lim")` (`TOPIC_BATCH_SIZE_LIMIT_UPDATED`)
+#[contracttype]
+pub struct BatchSizeLimitUpdatedEvent {
+    /// Previous maximum number of entries; zero means unlimited.
+    pub old_max_entries: u32,
+    /// New maximum number of entries; zero means unlimited.
+    pub new_max_entries: u32,
+    /// Owner that made the change.
+    pub owner: Address,
+}
+
+/// Emitted immediately before a call is rejected because its rate-limit bucket
+/// is exhausted.
+///
+/// The event is published before returning the contract error so Soroban
+/// diagnostics and test environments can correlate the rejection with its
+/// category and window. Indexers should also monitor the transaction error
+/// code because a reverted transaction's event visibility is ledger-dependent.
+///
+/// # Topics
+/// - `SymbolShort("rate_hit")` (`TOPIC_RATE_LIMIT_HIT`)
+#[contracttype]
+pub struct RateLimitExceededEvent {
+    /// Category whose allowance was exhausted.
+    pub category: Symbol,
+    /// User bucket that was exhausted, or `None` for a global bucket.
+    pub user: Option<Address>,
+    /// Ledger at which the bucket was exhausted or the rejected call was attempted.
+    pub current_ledger: u32,
+    /// Start ledger of the exhausted window.
+    pub window_start: u32,
+    /// Configured maximum calls for the window.
+    pub max_calls: u32,
+    /// Number of accepted calls already recorded in the window.
+    pub calls: u32,
+}
+
+// ============================================================================
+// WITHDRAWAL QUEUE EVENTS (#757)
+// ============================================================================
+
+/// Emitted when a user queues a withdrawal request.
+///
+/// # Topics
+/// - `SymbolShort("wq_add")` (`TOPIC_WITHDRAWAL_QUEUED`) - Event identifier
+#[contracttype]
+pub struct WithdrawalQueuedEvent {
+    /// Auto-incrementing request ID.
+    pub request_id: u32,
+    /// User who queued the withdrawal.
+    pub user: Address,
+    /// Amount requested (base units).
+    pub amount: i128,
+    /// Unix timestamp of creation.
+    pub timestamp: u64,
+}
+
+/// Emitted when a user cancels a pending withdrawal request.
+///
+/// # Topics
+/// - `SymbolShort("wq_cancel")` (`TOPIC_WITHDRAWAL_CANCELLED`) - Event identifier
+#[contracttype]
+pub struct WithdrawalCancelledEvent {
+    /// The cancelled request ID.
+    pub request_id: u32,
+    /// User who cancelled.
+    pub user: Address,
+}
+
+/// Emitted when the agent fulfils a withdrawal request.
+///
+/// # Topics
+/// - `SymbolShort("wq_done")` (`TOPIC_WITHDRAWAL_FULFILLED`) - Event identifier
+#[contracttype]
+pub struct WithdrawalFulfilledEvent {
+    /// The fulfilled request ID.
+    pub request_id: u32,
+    /// User whose request was fulfilled.
+    pub user: Address,
+    /// Amount actually withdrawn (base units).
+    pub amount: i128,
+}
+
+/// Emitted when the owner updates the queue configuration.
+///
+/// # Topics
+/// - `SymbolShort("wq_cfg")` (`TOPIC_QUEUE_CONFIG_UPDATED`) - Event identifier
+#[contracttype]
+pub struct QueueConfigUpdatedEvent {
+    /// New max queue size.
+    pub new_max_size: u32,
+    /// New TTL in seconds.
+    pub new_ttl: u64,
+    /// Owner who made the change.
+    pub owner: Address,
+}
+
+// ============================================================================
+// BLEND POOL CLIENT INTERFACE
+// ============================================================================
+
+/// Helper functions for interacting with Blend Protocol v2 pool contract.
+///
+/// Production Blend Soroban pools use request-based fund management:
+/// - `submit_with_allowance(from, spender, to, requests)` — supply with token allowance
+/// - `submit(from, to, requests)` — withdraw (request type 1)
+/// - `balance(asset, user)` — supplied balance for the vault position
+///
+/// See `docs/BLEND_INTEGRATION_RESEARCH.md` and
+/// https://docs.blend.capital/tech-docs/core-contracts/lending-pool/fund-management
+fn require_configured_vault_asset(env: &Env, asset: &Address) {
+    let configured_asset: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::UsdcToken)
+        .unwrap_or_else(|| panic_with_error!(env, VaultError::UnsupportedAsset));
+    if asset != &configured_asset {
+        panic_with_error!(env, VaultError::UnsupportedAsset);
+    }
+}
+
+struct BlendPoolClient;
+
+#[derive(Clone)]
+#[contracttype]
+struct BlendRequest {
+    request_type: u32,
+    address: Address,
+    amount: i128,
+}
+
+/// Mirrors Blend v2's `Positions` (`pool/src/pool/user.rs`), field-for-field,
+/// so it decodes structurally from `get_positions`'s cross-contract return
+/// without a dependency on the `blend-contracts-v2` crate (#986).
+///
+/// Supply made via a plain `Supply` request (what this adapter uses, request
+/// type 0) lands in `supply`, not `collateral` — confirmed against Blend's
+/// `build_actions_from_request`, which routes `RequestType::Supply` and
+/// `RequestType::Withdraw` through the uncollateralized `supply` map.
+/// `collateral` is only written by `SupplyCollateral`/`WithdrawCollateral`
+/// (request types 2/3), which this adapter never sends.
+#[derive(Clone)]
+#[contracttype]
+struct BlendPositions {
+    liabilities: Map<u32, i128>,
+    collateral: Map<u32, i128>,
+    supply: Map<u32, i128>,
+}
+
+/// Mirrors Blend v2's `ReserveConfig` (`pool/src/storage.rs`) completely.
+/// Soroban's `#[contracttype]` struct decoding checks the incoming map's
+/// field count against this struct's own field count before decoding by
+/// name, so a partial mirror missing fields Blend's real struct has would
+/// fail to decode at all, not just ignore what's missing. `index` (this
+/// reserve's position in `get_reserve_list()`, and the key into
+/// `BlendPositions`' maps) is the only field this adapter actually reads.
+#[derive(Clone)]
+#[contracttype]
+struct BlendReserveConfig {
+    index: u32,
+    decimals: u32,
+    c_factor: u32,
+    l_factor: u32,
+    util: u32,
+    max_util: u32,
+    r_base: u32,
+    r_one: u32,
+    r_two: u32,
+    r_three: u32,
+    reactivity: u32,
+    supply_cap: i128,
+    enabled: bool,
+}
+
+/// Mirrors Blend v2's `ReserveData` (`pool/src/storage.rs`) completely, for
+/// the same field-count reason as `BlendReserveConfig`. `b_rate` (the
+/// bToken-to-underlying conversion rate, scaled by `BLEND_RATE_SCALAR`,
+/// confirmed against `Reserve::to_asset_from_b_token` in
+/// `pool/src/pool/reserve.rs`) is the only field this adapter reads.
+#[derive(Clone)]
+#[contracttype]
+struct BlendReserveData {
+    d_rate: i128,
+    b_rate: i128,
+    ir_mod: i128,
+    b_supply: i128,
+    d_supply: i128,
+    backstop_credit: i128,
+    last_time: u64,
+}
+
+/// Mirrors Blend v2's `Reserve` (`pool/src/pool/reserve.rs`) completely, for
+/// the same field-count reason as `BlendReserveConfig`.
+#[derive(Clone)]
+#[contracttype]
+struct BlendReserve {
+    asset: Address,
+    config: BlendReserveConfig,
+    data: BlendReserveData,
+    scalar: i128,
+}
+
+/// Scale of Blend's `b_rate`/`d_rate` (`SCALAR_12` in
+/// `blend-contracts-v2`'s `pool/src/constants.rs`): `underlying =
+/// b_tokens * b_rate / BLEND_RATE_SCALAR`.
+const BLEND_RATE_SCALAR: i128 = 1_000_000_000_000;
+
+const BLEND_REQUEST_TYPE_SUPPLY: u32 = 0;
+const BLEND_REQUEST_TYPE_WITHDRAW: u32 = 1;
+const DEFAULT_USER_DEPOSIT_CAP: i128 = 10_000_000_000_i128;
+const DEFAULT_MIN_DEPOSIT: i128 = 1_000_000_i128;
+const DEFAULT_MAX_DEPOSIT: i128 = 10_000_000_000_i128;
+/// Absolute upper bound the owner can configure via `set_deposit_limits`.
+///
+/// Comfortably above any realistic per-transaction limit, this rejects
+/// configuration mistakes (e.g. an accidental `i128::MAX`) that would
+/// otherwise disable the per-transaction maximum-deposit guard entirely.
+const MAX_DEPOSIT_CEILING: i128 = 100_000_000_000_i128;
+/// Default Blend token approval lifetime.
+/// 100_000 ledgers × ~5s per ledger ≈ 5.7 days on Stellar mainnet.
+pub(crate) const DEFAULT_APPROVAL_TTL: u32 = 100_000;
+const MIN_APPROVAL_TTL: u32 = 1_000;
+const MAX_APPROVAL_TTL: u32 = 500_000;
+const APY_PREDICTION_TTL_EXTEND_TO: u32 = DEFAULT_APPROVAL_TTL;
+
+/// Default circuit-breaker threshold (#439): the number of consecutive failed
+/// rebalances that trips an automatic emergency pause when the owner has not
+/// configured a value via `set_max_consecutive_failures`.
+const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// Minimum ledger delay before a proposed agent update can be confirmed (~24 h on Stellar mainnet).
+/// 17,280 ledgers × ~5 s per ledger ≈ 86,400 s = 24 h.
+const AGENT_TIMELOCK_LEDGERS: u32 = 17_280;
+
+/// Number of ledgers an upgrade must wait between `schedule_upgrade` and
+/// `execute_upgrade` (#316). Same 24-hour window as the agent timelock, giving
+/// users and operators a recovery window to react to a malicious or mistaken
+/// upgrade proposal (and to `cancel_upgrade`) before new WASM takes effect.
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 17_280;
+
+/// Number of ledgers a migration target change must wait between
+/// `schedule_migration_target` and `execute_migration_target` (#969). Matches the
+/// upgrade timelock because the target controls where `migrate_shares` sends funds.
+const MIGRATION_TARGET_TIMELOCK_LEDGERS: u32 = UPGRADE_TIMELOCK_LEDGERS;
+
+/// Rate-limit category for single and batched deposits.
+///
+/// The category symbols are part of the public API used by `set_rate_limit`.
+/// Keep them at nine characters or fewer because Soroban short symbols have a
+/// nine-character limit.
+pub const RATE_LIMIT_DEPOSIT: Symbol = symbol_short!("deposit");
+/// Rate-limit category for `withdraw` and `withdraw_all`.
+pub const RATE_LIMIT_WITHDRAW: Symbol = symbol_short!("withdraw");
+/// Rate-limit category for agent `rebalance` calls.
+pub const RATE_LIMIT_REBALANCE: Symbol = symbol_short!("rebalance");
+/// Rate-limit category for permissionless `touch_user_ttl` calls.
+pub const RATE_LIMIT_TOUCH_TTL: Symbol = symbol_short!("touch_ttl");
+/// Rate-limit category shared by all preview/conversion entrypoints.
+pub const RATE_LIMIT_PREVIEW: Symbol = symbol_short!("preview");
+/// Rate-limit category for `batch_deposit` calls.
+pub const RATE_LIMIT_BATCH_DEPOSIT: Symbol = symbol_short!("batch_dep");
+
+/// Default single-user deposit allowance: 100 calls per 720 ledgers (~1 hour).
+const DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default single-user withdrawal allowance: 100 calls per 720 ledgers (~1 hour).
+const DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default global rebalance allowance: 100 calls per 720 ledgers (~1 hour).
+/// The owner should normally set a much lower value on production deployments;
+/// this compatibility-safe default does not supersede `MinRebalanceInterval`.
+const DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_REBALANCE_RATE_LIMIT_WINDOW: u32 = 720;
+/// Default per-user TTL maintenance allowance: five calls per ledger.
+const DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS: u32 = 5;
+const DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW: u32 = 1;
+/// Default global preview/conversion allowance: 1,000 calls per ledger.
+/// This bounds computational work without breaking clients that make several
+/// previews while composing a transaction.
+const DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS: u32 = 1_000;
+const DEFAULT_PREVIEW_RATE_LIMIT_WINDOW: u32 = 1;
+/// Default per-user batch-deposit allowance: 100 calls per 720 ledgers.
+const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS: u32 = 100;
+const DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW: u32 = 720;
+/// Maximum number of `(token, amount)` entries accepted by `batch_deposit` by default.
+const DEFAULT_MAX_BATCH_SIZE: u32 = 50;
+/// Maximum raw user-index slots scanned by one pagination call.
+pub const MAX_USERS_PER_PAGE: u32 = 200;
+/// Maximum withdrawal requests inspected by one permissionless queue call.
+pub const MAX_WITHDRAWAL_PROCESS_BATCH: u32 = 50;
+const WITHDRAWAL_QUEUE_STORAGE_VERSION: u32 = 2;
+
+/// Minimum ledgers remaining before `touch_user_ttl` extends a user's `Shares` entry.
+const USER_SHARES_TTL_THRESHOLD: u32 = 100;
+
+/// Lock period constants for share locking (#636).
+/// Assuming ~5 seconds per ledger on Stellar mainnet.
+const LOCK_30_DAYS_LEDGERS: u32 = 518_400; // 30 days @ 5s/ledger (~518,400 ledgers)
+const LOCK_90_DAYS_LEDGERS: u32 = 1_555_200; // 90 days @ 5s/ledger (~1,555,200 ledgers)
+const LOCK_180_DAYS_LEDGERS: u32 = 3_110_400; // 180 days @ 5s/ledger (~3,110,400 ledgers)
+
+/// Target ledgers to extend a user's `Shares` entry to when maintaining TTL.
+const USER_SHARES_TTL_EXTEND_TO: u32 = 100;
+/// Default ledgers kept alive for Blend token approvals.
+///
+/// The approval expiration ledger is calculated as:
+/// `current_ledger_sequence + ApprovalTtl`.
+const DEFAULT_BLEND_APPROVAL_TTL: u32 = 100_000;
+
+/// Ledgers of head-room reserved for renewing a protocol approval before it
+/// expires (Issue #847). At ~5 s per ledger this is roughly 7 hours. Consumers
+/// of [`ProtocolApprovalScheduledEvent`] submit their renewal transaction at or
+/// before `expiry_ledger - APPROVAL_RENEWAL_LEAD_LEDGERS`.
+pub const APPROVAL_RENEWAL_LEAD_LEDGERS: u32 = 5_000;
+
+use topics::{
+    TOPIC_AGENT_KEY_ROTATED, TOPIC_AGENT_UPDATED, TOPIC_AGENT_UPDATE_CANCELLED,
+    TOPIC_AGENT_UPDATE_CONFIRMED, TOPIC_AGENT_UPDATE_PROPOSED, TOPIC_APPROVAL_TTL_SCHEDULED,
+    TOPIC_APPROVAL_TTL_UPDATED, TOPIC_APY_PREDICTION, TOPIC_ASSETS_UPDATED, TOPIC_ASSET_DEPOSIT,
+    TOPIC_ASSET_WITHDRAW, TOPIC_BATCH_SIZE_LIMIT_UPDATED, TOPIC_BLEND_POOL_CONFIGURED,
+    TOPIC_BLEND_SUPPLY, TOPIC_BLEND_WITHDRAW, TOPIC_CAPS_UPDATED, TOPIC_DEPOSIT,
+    TOPIC_DEPOSIT_LIMITS_UPDATED, TOPIC_DEX_POOL_CONFIGURED, TOPIC_DEX_SUPPLY, TOPIC_DEX_WITHDRAW,
+    TOPIC_EMERGENCY_HARVEST, TOPIC_EMERGENCY_PAUSED, TOPIC_EMERGENCY_WITHDRAWAL, TOPIC_HARVEST,
+    TOPIC_INIT, TOPIC_LIMITS_UPDATED, TOPIC_MAX_FAILURES_UPDATED, TOPIC_MIGRATE,
+    TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_RECEIVED, TOPIC_MIGRATION_TARGET_CANCELLED,
+    TOPIC_MIGRATION_TARGET_SCHEDULED, TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTI_PROTOCOL_MODE,
+    TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
+    TOPIC_PAUSED, TOPIC_PROTOCOL_ADAPTER_UPDATED, TOPIC_PROTOCOL_ALLOCATION_CHANGED,
+    TOPIC_PROTOCOL_APY_UPDATED, TOPIC_PROTOCOL_CHANGED, TOPIC_PROTOCOL_WHITELIST_UPDATED,
+    TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED,
+    TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_WITHDRAWAL_CANCELLED, TOPIC_WITHDRAWAL_FULFILLED, TOPIC_WITHDRAWAL_QUEUED,
+    TOPIC_YIELD_ATTRIBUTED,
+};
+
+impl BlendPoolClient {
+    /// Deposits assets to the Blend pool.
+    ///
+    /// Uses Blend's `submit_with_allowance()` function with a supply request (type 0).
+    /// Reference: https://docs.blend.capital/tech-docs/core-contracts/lending-pool/fund-management
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `pool_address` - The Blend pool contract address
+    /// * `asset` - The asset token address (USDC)
+    /// * `amount` - Amount of assets to deposit
+    /// * `to` - Address to receive the pool tokens (vault address)
+    ///
+    /// # Returns
+    /// The amount of assets actually supplied (returned by Blend)
+    ///
+    /// # Panics
+    /// - If the Blend pool call fails
+    /// - If the pool status is frozen (status > 3)
+    fn supply(
+        env: &Env,
+        pool_address: &Address,
+        asset: &Address,
+        amount: i128,
+        to: &Address,
+    ) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
+
+        // Track vault balance before to calculate actual supplied amount
+        let token_client = token::Client::new(env, asset);
+        let vault_address = env.current_contract_address();
+        let balance_before = token_client.balance(&vault_address);
+
+        // Create supply request (type 0 = supply)
+        let request = BlendRequest {
+            request_type: BLEND_REQUEST_TYPE_SUPPLY,
+            address: asset.clone(),
+            amount,
+        };
+        let requests: Vec<BlendRequest> = vec![env, request];
+
+        // submit_with_allowance(from: Address, spender: Address, to: Address, requests: Vec<Request>)
+        let args: Vec<Val> = vec![
+            env,
+            to.into_val(env),       // from: vault address (token owner)
+            to.into_val(env),       // spender: vault address (authorized spender)
+            to.into_val(env),       // to: vault address (receives pool position)
+            requests.into_val(env), // requests: vector of supply requests
+        ];
+
+        // Invoke Blend's submit_with_allowance function
+        env.invoke_contract::<Val>(
+            pool_address,
+            &Symbol::new(env, "submit_with_allowance"),
+            args,
+        );
+
+        // Calculate actual amount supplied by balance change
+        let balance_after = token_client.balance(&vault_address);
+        balance_before.saturating_sub(balance_after)
+    }
+
+    /// Redeems assets from the Blend pool.
+    ///
+    /// Uses Blend's `submit()` function with a withdraw request (type 1).
+    /// Reference: https://docs.blend.capital/tech-docs/core-contracts/lending-pool/fund-management
+    fn withdraw(
+        env: &Env,
+        pool_address: &Address,
+        asset: &Address,
+        amount: i128,
+        to: &Address,
+    ) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
+
+        // Track vault balance before to calculate actual withdrawn amount
+        let token_client = token::Client::new(env, asset);
+        let vault_address = env.current_contract_address();
+        let balance_before = token_client.balance(&vault_address);
+
+        // Create withdraw request (type 1 = withdraw)
+        let request = BlendRequest {
+            request_type: BLEND_REQUEST_TYPE_WITHDRAW,
+            address: asset.clone(),
+            amount,
+        };
+        let requests: Vec<BlendRequest> = vec![env, request];
+
+        // Blend v2's real `submit` takes 4 args — from, spender, to, requests
+        // (confirmed against blend-capital/blend-contracts-v2's Pool trait) —
+        // not the 3-arg (from, to, requests) this adapter called with before
+        // (#986). The vault withdraws its own position rather than acting as
+        // a delegated spender for anyone else, so from == spender == to.
+        let args: Vec<Val> = vec![
+            env,
+            to.into_val(env),       // from: vault address (position owner)
+            to.into_val(env),       // spender: vault address (no delegated spender)
+            to.into_val(env),       // to: vault address (receives withdrawn assets)
+            requests.into_val(env), // requests: vector of withdraw requests
+        ];
+
+        // Invoke Blend's submit function
+        env.invoke_contract::<Val>(pool_address, &Symbol::new(env, "submit"), args);
+
+        // Calculate actual amount withdrawn by balance change
+        let balance_after = token_client.balance(&vault_address);
+        balance_after.saturating_sub(balance_before)
+    }
+
+    /// Gets the balance of assets supplied to the Blend pool, in underlying
+    /// (e.g. USDC) units.
+    ///
+    /// Blend v2 has no `balance(asset, user)` entry point at all (#986); the
+    /// adapter previously called one that does not exist, which would fail
+    /// outright against a real pool. Reading a supplied balance from the
+    /// real interface takes two calls and a unit conversion:
+    ///
+    /// 1. `get_reserve(asset) -> Reserve`, whose `config.index` is this
+    ///    asset's reserve index (the key into `Positions`' maps) and whose
+    ///    `data.b_rate` is the bToken-to-underlying conversion rate.
+    /// 2. `get_positions(user) -> Positions`, whose `supply` map (not
+    ///    `collateral` — see `BlendPositions`'s doc comment) gives the
+    ///    bToken amount at that reserve index, or none if the vault has
+    ///    never supplied this asset.
+    ///
+    /// `underlying = b_tokens * b_rate / BLEND_RATE_SCALAR`
+    /// (`Reserve::to_asset_from_b_token`, floor-rounded like Blend's own
+    /// implementation, in `pool/src/pool/reserve.rs`).
+    fn get_balance(env: &Env, pool_address: &Address, asset: &Address, user: &Address) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+
+        let reserve_args: Vec<Val> = vec![env, asset.into_val(env)];
+        let reserve: BlendReserve =
+            env.invoke_contract(pool_address, &Symbol::new(env, "get_reserve"), reserve_args);
+
+        let positions_args: Vec<Val> = vec![env, user.into_val(env)];
+        let positions: BlendPositions = env.invoke_contract(
+            pool_address,
+            &Symbol::new(env, "get_positions"),
+            positions_args,
+        );
+
+        let b_tokens = positions.supply.get(reserve.config.index).unwrap_or(0);
+        if b_tokens == 0 {
+            return 0;
+        }
+
+        b_tokens
+            .checked_mul(reserve.data.b_rate)
+            .expect("vault: blend balance conversion overflow")
+            / BLEND_RATE_SCALAR
+    }
+}
+
+// ============================================================================
+// DEX LIQUIDITY POOL CLIENT INTERFACE
+// ============================================================================
+
+/// Helper functions for interacting with a Stellar DEX liquidity pool contract.
+///
+/// The vault provides single-asset (USDC) liquidity to a DEX pool to execute the
+/// Balanced/Growth strategies described in the README. The pool is treated as a
+/// single-asset adapter exposing:
+/// - `add_liquidity(from, asset, amount, min_out)` — supply liquidity after USDC `approve`
+/// - `remove_liquidity(to, asset, amount, min_out)` — withdraw liquidity
+/// - `balance(asset, user)` — the vault's current liquidity position
+///
+/// Actual amounts are derived from the vault's USDC balance delta, mirroring the
+/// Blend integration so partial fills (slippage) are observable on-chain.
+///
+/// See `docs/DEX_INTEGRATION.md` for the full interface research and rationale.
+struct DexPoolClient;
+
+impl DexPoolClient {
+    /// Supplies assets to the DEX liquidity pool via `add_liquidity`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `pool_address` - The DEX pool contract address
+    /// * `asset` - The asset token address (USDC)
+    /// * `amount` - Amount of assets to supply
+    /// * `min_out` - Minimum accepted liquidity (forwarded to the pool for slippage protection)
+    /// * `to` - Address providing/owning the liquidity position (vault address)
+    ///
+    /// # Returns
+    /// The amount of assets actually supplied (derived from the vault balance delta).
+    fn supply(
+        env: &Env,
+        pool_address: &Address,
+        asset: &Address,
+        amount: i128,
+        min_out: i128,
+        to: &Address,
+    ) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
+
+        let token_client = token::Client::new(env, asset);
+        let vault_address = env.current_contract_address();
+        let balance_before = token_client.balance(&vault_address);
+
+        // add_liquidity(from: Address, asset: Address, amount: i128, min_out: i128)
+        let args: Vec<Val> = vec![
+            env,
+            to.into_val(env),     // from: vault address (liquidity provider)
+            asset.into_val(env),  // asset: USDC token
+            amount.into_val(env), // amount: desired liquidity
+            min_out.into_val(env),
+        ];
+
+        env.invoke_contract::<Val>(pool_address, &Symbol::new(env, "add_liquidity"), args);
+
+        let balance_after = token_client.balance(&vault_address);
+        balance_before.saturating_sub(balance_after)
+    }
+
+    /// Removes assets from the DEX liquidity pool via `remove_liquidity`.
+    fn withdraw(
+        env: &Env,
+        pool_address: &Address,
+        asset: &Address,
+        amount: i128,
+        min_out: i128,
+        to: &Address,
+    ) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+
+        require_configured_vault_asset(env, asset);
+
+        let token_client = token::Client::new(env, asset);
+        let vault_address = env.current_contract_address();
+        let balance_before = token_client.balance(&vault_address);
+
+        // remove_liquidity(to: Address, asset: Address, amount: i128, min_out: i128)
+        let args: Vec<Val> = vec![
+            env,
+            to.into_val(env),     // to: vault address (receives withdrawn assets)
+            asset.into_val(env),  // asset: USDC token
+            amount.into_val(env), // amount: liquidity to remove
+            min_out.into_val(env),
+        ];
+
+        env.invoke_contract::<Val>(pool_address, &Symbol::new(env, "remove_liquidity"), args);
+
+        let balance_after = token_client.balance(&vault_address);
+        balance_after.saturating_sub(balance_before)
+    }
+
+    /// Gets the vault's current liquidity position in the DEX pool.
+    fn get_balance(env: &Env, pool_address: &Address, asset: &Address, user: &Address) -> i128 {
+        use soroban_sdk::{vec, IntoVal, Symbol};
+        let args: Vec<Val> = vec![env, asset.into_val(env), user.into_val(env)];
+        env.invoke_contract::<i128>(pool_address, &Symbol::new(env, "balance"), args)
+    }
+}
+
+// ============================================================================
+// CONTRACT
+// ============================================================================
+
+/// NeuroWealth Vault - AI-Managed DeFi Yield Vault on Stellar
+///
+/// A non-custodial vault that accepts USDC deposits and allows an authorized
+/// AI agent to automatically deploy those funds across various yield-generating
+/// protocols on the Stellar blockchain.
+///
+/// # Security Model
+///
+/// - Users can only withdraw their own funds (enforced via `require_auth()`)
+/// - Only the designated AI agent can call `rebalance()`
+/// - Only the owner can call administrative functions
+/// - Minimum deposit: 1 USDC
+/// - Maximum per-user deposit: configurable (default 10,000 USDC)
+/// - Emergency pause functionality available to owner
+///
+/// # Upgradeability
+///
+/// This contract can be upgraded by the owner while preserving all storage state.
+#[contract]
+pub struct NeuroWealthVault;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BurnAndPayMode {
+    Requested,
+    All,
+    Emergency,
+}
+
+#[contractimpl]
+// Re-enables `missing_docs` for the contract's public entrypoints, which the
+// crate-level allow would otherwise silence. Keep this attribute: it is what
+// makes an undocumented `pub fn` fail CI (`clippy -D warnings`).
+#[warn(missing_docs)]
+impl NeuroWealthVault {
+    #[inline]
+    fn require(env: &Env, condition: bool, error: VaultError) {
+        if !condition {
+            panic_with_error!(env, error);
+        }
+    }
+
+    /// The canonical "burned" Stellar account: the ed25519 public key whose
+    /// 32-byte payload is all zeros. No known private key can sign for it.
+    ///
+    /// `soroban_sdk::Address` has no `Default` impl, so this is the
+    /// zero-address sentinel used to reject burned addresses in `initialize`
+    /// (issue #434).
+    #[inline]
+    fn zero_address(env: &Env) -> Address {
+        Address::from_string(&String::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ))
+    }
+
+    // ==========================================================================
+    // INITIALIZATION
+    // ==========================================================================
+
+    /// Initializes the vault with required configuration.
+    ///
+    /// This function must be called exactly once after contract deployment
+    /// to set up the vault's core configuration. After initialization,
+    /// the vault is ready to accept deposits.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `deployer` - The deployer address authorizing the initialization.
+    /// * `owner` - The initial owner address of the vault.
+    /// * `agent` - The authorized AI agent address that can call rebalance().
+    /// * `usdc_token` - The USDC token contract address.
+    /// * `salt` - The salt used during deployment for verification.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `VaultInitializedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault has already been initialized (Agent key already exists).
+    /// - If the caller is not the expected deployer.
+    /// - If deployer authorization fails.
+    /// - If `deployer`, `owner`, `agent`, or `usdc_token` is the zero address.
+    pub fn initialize(
+        env: Env,
+        deployer: Address,
+        owner: Address,
+        agent: Address,
+        usdc_token: Address,
+        salt: BytesN<32>,
+    ) {
+        if env.storage().instance().has(&DataKey::Agent) {
+            panic_with_error!(&env, VaultError::AlreadyInitialized);
+        }
+
+        // Reject the zero address for every role so a vault can never be
+        // initialized with a burned/unusable address (issue #434).
+        let zero = Self::zero_address(&env);
+        if deployer == zero {
+            panic_with_error!(&env, VaultError::DeployerCannotBeZeroAddress);
+        }
+        if owner == zero {
+            panic_with_error!(&env, VaultError::OwnerCannotBeZeroAddress);
+        }
+        if agent == zero {
+            panic_with_error!(&env, VaultError::AgentCannotBeZeroAddress);
+        }
+        if usdc_token == zero {
+            panic_with_error!(&env, VaultError::UsdcTokenCannotBeZeroAddress);
+        }
+
+        // Verify the deployer is the one that actually deployed the contract
+        let expected_contract_address = env
+            .deployer()
+            .with_address(deployer.clone(), salt)
+            .deployed_address();
+        if expected_contract_address != env.current_contract_address() {
+            panic_with_error!(&env, VaultError::UnauthorizedDeployer);
+        }
+
+        // Verify the deployer is calling - this prevents front-running
+        // The deployer must be the one calling initialize()
+        deployer.require_auth();
+
+        // Store the deployer address for future reference and signature verification
+        env.storage().instance().set(&DataKey::Deployer, &deployer);
+
+        let tvl_cap = DEFAULT_TVL_CAP;
+
+        env.storage().instance().set(&DataKey::Agent, &agent);
+        env.storage()
+            .instance()
+            .set(&DataKey::UsdcToken, &usdc_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &0_i128);
+        env.storage().instance().set(&DataKey::TotalShares, &0_i128);
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().set(&DataKey::Owner, &owner);
+        env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
+        env.storage()
+            .instance()
+            .set(&DataKey::UserDepositCap, &DEFAULT_USER_DEPOSIT_CAP);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinDeposit, &DEFAULT_MIN_DEPOSIT);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxDeposit, &DEFAULT_MAX_DEPOSIT);
+        env.storage()
+            .instance()
+            .set(&DataKey::BlendApprovalTtl, &DEFAULT_BLEND_APPROVAL_TTL);
+        env.storage().instance().set(
+            &DataKey::CircuitBreakerState,
+            &(DEFAULT_MAX_CONSECUTIVE_FAILURES, 0_u32),
+        );
+        // Set default MinHoldingPeriod to prevent yield sniping (#975)
+        // 120 ledgers (~10 minutes) prevents same-block deposit/withdraw cycles
+        env.storage()
+            .instance()
+            .set(&DataKey::MinHoldingPeriod, &120_u32);
+        Self::initialize_rate_limit_defaults(&env);
+        env.storage().instance().set(&DataKey::Version, &1_u32);
+
+        env.events().publish(
+            (TOPIC_INIT,),
+            VaultInitializedEvent {
+                owner: owner.clone(),
+                agent: agent.clone(),
+                usdc_token: usdc_token.clone(),
+                tvl_cap,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - DEPOSIT
+    // ==========================================================================
+
+    /// Deposits USDC into the vault on behalf of a user.
+    ///
+    /// The user must authorize this transaction with their signature.
+    /// The vault transfers USDC from the user and records their balance.
+    /// An event is emitted for the AI agent to detect and initiate yield deployment.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address making the deposit (must authorize).
+    /// * `amount` - Amount of USDC to deposit (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `DepositEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If amount is not positive.
+    /// - If amount is less than the minimum deposit.
+    /// - If amount would exceed the user's deposit cap.
+    /// - If amount would exceed the TVL cap.
+    /// - If the USDC transfer fails.
+    /// - If shares to mint rounds down to zero.
+    /// - If the user's deposit rate-limit bucket is exhausted.
+    pub fn deposit(env: Env, user: Address, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        Self::require_minimum_deposit(&env, amount);
+        Self::require_maximum_deposit(&env, amount);
+        Self::require_within_deposit_cap(&env, &user, amount);
+        Self::require_within_tvl_cap(&env, amount);
+        // Count only a fully validated operation, before any token transfer.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        let new_total = total
+            .checked_add(amount)
+            .expect("vault: total deposits overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &new_total);
+
+        // Mint shares based on current share price and update total assets.
+        // Inflation-attack mitigation: reject any deposit that would round down
+        // to zero shares. Together with storage-based asset accounting (donations
+        // can't move the price) and the minimum-deposit floor, this defeats the
+        // first-depositor/donation inflation attack. See `deposit` docs.
+        let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
+        Self::require(
+            &env,
+            shares_to_mint > 0,
+            VaultError::SharesToMintMustBePositive,
+        );
+
+        // Update user shares
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        let new_user_shares = current_shares
+            .checked_add(shares_to_mint)
+            .expect("vault: user shares overflow");
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        // Register the user in the active-share index the first time they hold
+        // non-zero shares, so the `get_users_with_shares` indexer view can page
+        // over holders (Issue #440). The `current_shares == 0` gate also covers a
+        // user who fully withdrew earlier and is re-entering; `add_to_user_index`
+        // dedupes so their slot is not duplicated.
+        if current_shares == 0 {
+            Self::add_to_user_index(&env, &user);
+
+            // Realized-APY snapshot (#462): record the share balance and the
+            // deposit principal at entry, so `get_user_apy` can measure the
+            // growth of this position without trusting an off-chain indexer.
+            // Only written on the first deposit; later deposits grow the
+            // position but the entry anchor stays the original one.
+            env.storage().persistent().set(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                &DepositSnapshot {
+                    shares: new_user_shares,
+                    principal: amount,
+                    deposited_at: env.ledger().timestamp(),
+                },
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        // Set default strategy for first-time depositors
+        if current_shares == 0
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::UserStrategy(user.clone()))
+        {
+            let default_strategy = Symbol::new(&env, "balanced");
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+
+            env.events().publish(
+                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
+                UserStrategyUpdatedEvent {
+                    user: user.clone(),
+                    old_strategy: Symbol::new(&env, ""),
+                    new_strategy: default_strategy,
+                },
+            );
+        }
+
+        // Update total shares
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        let new_total_shares = total_shares
+            .checked_add(shares_to_mint)
+            .expect("vault: total shares overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &new_total_shares);
+
+        // Update total assets (principal + yield)
+        let total_assets = Self::get_total_assets_internal(&env);
+        let new_total_assets = total_assets
+            .checked_add(amount)
+            .expect("vault: total assets overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &new_total_assets);
+
+        // Record deposit ledger for flash-loan protection (#659).
+        env.storage().persistent().set(
+            &DataKey::LastDepositLedger(user.clone()),
+            &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        // --- Cross-contract call: transfer tokens after state updates (CEI) ---
+        let token_client = token::Client::new(&env, &usdc_token);
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (TOPIC_DEPOSIT, user.clone()),
+            DepositEvent {
+                user,
+                amount,
+                // Shares minted for this deposit
+                shares: shares_to_mint,
+            },
+        );
+    }
+
+    /// Credits a migrated position on the RECEIVING side of a cross-vault
+    /// `migrate_shares` call (#987).
+    ///
+    /// `migrate_shares` on the sending vault transfers `amount` of USDC
+    /// directly into this contract's own token balance *before* calling
+    /// this function — the funds have already arrived. This function only
+    /// has to mint the corresponding shares for `user`; it must NOT attempt
+    /// to pull `amount` from `user`'s wallet the way `deposit` does, since
+    /// `user` never personally held the migrated funds (they moved
+    /// vault-to-vault, not vault-to-user-to-vault). Calling the public
+    /// `deposit` entry point for this, as a previous version of
+    /// `migrate_shares` did, always failed with an "insufficient balance"
+    /// error inside the token contract's `transfer`, because it tried to
+    /// debit funds `user` never had.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `source_vault` - The vault address this migration is coming from.
+    ///   Must authorize this call (see Security below).
+    /// * `user` - The user whose position is being credited.
+    /// * `amount` - The USDC amount already transferred into this vault's
+    ///   balance for `user`.
+    ///
+    /// # Security
+    ///
+    /// `source_vault.require_auth()` is the only access gate: any address
+    /// can be *claimed* as `source_vault`, but only a caller that address
+    /// has actually authorized may proceed. In practice this means only
+    /// `migrate_shares` itself can satisfy it, because it calls this
+    /// function via `env.invoke_contract` after pre-authorizing the exact
+    /// sub-invocation with `env.authorize_as_current_contract` — the same
+    /// pattern used by `revoke_allowance_if_outstanding` elsewhere in this
+    /// contract. A contract cannot forge another contract's authorization,
+    /// so an arbitrary third party cannot call this to mint themselves free
+    /// shares. This function intentionally skips `deposit`'s min/max/cap
+    /// validation: a migrated position is not a new voluntary deposit, and
+    /// re-validating it against this vault's deposit limits could strand a
+    /// user's funds mid-migration for reasons outside their control.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If `amount` is not positive.
+    /// - If `shares_to_mint` would round down to zero.
+    pub fn receive_migration(env: Env, source_vault: Address, user: Address, amount: i128) {
+        Self::require_initialized(&env);
+        source_vault.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+
+        let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
+        Self::require(
+            &env,
+            shares_to_mint > 0,
+            VaultError::SharesToMintMustBePositive,
+        );
+
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        let new_user_shares = current_shares
+            .checked_add(shares_to_mint)
+            .expect("vault: user shares overflow");
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        if current_shares == 0 {
+            Self::add_to_user_index(&env, &user);
+
+            env.storage().persistent().set(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                &DepositSnapshot {
+                    shares: new_user_shares,
+                    principal: amount,
+                    deposited_at: env.ledger().timestamp(),
+                },
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        if current_shares == 0
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::UserStrategy(user.clone()))
+        {
+            let default_strategy = Symbol::new(&env, "balanced");
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+
+            env.events().publish(
+                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
+                UserStrategyUpdatedEvent {
+                    user: user.clone(),
+                    old_strategy: Symbol::new(&env, ""),
+                    new_strategy: default_strategy,
+                },
+            );
+        }
+
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalShares,
+            &(total_shares
+                .checked_add(shares_to_mint)
+                .expect("vault: total shares overflow")),
+        );
+
+        let total_assets = Self::get_total_assets_internal(&env);
+        env.storage().instance().set(
+            &DataKey::TotalAssets,
+            &(total_assets
+                .checked_add(amount)
+                .expect("vault: total assets overflow")),
+        );
+
+        env.storage().persistent().set(
+            &DataKey::LastDepositLedger(user.clone()),
+            &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (TOPIC_MIGRATION_RECEIVED, user.clone()),
+            MigrationReceivedEvent {
+                user,
+                source_vault,
+                amount,
+                shares_minted: shares_to_mint,
+            },
+        );
+    }
+
+    /// Deposits multiple amounts in a single transaction. Each entry specifies a
+    /// token address and amount. Currently only the vault's USDC token is
+    /// accepted; other tokens will be supported when multi-asset functionality
+    /// is enabled (Phase 3).
+    ///
+    /// The entire batch is processed atomically — if any transfer fails, the
+    /// whole transaction reverts. Shares are minted once based on the aggregate
+    /// deposit amount, reducing transaction costs for multi-token deposits.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address depositing funds (must authorize).
+    /// * `entries` - A vector of `(token_address, amount)` pairs.
+    ///
+    /// # Events
+    ///
+    /// Emits one `DepositEvent` per entry.
+    ///
+    /// # Panics
+    ///
+    /// - If any entry's token is not the vault's USDC token (until multi-asset).
+    /// - If any entry's amount fails validation.
+    /// - If the aggregate deposit exceeds the TVL or user cap.
+    /// - If the batch exceeds the configured entry limit.
+    /// - If the user's deposit or batch rate-limit bucket is exhausted.
+    /// - If shares to mint rounds down to zero.
+    pub fn batch_deposit(env: Env, user: Address, entries: Vec<(Address, i128)>) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let total_entries = entries.len();
+        Self::require_batch_size(&env, total_entries);
+
+        // First pass: validate every entry before any transfer (fail-fast).
+        let mut total_amount: i128 = 0;
+        for i in 0..total_entries {
+            let (token, amount) = entries.get(i).unwrap();
+            // Until multi-asset is enabled, require all entries to use USDC.
+            if token != usdc_token {
+                panic_with_error!(&env, VaultError::UnsupportedAsset);
+            }
+            Self::require_positive_amount(&env, amount);
+            total_amount = total_amount
+                .checked_add(amount)
+                .expect("batch_deposit: total amount overflow");
+        }
+
+        // Validate aggregate against vault limits.
+        if total_entries > 0 {
+            Self::require_minimum_deposit(&env, total_amount);
+            Self::require_maximum_deposit(&env, total_amount);
+            Self::require_within_deposit_cap(&env, &user, total_amount);
+            Self::require_within_tvl_cap(&env, total_amount);
+        }
+
+        // Consume rate limits only after all supplied assets and amounts pass.
+        // This keeps rejected asset calls free of preceding state writes.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_BATCH_DEPOSIT);
+
+        // All entries share the same token, sender, and recipient.
+        let token_client = token::Client::new(&env, &usdc_token);
+        if total_amount > 0 {
+            token_client.transfer(&user, &env.current_contract_address(), &total_amount);
+        }
+
+        // Update total deposits and mint shares once for the aggregate.
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalDeposits,
+            &(total
+                .checked_add(total_amount)
+                .expect("batch_deposit: total deposits overflow")),
+        );
+
+        let shares_to_mint = Self::convert_to_shares_internal(&env, total_amount);
+        Self::require(
+            &env,
+            shares_to_mint > 0,
+            VaultError::SharesToMintMustBePositive,
+        );
+
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        env.storage().persistent().set(
+            &DataKey::Shares(user.clone()),
+            &(current_shares
+                .checked_add(shares_to_mint)
+                .expect("batch_deposit: shares overflow")),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shares(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        if current_shares == 0 {
+            // Register the user in the active-share index the first time
+            // they hold non-zero shares, mirroring `deposit` (#990 found
+            // this missing: without it, a batch_deposit-only holder never
+            // appears in `get_users_with_shares`).
+            Self::add_to_user_index(&env, &user);
+
+            // Realized-APY snapshot (#462), mirroring `deposit`.
+            let new_user_shares = current_shares
+                .checked_add(shares_to_mint)
+                .expect("batch_deposit: shares overflow");
+            env.storage().persistent().set(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                &DepositSnapshot {
+                    shares: new_user_shares,
+                    principal: total_amount,
+                    deposited_at: env.ledger().timestamp(),
+                },
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKeyExt::DepositSnapshot(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        if current_shares == 0
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::UserStrategy(user.clone()))
+        {
+            let default_strategy = Symbol::new(&env, "balanced");
+            env.storage()
+                .persistent()
+                .set(&DataKey::UserStrategy(user.clone()), &default_strategy);
+            env.storage().persistent().extend_ttl(
+                &DataKey::UserStrategy(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+            env.events().publish(
+                (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
+                UserStrategyUpdatedEvent {
+                    user: user.clone(),
+                    old_strategy: Symbol::new(&env, ""),
+                    new_strategy: default_strategy,
+                },
+            );
+        }
+
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalShares,
+            &(total_shares
+                .checked_add(shares_to_mint)
+                .expect("batch_deposit: total shares overflow")),
+        );
+
+        // Update total assets (principal + yield), mirroring `deposit`.
+        // Without this, TotalAssets silently falls behind real holdings
+        // and understates the share price for every other holder.
+        let total_assets = Self::get_total_assets_internal(&env);
+        let new_total_assets = total_assets
+            .checked_add(total_amount)
+            .expect("batch_deposit: total assets overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &new_total_assets);
+
+        // Record deposit ledger for flash-loan protection (#659, #990).
+        // Without this, a user could enter via batch_deposit and withdraw
+        // in the same ledger, bypassing MinHoldingPeriod entirely.
+        env.storage().persistent().set(
+            &DataKey::LastDepositLedger(user.clone()),
+            &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        for i in 0..total_entries {
+            let (_token, amount) = entries.get(i).unwrap();
+            env.events().publish(
+                (TOPIC_DEPOSIT, user.clone()),
+                DepositEvent {
+                    user: user.clone(),
+                    amount,
+                    shares: shares_to_mint,
+                },
+            );
+        }
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - WITHDRAW
+    // ==========================================================================
+
+    /// Withdraws USDC from the vault for a user.
+    ///
+    /// The user must authorize this transaction with their signature.
+    /// The vault transfers USDC from its balance to the user.
+    ///
+    /// If funds are deployed in Blend, this function will pull liquidity back
+    /// first to ensure funds are available for withdrawal.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address withdrawing funds (must authorize).
+    /// * `amount` - Amount of USDC to withdraw (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `WithdrawEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If amount is not positive.
+    /// - If user has insufficient balance or shares.
+    /// - If the vault has insufficient liquidity and cannot retrieve enough from Blend.
+    /// - If the USDC transfer fails.
+    /// - If the user's withdrawal rate-limit bucket is exhausted.
+    pub fn withdraw(env: Env, user: Address, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+        let (paid, burned) = Self::burn_and_pay(&env, &user, amount, BurnAndPayMode::Requested);
+
+        env.events().publish(
+            (TOPIC_WITHDRAW, user.clone()),
+            WithdrawEvent {
+                user,
+                amount: paid,
+                shares: burned,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - WITHDRAW ALL
+    // ==========================================================================
+
+    /// Withdraws all USDC from the vault for a user by burning all their shares.
+    ///
+    /// This function allows users to withdraw their entire balance without worrying
+    /// about rounding issues in share-to-asset conversions. It burns all user shares
+    /// and returns the proportional amount of assets.
+    ///
+    /// If funds are deployed in Blend, this function will pull liquidity back
+    /// first to ensure funds are available for withdrawal.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address withdrawing funds (must authorize).
+    ///
+    /// # Returns
+    ///
+    /// Returns the amount of USDC withdrawn.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `WithdrawEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If user has no shares to withdraw.
+    /// - If the vault has no assets.
+    /// - If the USDC transfer fails.
+    /// - If the user's withdrawal rate-limit bucket is exhausted.
+    pub fn withdraw_all(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+        let (paid, burned) = Self::burn_and_pay(&env, &user, 0, BurnAndPayMode::All);
+
+        env.events().publish(
+            (TOPIC_WITHDRAW, user.clone()),
+            WithdrawEvent {
+                user: user.clone(),
+                amount: paid,
+                shares: burned,
+            },
+        );
+
+        paid
+    }
+
+    /// Sets the Blend pool contract address for on-chain integration.
+    ///
+    /// Each asset has its own share pool with independent share pricing.
+    /// Validates the asset is supported, checks per-asset caps, transfers the
+    /// asset token, mints shares, and emits `AssetDepositEvent`.
+    pub fn deposit_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        let config = Self::require_asset_config(&env, &asset);
+
+        if config.min_deposit > 0 {
+            Self::require(
+                &env,
+                amount >= config.min_deposit,
+                VaultError::BelowMinimumDeposit,
+            );
+        }
+        if config.deposit_limit > 0 {
+            Self::require(
+                &env,
+                amount <= config.deposit_limit,
+                VaultError::MaximumDepositExceeded,
+            );
+        }
+        // Vault-wide limits apply on the multi-asset path too, matching
+        // `deposit` / `batch_deposit` (MinDeposit, MaxDeposit, UserDepositCap,
+        // TvLCap). Per-asset caps above do not replace these.
+        Self::require_minimum_deposit(&env, amount);
+        Self::require_maximum_deposit(&env, amount);
+        Self::require_within_deposit_cap(&env, &user, amount);
+        Self::require_within_tvl_cap(&env, amount);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_DEPOSIT);
+
+        // Read all accounting state BEFORE the token transfer so a malicious
+        // token contract cannot reenter and observe an inconsistent snapshot
+        // (mirrors the read-before-write discipline of `deposit`).
+        let mut totals: AssetTotals = Self::read_asset_totals(&env, &asset);
+
+        if config.tvl_cap > 0 {
+            Self::require(
+                &env,
+                totals
+                    .assets
+                    .checked_add(amount)
+                    .expect("deposit_asset: overflow")
+                    <= config.tvl_cap,
+                VaultError::ExceedsTvlCap,
+            );
+        }
+
+        let shares_to_mint = Self::convert_to_asset_shares_internal(&env, &asset, amount);
+        Self::require(
+            &env,
+            shares_to_mint > 0,
+            VaultError::SharesToMintMustBePositive,
+        );
+
+        let current_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+            .unwrap_or(0_i128);
+
+        let token_client = token::Client::new(&env, &config.token_address);
+        token_client.transfer(&user, &env.current_contract_address(), &amount);
+
+        // Update per-asset accounting via consolidated AssetTotals.
+        totals.deposits = totals
+            .deposits
+            .checked_add(amount)
+            .expect("deposit_asset: deposits overflow");
+        totals.shares = totals
+            .shares
+            .checked_add(shares_to_mint)
+            .expect("deposit_asset: shares overflow");
+        totals.assets = totals
+            .assets
+            .checked_add(amount)
+            .expect("deposit_asset: assets overflow");
+
+        env.storage().persistent().set(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            &(current_shares
+                .checked_add(shares_to_mint)
+                .expect("deposit_asset: overflow")),
+        );
+        env.storage().persistent().extend_ttl(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::Totals(asset.clone()), &totals);
+
+        // Native-unit accounting is isolated in the per-asset pool.
+        // Never add non-USDC units to legacy USDC TotalAssets.
+
+        // Record deposit ledger for flash-loan protection (#659, #990).
+        // Shared with the main deposit/withdraw path: MinHoldingPeriod is
+        // about how recently this user deposited anything, not which asset.
+        env.storage().persistent().set(
+            &DataKey::LastDepositLedger(user.clone()),
+            &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDepositLedger(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (TOPIC_ASSET_DEPOSIT, user.clone(), asset.clone()),
+            AssetDepositEvent {
+                user,
+                asset,
+                amount,
+                shares: shares_to_mint,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // MULTI-ASSET SUPPORT (#646) — WITHDRAW
+    // ==========================================================================
+
+    /// Withdraws a supported asset via the asset-aware path (#646).
+    ///
+    /// Burns shares in the asset's share pool and returns the proportional
+    /// amount of the asset. If funds are deployed in a yield protocol, this
+    /// function will attempt to retrieve them first.
+    pub fn withdraw_asset(env: Env, user: Address, asset: Symbol, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::require_not_paused(&env);
+        Self::require_positive_amount(&env, amount);
+        let config = Self::require_asset_config(&env, &asset);
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
+        Self::require_min_holding_period_elapsed(&env, &user);
+
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user.clone(), asset.clone()))
+            .unwrap_or(0_i128);
+        Self::require(&env, user_shares > 0, VaultError::InsufficientShares);
+
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default();
+        Self::require(
+            &env,
+            totals.shares > 0 && totals.assets > 0,
+            VaultError::NoAssetsToWithdraw,
+        );
+
+        let shares_to_burn = Self::convert_to_asset_shares_internal_ceil(&env, &asset, amount);
+        Self::require(
+            &env,
+            shares_to_burn > 0,
+            VaultError::SharesToBurnMustBePositive,
+        );
+        Self::require(
+            &env,
+            user_shares >= shares_to_burn,
+            VaultError::InsufficientSharesForAmount,
+        );
+
+        let assets_to_return = Self::convert_to_asset_assets_internal(&env, &asset, shares_to_burn);
+
+        // Check if funds are deployed and need to be retrieved.
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        let token_client = token::Client::new(&env, &config.token_address);
+        let mut actual_to_return = assets_to_return;
+
+        let configured_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        if config.token_address == configured_token
+            && (current_protocol == symbol_short!("blend")
+                || current_protocol == symbol_short!("dex"))
+        {
+            let vault_balance = token_client.balance(&env.current_contract_address());
+            if vault_balance < assets_to_return {
+                let needed = assets_to_return
+                    .checked_sub(vault_balance)
+                    .expect("withdraw_asset: underflow");
+                let _withdrawn =
+                    Self::withdraw_amount_from_protocol(&env, &current_protocol, needed, 0);
+                let available = token_client.balance(&env.current_contract_address());
+                actual_to_return = core::cmp::min(assets_to_return, available);
+            }
+        }
+
+        Self::require(
+            &env,
+            actual_to_return > 0,
+            VaultError::InsufficientLiquidity,
+        );
+
+        let final_shares_to_burn =
+            Self::convert_to_asset_shares_internal_ceil(&env, &asset, actual_to_return);
+
+        // Update per-user per-asset shares.
+        let new_user_asset_shares = user_shares
+            .checked_sub(final_shares_to_burn)
+            .expect("withdraw_asset: user shares underflow");
+        env.storage().persistent().set(
+            &MultiAssetKey::Shares(user.clone(), asset.clone()),
+            &new_user_asset_shares,
+        );
+        if new_user_asset_shares > 0 {
+            env.storage().persistent().extend_ttl(
+                &MultiAssetKey::Shares(user.clone(), asset.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+
+        // Update per-asset totals.
+        let mut new_totals = totals;
+        new_totals.shares = new_totals
+            .shares
+            .checked_sub(final_shares_to_burn)
+            .expect("withdraw_asset: total shares underflow");
+        new_totals.assets = new_totals
+            .assets
+            .checked_sub(actual_to_return)
+            .expect("withdraw_asset: total assets underflow");
+        new_totals.deposits = new_totals
+            .deposits
+            .saturating_sub(actual_to_return)
+            .max(0_i128);
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::Totals(asset.clone()), &new_totals);
+
+        // Native-unit accounting is isolated in the per-asset pool.
+
+        token_client.transfer(&env.current_contract_address(), &user, &actual_to_return);
+
+        env.events().publish(
+            (TOPIC_ASSET_WITHDRAW, user.clone()),
+            AssetWithdrawEvent {
+                user,
+                asset,
+                amount: actual_to_return,
+                shares: final_shares_to_burn,
+            },
+        );
+    }
+
+    /// Returns a user's asset balance for a specific supported asset (#646).
+    pub fn get_balance_asset(env: Env, user: Address, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user, asset.clone()))
+            .unwrap_or(0_i128);
+        if shares == 0 {
+            return 0;
+        }
+        Self::convert_to_asset_assets_internal(&env, &asset, shares)
+    }
+
+    /// Returns the total managed assets for a specific supported asset (#646).
+    pub fn get_total_assets_by_asset(env: Env, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset))
+            .unwrap_or_default();
+        totals.assets
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - MIGRATION (#637)
+    // ==========================================================================
+
+    /// Migrates user shares from this vault to a new vault contract.
+    ///
+    /// This function enables trustless migration during contract upgrades:
+    /// - Burns user's shares in the old vault (this contract)
+    /// - Calculates the asset value using current exchange rate
+    /// - Calls deposit on the new vault on behalf of the user
+    /// - Preserves share value through exchange rate conversion
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address migrating shares (must authorize).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `SharesMigratedEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::MigrationPaused`] if migration is paused by owner.
+    /// - [`VaultError::InvalidMigrationTarget`] if no migration target is set.
+    /// - [`VaultError::NoSharesToMigrate`] if user has no shares.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is not initialized.
+    /// - If the caller is not the user (authentication check).
+    pub fn migrate_shares(env: Env, user: Address) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        // Check migration pause state and target
+        let (target, migration_paused) = Self::read_migration_state(&env);
+        Self::require(&env, !migration_paused, VaultError::MigrationPaused);
+
+        let migration_target: Address =
+            target.unwrap_or_else(|| panic_with_error!(&env, VaultError::InvalidMigrationTarget));
+
+        // Get user's current shares
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        Self::require(&env, user_shares > 0, VaultError::NoSharesToMigrate);
+
+        // migrate_shares always moves the user's entire position (there is
+        // no partial-amount parameter), so unlike `withdraw` it cannot
+        // exclude just the locked portion — a lock must block migration
+        // outright until it expires, otherwise a locked position's "lock"
+        // is meaningless the moment migration is available. Without this,
+        // migrating a fully-locked user left LockedShares(user) >
+        // Shares(user) == 0 afterward, a broken invariant caught by the
+        // #987 fuzz harness.
+        let (locked_shares, _lock_expiry) = Self::read_lock_state(&env, &user);
+        Self::require(&env, locked_shares == 0, VaultError::InsufficientShares);
+
+        // Calculate asset value using current exchange rate
+        let total_shares = Self::get_total_shares_internal(&env);
+        let total_assets = Self::get_total_assets_internal(&env);
+        let assets_to_transfer = Self::convert_to_assets_internal(&env, user_shares);
+
+        // Burn shares from user
+        let new_user_shares = 0_i128;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shares(user.clone()), &new_user_shares);
+
+        let new_total_shares = total_shares
+            .checked_sub(user_shares)
+            .expect("vault: migration underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &new_total_shares);
+
+        // Update total assets
+        let new_total_assets = total_assets
+            .checked_sub(assets_to_transfer)
+            .expect("vault: migration underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &new_total_assets);
+
+        // Transfer USDC to new vault, then credit the migrated position via
+        // its `receive_migration` entry point — NOT its public `deposit`,
+        // which would try to pull `assets_to_transfer` from `user`'s own
+        // wallet a second time (the funds already moved vault-to-vault on
+        // the line above; `user` never personally held them). See
+        // `receive_migration`'s doc comment for the full explanation.
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+        let source_vault = env.current_contract_address();
+        token_client.transfer(&source_vault, &migration_target, &assets_to_transfer);
+
+        let receive_args: Vec<Val> = vec![
+            &env,
+            source_vault.clone().into_val(&env),
+            user.clone().into_val(&env),
+            assets_to_transfer.into_val(&env),
+        ];
+        env.authorize_as_current_contract(vec![
+            &env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: migration_target.clone(),
+                    fn_name: Symbol::new(&env, "receive_migration"),
+                    args: receive_args.clone(),
+                },
+                sub_invocations: vec![&env],
+            }),
+        ]);
+        env.invoke_contract::<()>(
+            &migration_target,
+            &Symbol::new(&env, "receive_migration"),
+            receive_args,
+        );
+
+        // Emit migration event
+        env.events().publish(
+            (TOPIC_MIGRATE, user.clone()),
+            SharesMigratedEvent {
+                user: user.clone(),
+                old_vault: env.current_contract_address(),
+                new_vault: migration_target,
+                shares_burned: user_shares,
+                assets_transferred: assets_to_transfer,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - SHARE LOCKING (#636)
+    // ==========================================================================
+
+    /// Locks user shares for a configurable period.
+    ///
+    /// Users can voluntarily lock their shares for 30, 90 or 180 days.
+    /// Locked shares cannot be withdrawn until the lock period expires.
+    ///
+    /// Locking does not currently change yield: locked and unlocked shares earn
+    /// the same share-price growth. A yield boost for locked shares is not
+    /// implemented yet (#971).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address locking shares (must authorize).
+    /// * `shares` - Number of shares to lock.
+    /// * `lock_duration_days` - Lock period in days (30, 90, or 180).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `SharesLockedEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::AmountMustBePositive`] if `shares` is zero or negative.
+    /// - [`VaultError::SharesAlreadyLocked`] if user already has locked shares.
+    /// - [`VaultError::InvalidLockDuration`] if duration is not 30, 90, or 180 days,
+    ///   or if the expiry ledger would overflow `u32`.
+    /// - [`VaultError::InsufficientUnlockedShares`] if user doesn't have enough unlocked shares.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is not initialized.
+    /// - If the caller is not the user (authentication check).
+    pub fn lock_shares(env: Env, user: Address, shares: i128, lock_duration_days: u32) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        // Check if user already has locked shares
+        let (existing_locked, _existing_expiry) = Self::read_lock_state(&env, &user);
+        Self::require(&env, existing_locked == 0, VaultError::SharesAlreadyLocked);
+
+        Self::require_positive_amount(&env, shares);
+
+        // Validate lock duration
+        let lock_ledgers = match lock_duration_days {
+            30 => LOCK_30_DAYS_LEDGERS,
+            90 => LOCK_90_DAYS_LEDGERS,
+            180 => LOCK_180_DAYS_LEDGERS,
+            _ => panic_with_error!(&env, VaultError::InvalidLockDuration),
+        };
+
+        // Check user has enough unlocked shares
+        let total_user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        let unlocked_shares = total_user_shares
+            .checked_sub(existing_locked)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::InsufficientUnlockedShares));
+        Self::require(
+            &env,
+            shares <= unlocked_shares,
+            VaultError::InsufficientUnlockedShares,
+        );
+
+        // Calculate lock expiry ledger
+        let current_ledger = env.ledger().sequence();
+        let expiry_ledger = current_ledger
+            .checked_add(lock_ledgers)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::InvalidLockDuration));
+
+        // Store locked shares and expiry
+        env.storage()
+            .persistent()
+            .set(&DataKey::LockState(user.clone()), &(shares, expiry_ledger));
+        env.storage().persistent().extend_ttl(
+            &DataKey::LockState(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        // Emit lock event
+        env.events().publish(
+            (TOPIC_SHARES_LOCKED, user.clone()),
+            SharesLockedEvent {
+                user: user.clone(),
+                shares_locked: shares,
+                lock_duration_days,
+                expiry_ledger,
+            },
+        );
+    }
+
+    /// Unlocks user shares after the lock period has expired.
+    ///
+    /// Users can only unlock shares after the lock period has ended.
+    /// This releases the shares for normal withdrawal.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address unlocking shares (must authorize).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `SharesUnlockedEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::InsufficientShares`] if the user has no locked shares.
+    /// - [`VaultError::LockPeriodNotEnded`] if the lock period has not expired.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is not initialized.
+    /// - If the caller is not the user (authentication check).
+    pub fn unlock_shares(env: Env, user: Address) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        // Get locked shares and expiry
+        let (locked_shares, expiry_ledger) = Self::read_lock_state(&env, &user);
+        Self::require(&env, locked_shares > 0, VaultError::InsufficientShares);
+
+        // Check if lock period has ended
+        let current_ledger = env.ledger().sequence();
+        Self::require(
+            &env,
+            current_ledger >= expiry_ledger,
+            VaultError::LockPeriodNotEnded,
+        );
+
+        // Clear locked shares and expiry
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LockState(user.clone()));
+
+        // Emit unlock event
+        env.events().publish(
+            (TOPIC_SHARES_UNLOCKED, user.clone()),
+            SharesUnlockedEvent {
+                user: user.clone(),
+                shares_unlocked: locked_shares,
+            },
+        );
+    }
+
+    /// Gets user's locked shares and lock expiry information.
+    ///
+    /// Returns the number of locked shares and the ledger when they can be unlocked.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address to query.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (locked_shares, unlock_ledger) where:
+    /// - `locked_shares` is the number of shares currently locked (0 if none)
+    /// - `unlock_ledger` is the ledger number when shares can be unlocked (0 if none)
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is not initialized.
+    pub fn get_locked_shares(env: Env, user: Address) -> (i128, u32) {
+        Self::require_initialized(&env);
+        Self::read_lock_state(&env, &user)
+    }
+
+    /// Reads the stored `(locked_shares, expiry_ledger)` lock record for `user`,
+    /// defaulting to `(0, 0)` when no lock is active.
+    fn read_lock_state(env: &Env, user: &Address) -> (i128, u32) {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LockState(user.clone()))
+            .unwrap_or((0_i128, 0_u32))
+    }
+
+    /// Reads the stored `(migration_target, migration_paused)` state,
+    /// defaulting to `(None, false)` when neither has been configured.
+    fn read_migration_state(env: &Env) -> (Option<Address>, bool) {
+        env.storage()
+            .instance()
+            .get(&DataKey::MigrationState)
+            .unwrap_or((None, false))
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - EMERGENCY WITHDRAWAL (#635)
+    // ==========================================================================
+
+    /// Emergency withdrawal function that works when the vault is paused.
+    ///
+    /// When the vault is paused, users cannot withdraw through normal means.
+    /// This function provides a safety mechanism for users to recover their funds
+    /// if the owner pauses the vault for an extended period or during governance disputes.
+    ///
+    /// This function:
+    /// - Works even when the vault is paused
+    /// - Requires user authentication (only their own funds)
+    /// - Deducts from idle balance first, then from protocol if needed
+    /// - Does not affect rebalance or other admin operations
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address withdrawing funds (must authorize).
+    /// * `amount` - Amount of USDC to withdraw (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `EmergencyWithdrawalEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::EmergencyWithdrawalNotAllowed`] if the vault is not paused.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is not initialized.
+    /// - If the caller is not the user (authentication check).
+    /// - If user has insufficient shares.
+    /// - If there's insufficient liquidity.
+    pub fn emergency_withdraw(env: Env, user: Address, amount: i128) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        // Only allow emergency withdrawal when vault is paused
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        Self::require(&env, paused, VaultError::EmergencyWithdrawalNotAllowed);
+
+        Self::require_positive_amount(&env, amount);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+        let vault_balance = token_client.balance(&env.current_contract_address());
+        let from_idle = vault_balance >= amount;
+        let (paid, burned) = Self::burn_and_pay(&env, &user, amount, BurnAndPayMode::Emergency);
+
+        // Emit emergency withdrawal event
+        env.events().publish(
+            (TOPIC_EMERGENCY_WITHDRAWAL, user.clone()),
+            EmergencyWithdrawalEvent {
+                user: user.clone(),
+                amount: paid,
+                shares: burned,
+                from_idle,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - REBALANCE
+    // ==========================================================================
+
+    // `harvest()` is implemented below and reports its outcome to the same
+    // consecutive-failure circuit breaker as the rebalance entrypoints.
+
+    /// Rebalances vault funds between yield strategies.
+    ///
+    /// Only the authorized AI agent can call this function. The agent uses
+    /// this to move funds between different yield-generating protocols based
+    /// on market conditions and strategy performance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `protocol` - The target protocol to move funds to ("blend", "dex", or "none").
+    /// * `expected_apy` - Expected APY in basis points (e.g., 850 = 8.5%).
+    /// * `min_out` - Slippage tolerance in basis points, applied independently
+    ///   to each leg's expected amount. Values above 10,000 retain the legacy
+    ///   absolute minimum-output behavior for compatibility.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `RebalanceEvent`
+    /// - `ProtocolChangedEvent`
+    /// - `RebalanceFailedEvent` (if exit fails)
+    /// - `BlendWithdrawEvent` / `BlendSupplyEvent` (Blend legs)
+    /// - `DexWithdrawEvent` / `DexSupplyEvent` (DEX legs)
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If caller is not the authorized agent.
+    /// - If vault is paused.
+    /// - If the rebalance cooldown has not elapsed (`RebalanceCooldownActive`).
+    /// - If protocol is unsupported.
+    /// - If slippage protection (min_out) is triggered.
+    /// - If protocol interaction fails.
+    /// - If Blend pool is not configured and protocol is "blend"
+    /// - If the DEX pool is not configured and protocol is "dex"
+    /// - If a leg moves fewer assets than `min_out` when `min_out > 0`
+    /// - If the global rebalance rate-limit bucket is exhausted.
+    pub fn rebalance(
+        env: Env,
+        agent: Address,
+        protocol: Symbol,
+        expected_apy: i128,
+        min_out: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env, &agent);
+        // Reuse `InvalidStrategy` for invalid rebalance configuration inputs.
+        // The contract error enum is already at Soroban's 50-variant limit.
+        Self::require(
+            &env,
+            (0..=10_000).contains(&expected_apy),
+            VaultError::InvalidStrategy,
+        );
+
+        Self::require_rebalance_cooldown_elapsed(&env);
+
+        if min_out < 0 || (min_out > i128::from(Self::BPS_DENOMINATOR)) {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        // Validate protocol against allowlist
+        let supported_protocols = vec![
+            &env,
+            symbol_short!("blend"),
+            symbol_short!("dex"),
+            symbol_short!("none"),
+        ];
+        if !supported_protocols.contains(protocol.clone()) {
+            panic_with_error!(&env, VaultError::UnsupportedProtocol);
+        }
+
+        // Enforce the global frequency cap in addition to the legacy minimum
+        // interval cooldown. The bucket is consumed before external protocol
+        // calls, so a gracefully handled failed exit still counts as an attempt.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        let mut amount_attempted = 0_i128;
+        let mut amount_moved = 0_i128;
+        let mut amount_supplied = 0_i128;
+        let mut amount_withdrawn = 0_i128;
+
+        // If switching protocols, exit the current one first.
+        // On incomplete exit, emit RebalanceFailedEvent and abort — no further
+        // state mutations occur so the vault remains consistent (Issue #145).
+        if current_protocol != protocol && current_protocol != symbol_short!("none") {
+            let expected_withdrawal = Self::get_protocol_balance(&env, &current_protocol);
+            amount_attempted = amount_attempted.saturating_add(expected_withdrawal);
+
+            let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
+            amount_withdrawn = amount_withdrawn.saturating_add(withdrawn);
+            amount_moved = amount_moved.saturating_add(withdrawn);
+
+            if expected_withdrawal > 0 {
+                let remaining_balance = Self::get_protocol_balance(&env, &current_protocol);
+                if remaining_balance > 0 {
+                    // Protocol exit incomplete — abort rebalance gracefully so
+                    // the failure is observable without reverting the tx.
+                    env.events().publish(
+                        (TOPIC_REBALANCE_FAILED,),
+                        RebalanceFailedEvent {
+                            from_protocol: current_protocol,
+                            reason: symbol_short!("exit_fail"),
+                        },
+                    );
+                    // An incomplete exit is a failed rebalance attempt. Record
+                    // it for the circuit breaker, but do not advance
+                    // LastRebalanceLedger because no rebalance completed.
+                    Self::record_rebalance_outcome(&env, &symbol_short!("failed"));
+                    return;
+                }
+            }
+        }
+
+        if protocol == symbol_short!("blend") {
+            if !env.storage().instance().has(&DataKey::BlendPool) {
+                panic_with_error!(&env, VaultError::BlendPoolNotConfigured);
+            }
+
+            let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+            let token_client = token::Client::new(&env, &usdc_token);
+            let vault_balance = token_client.balance(&env.current_contract_address());
+
+            let mut status = symbol_short!("success");
+
+            if vault_balance > 0 {
+                amount_attempted = amount_attempted.saturating_add(vault_balance);
+                let supplied = Self::supply_to_blend(&env, vault_balance, min_out, true);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+                amount_moved = amount_moved.saturating_add(supplied);
+
+                if supplied == 0 {
+                    status = symbol_short!("failed");
+                } else if supplied < vault_balance {
+                    status = symbol_short!("partial");
+                }
+            } else if amount_moved == 0 {
+                // Noop: no funds to supply, but protocol target is blend.
+                // Update CurrentProtocol so tracking matches intent (Issue #146).
+                Self::set_current_protocol(&env, symbol_short!("blend"));
+                status = symbol_short!("noop");
+            }
+
+            env.events().publish(
+                (TOPIC_REBALANCE,),
+                RebalanceEvent {
+                    protocol,
+                    expected_apy,
+                    status: status.clone(),
+                    amount_attempted,
+                    amount_moved,
+                    amount_supplied,
+                    amount_withdrawn,
+                },
+            );
+
+            // Circuit breaker: fold this outcome into the consecutive-failure
+            // counter, auto-pausing the vault if the threshold is reached (#439).
+            Self::record_rebalance_outcome(&env, &status);
+        } else if protocol == symbol_short!("dex") {
+            if !env.storage().instance().has(&DataKey::DexPool) {
+                panic_with_error!(&env, VaultError::DexPoolNotConfigured);
+            }
+
+            let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+            let token_client = token::Client::new(&env, &usdc_token);
+            let vault_balance = token_client.balance(&env.current_contract_address());
+
+            let mut status = symbol_short!("success");
+
+            if vault_balance > 0 {
+                amount_attempted = amount_attempted.saturating_add(vault_balance);
+                let supplied = Self::supply_to_dex(&env, vault_balance, min_out, true);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+                amount_moved = amount_moved.saturating_add(supplied);
+
+                if supplied == 0 {
+                    status = symbol_short!("failed");
+                } else if supplied < vault_balance {
+                    status = symbol_short!("partial");
+                }
+            } else if amount_moved == 0 {
+                // Noop: no funds to supply, but protocol target is dex.
+                // Update CurrentProtocol so tracking matches intent (mirrors Blend, Issue #146).
+                Self::set_current_protocol(&env, symbol_short!("dex"));
+                status = symbol_short!("noop");
+            }
+
+            env.events().publish(
+                (TOPIC_REBALANCE,),
+                RebalanceEvent {
+                    protocol,
+                    expected_apy,
+                    status: status.clone(),
+                    amount_attempted,
+                    amount_moved,
+                    amount_supplied,
+                    amount_withdrawn,
+                },
+            );
+
+            // Circuit breaker: fold this outcome into the consecutive-failure
+            // counter, auto-pausing the vault if the threshold is reached (#439).
+            Self::record_rebalance_outcome(&env, &status);
+        } else if protocol == symbol_short!("none") {
+            let status = if current_protocol != symbol_short!("none") {
+                // The shared protocol-switch block above already completed and
+                // accounted for the exit. Only finalize the protocol state here.
+                Self::set_current_protocol(&env, symbol_short!("none"));
+                symbol_short!("success")
+            } else {
+                symbol_short!("noop")
+            };
+
+            env.events().publish(
+                (TOPIC_REBALANCE,),
+                RebalanceEvent {
+                    protocol,
+                    expected_apy,
+                    status: status.clone(),
+                    amount_attempted,
+                    amount_moved,
+                    amount_supplied,
+                    amount_withdrawn,
+                },
+            );
+
+            // Circuit breaker: fold this outcome into the consecutive-failure
+            // counter, auto-pausing the vault if the threshold is reached (#439).
+            Self::record_rebalance_outcome(&env, &status);
+        }
+
+        // Persist the ledger of this successful rebalance so the next call can
+        // be checked against the cooldown interval (Issue #59).
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+
+        // Keep the per-venue trackers in step with reality even in
+        // single-protocol mode, so the multi-protocol getters are always
+        // truthful regardless of which path last moved funds.
+        Self::sync_deployed_split(&env);
+    }
+
+    // ==========================================================================
+    // MULTI-PROTOCOL ALLOCATION (Phase 2)
+    // ==========================================================================
+
+    /// Enables (or disables) multi-protocol allocation mode. **Owner only.**
+    ///
+    /// This is the migration path off the legacy single-protocol
+    /// (mutual-exclusion) model. Enabling seeds the allocation from the vault's
+    /// current position so no funds move as part of the migration itself:
+    ///
+    /// - `CurrentProtocol == "blend"` → seeds `(10_000, 0)`
+    /// - `CurrentProtocol == "dex"`   → seeds `(0, 10_000)`
+    /// - `CurrentProtocol == "none"`  → seeds `(0, 0)`
+    ///
+    /// The agent then calls [`rebalance_multi`](crate::NeuroWealthVault::rebalance_multi)
+    /// to move to the desired split. Disabling collapses back to
+    /// single-protocol mode; it is only permitted when at most one venue holds
+    /// a position, so the legacy `CurrentProtocol` symbol can once again
+    /// describe the vault's full state without loss.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `enabled` - `true` to enable multi-protocol mode, `false` to disable.
+    ///
+    /// # Events
+    ///
+    /// Emits `MultiProtocolModeChangedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault is not initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::InvalidAllocation`] if disabling while both venues hold
+    ///   funds (the split cannot be represented in single-protocol mode).
+    pub fn enable_multi_protocol(env: Env, enabled: bool) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let (blend_bal, dex_bal) = Self::sync_deployed_split(&env);
+
+        let (blend_bps, dex_bps) = if enabled {
+            let current: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            if current == symbol_short!("blend") {
+                (Self::BPS_DENOMINATOR, 0)
+            } else if current == symbol_short!("dex") {
+                (0, Self::BPS_DENOMINATOR)
+            } else if blend_bal > 0 || dex_bal > 0 {
+                // Already holding a split position — reflect it exactly.
+                let total = blend_bal.saturating_add(dex_bal);
+                let denom = i128::from(Self::BPS_DENOMINATOR);
+                let b_i128 = blend_bal
+                    .checked_mul(denom)
+                    .and_then(|v| v.checked_div(total))
+                    .unwrap_or(0);
+                let b = u32::try_from(b_i128)
+                    .unwrap_or(0)
+                    .min(Self::BPS_DENOMINATOR);
+                (b, Self::BPS_DENOMINATOR.saturating_sub(b))
+            } else {
+                (0, 0)
+            }
+        } else {
+            // Collapsing to single-protocol mode is only lossless when at most
+            // one venue is funded.
+            Self::require(
+                &env,
+                !(blend_bal > 0 && dex_bal > 0),
+                VaultError::InvalidAllocation,
+            );
+            (0, 0)
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiProtocolEnabled, &enabled);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllocationBps, &(blend_bps, dex_bps));
+
+        // Refresh the legacy summary symbol so both worlds agree.
+        Self::set_current_protocol(&env, Self::derive_protocol_summary(blend_bal, dex_bal));
+
+        env.events().publish(
+            (TOPIC_MULTI_PROTOCOL_MODE,),
+            MultiProtocolModeChangedEvent {
+                enabled,
+                blend_bps,
+                dex_bps,
+            },
+        );
+    }
+
+    /// Returns `true` when multi-protocol allocation mode is active.
+    pub fn is_multi_protocol_enabled(env: Env) -> bool {
+        Self::require_initialized(&env);
+        Self::multi_protocol_enabled(&env)
+    }
+
+    /// Returns the target allocation as `(blend_bps, dex_bps)`.
+    ///
+    /// Both values are basis points of the vault's deployable assets. A sum
+    /// below `10_000` means the remainder is deliberately held idle.
+    pub fn get_allocation(env: Env) -> (u32, u32) {
+        Self::require_initialized(&env);
+        Self::read_allocation(&env)
+    }
+
+    /// Returns the USDC principal currently deployed to Blend, in raw units.
+    ///
+    /// Queried live from the pool, so it includes any accrued yield the pool
+    /// reports on the position.
+    pub fn get_deployed_to_blend(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_protocol_balance(&env, &symbol_short!("blend"))
+    }
+
+    /// Returns the USDC principal currently deployed to the DEX, in raw units.
+    pub fn get_deployed_to_dex(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_protocol_balance(&env, &symbol_short!("dex"))
+    }
+
+    /// Returns the per-venue deployment as `(deployed_to_blend, deployed_to_dex)`.
+    ///
+    /// Read in a single invocation, so the two values are consistent with each
+    /// other — unlike calling the individual getters separately, which can
+    /// straddle a rebalance.
+    pub fn get_protocol_breakdown(env: Env) -> (i128, i128) {
+        Self::require_initialized(&env);
+        (
+            Self::get_protocol_balance(&env, &symbol_short!("blend")),
+            Self::get_protocol_balance(&env, &symbol_short!("dex")),
+        )
+    }
+
+    /// Registers or replaces the adapter contract for a protocol (#656).
+    pub fn set_protocol_adapter(env: Env, owner: Address, protocol: Symbol, adapter: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        owner.require_auth();
+        let old_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolAdapter(protocol.clone()), &adapter);
+        env.events().publish(
+            (TOPIC_PROTOCOL_ADAPTER_UPDATED, protocol.clone()),
+            ProtocolAdapterUpdatedEvent {
+                protocol,
+                old_address,
+                new_address: adapter,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the configured adapter for a protocol, or `None`.
+    pub fn get_protocol_adapter(env: Env, protocol: Symbol) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol))
+    }
+
+    /// Adds or removes a protocol from the owner-managed whitelist (#656).
+    pub fn set_protocol_whitelisted(env: Env, owner: Address, protocol: Symbol, enabled: bool) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        owner.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelist(protocol.clone()), &enabled);
+
+        let mut index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
+        let found = index.iter().any(|item| item == protocol);
+        if enabled && !found {
+            index.push_back(protocol.clone());
+        }
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelistIndex, &index);
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_WHITELIST_UPDATED, protocol.clone()),
+            ProtocolWhitelistUpdatedEvent {
+                protocol,
+                enabled,
+                owner,
+            },
+        );
+    }
+
+    /// Returns whether a protocol is currently whitelisted.
+    pub fn get_protocol_whitelisted(env: Env, protocol: Symbol) -> bool {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol))
+            .unwrap_or(false)
+    }
+
+    /// Returns the currently whitelisted protocol symbols.
+    pub fn get_protocol_whitelist(env: Env) -> Vec<Symbol> {
+        Self::require_initialized(&env);
+        let index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
+        let mut result = vec![&env];
+        for protocol in index.iter() {
+            if Self::get_protocol_whitelisted(env.clone(), protocol.clone()) {
+                result.push_back(protocol);
+            }
+        }
+        result
+    }
+
+    /// Records the agent's observed APY for a protocol, in basis points.
+    ///
+    /// Feeds [`get_composite_apy`](crate::NeuroWealthVault::get_composite_apy).
+    ///
+    /// # Arguments
+    ///
+    /// * `protocol` - `"blend"` or `"dex"`.
+    /// * `apy_bps` - APY in basis points (`0..=10_000`).
+    ///
+    /// # Events
+    ///
+    /// Emits `ProtocolApyUpdatedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::UnsupportedProtocol`] for any other protocol symbol.
+    /// - [`VaultError::InvalidStrategy`] if `apy_bps > 10_000`.
+    pub fn set_protocol_apy(env: Env, agent: Address, protocol: Symbol, apy_bps: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_agent(&env, &agent);
+        Self::require(
+            &env,
+            apy_bps <= Self::BPS_DENOMINATOR,
+            VaultError::InvalidStrategy,
+        );
+
+        let (mut blend_apy, mut dex_apy) = Self::read_protocol_apy(&env);
+        if protocol == symbol_short!("blend") {
+            blend_apy = apy_bps;
+        } else if protocol == symbol_short!("dex") {
+            dex_apy = apy_bps;
+        } else {
+            panic_with_error!(&env, VaultError::UnsupportedProtocol);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolApyBps, &(blend_apy, dex_apy));
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_APY_UPDATED,),
+            ProtocolApyUpdatedEvent { protocol, apy_bps },
+        );
+    }
+
+    /// Returns the last reported APY for `protocol`, in basis points (`0` if unset).
+    pub fn get_protocol_apy(env: Env, protocol: Symbol) -> u32 {
+        Self::require_initialized(&env);
+        let (blend_apy, dex_apy) = Self::read_protocol_apy(&env);
+        if protocol == symbol_short!("blend") {
+            blend_apy
+        } else if protocol == symbol_short!("dex") {
+            dex_apy
+        } else {
+            0
+        }
+    }
+
+    /// Reads the stored `(blend_apy_bps, dex_apy_bps)` last-reported-APY pair.
+    fn read_protocol_apy(env: &Env) -> (u32, u32) {
+        env.storage()
+            .instance()
+            .get(&DataKey::ProtocolApyBps)
+            .unwrap_or((0, 0))
+    }
+
+    /// Returns the vault's composite (allocation-weighted) APY in basis points.
+    ///
+    /// Computed as `(blend_bps * blend_apy + dex_bps * dex_apy) / 10_000`, so
+    /// idle capital correctly dilutes the headline yield: a 60/40 split earning
+    /// 800 bps and 1_200 bps reports 960 bps, while a 50/0 split earning
+    /// 800 bps reports 400 bps.
+    ///
+    /// In single-protocol mode the active venue is treated as a 100%
+    /// allocation, so this getter is meaningful in both modes.
+    pub fn get_composite_apy(env: Env) -> u32 {
+        Self::require_initialized(&env);
+
+        let (blend_apy, dex_apy) = Self::read_protocol_apy(&env);
+
+        let (blend_bps, dex_bps) = if Self::multi_protocol_enabled(&env) {
+            Self::read_allocation(&env)
+        } else {
+            let current: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            if current == symbol_short!("blend") {
+                (Self::BPS_DENOMINATOR, 0)
+            } else if current == symbol_short!("dex") {
+                (0, Self::BPS_DENOMINATOR)
+            } else {
+                (0, 0)
+            }
+        };
+
+        let denom = u64::from(Self::BPS_DENOMINATOR);
+        let weighted = u64::from(blend_bps)
+            .saturating_mul(u64::from(blend_apy))
+            .saturating_add(u64::from(dex_bps).saturating_mul(u64::from(dex_apy)));
+        let res_u64 = weighted.checked_div(denom).unwrap_or(0);
+        u32::try_from(res_u64).unwrap_or(0)
+    }
+
+    /// Rebalances the vault across **both** protocols simultaneously.
+    ///
+    /// This is the multi-protocol counterpart to [`rebalance`](crate::NeuroWealthVault::rebalance).
+    /// Rather than moving the whole position to one venue, the agent supplies a
+    /// target split in basis points (e.g. `6_000 / 4_000` for 60% Blend,
+    /// 40% DEX) and the vault converges to it:
+    ///
+    /// 1. Read the vault's total deployable assets (idle + both positions).
+    /// 2. Compute each venue's target amount from its basis points.
+    /// 3. Withdraw from any venue that is **over** its target.
+    /// 4. Supply to any venue that is **under** its target, capped by the idle
+    ///    balance actually on hand after step 3.
+    /// 5. Persist the new allocation, refresh the per-venue trackers, and emit
+    ///    `ProtocolAllocationChangedEvent`.
+    ///
+    /// Legs are converged withdraw-first so the vault never tries to supply
+    /// USDC it has not yet recovered. Any residual after the split (from
+    /// integer division, or from a shortfall on an exit leg) simply stays idle
+    /// and is corrected on the next rebalance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `blend_bps` - Target Blend allocation in basis points.
+    /// * `dex_bps` - Target DEX allocation in basis points.
+    /// * `min_out` - Slippage tolerance in basis points, applied independently
+    ///   to each venue leg (0 = no tolerance).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `ProtocolAllocationChangedEvent`
+    /// - `ProtocolChangedEvent` (when the derived summary symbol changes)
+    /// - `RebalanceEvent`
+    /// - `BlendSupplyEvent` / `BlendWithdrawEvent` / `DexSupplyEvent` / `DexWithdrawEvent`
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault is not initialized.
+    /// - [`VaultError::Paused`] if the vault is paused.
+    /// - If the caller is not the authorized agent.
+    /// - [`VaultError::MultiProtocolNotEnabled`] if multi-protocol mode is off.
+    /// - [`VaultError::InvalidAllocation`] if the split is out of range or sums above 10_000.
+    /// - [`VaultError::MinOutMustBeNonNegative`] if `min_out < 0`.
+    /// - [`VaultError::RebalanceCooldownActive`] if the cooldown has not elapsed.
+    /// - [`VaultError::BlendPoolNotConfigured`] / [`VaultError::DexPoolNotConfigured`]
+    ///   if a venue with a non-zero allocation has no pool configured.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // 60% Blend, 40% DEX.
+    /// vault_client.rebalance_multi(&6_000, &4_000, &0);
+    /// let (blend, dex) = vault_client.get_protocol_breakdown();
+    /// ```
+    pub fn rebalance_multi(env: Env, agent: Address, blend_bps: u32, dex_bps: u32, min_out: i128) {
+        Self::require_initialized(&env);
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env, &agent);
+        Self::require(
+            &env,
+            Self::multi_protocol_enabled(&env),
+            VaultError::MultiProtocolNotEnabled,
+        );
+        Self::require_valid_allocation(&env, blend_bps, dex_bps);
+
+        if min_out < 0 || (min_out > i128::from(Self::BPS_DENOMINATOR)) {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        Self::require_rebalance_cooldown_elapsed(&env);
+
+        // A venue with a non-zero allocation must have a pool configured.
+        if blend_bps > 0 && !env.storage().instance().has(&DataKey::BlendPool) {
+            panic_with_error!(&env, VaultError::BlendPoolNotConfigured);
+        }
+        if dex_bps > 0 && !env.storage().instance().has(&DataKey::DexPool) {
+            panic_with_error!(&env, VaultError::DexPoolNotConfigured);
+        }
+
+        let (old_blend_bps, old_dex_bps) = Self::read_allocation(&env);
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(&env, &usdc_token);
+
+        let idle = token_client.balance(&env.current_contract_address());
+        let blend_bal = Self::get_protocol_balance(&env, &symbol_short!("blend"));
+        let dex_bal = Self::get_protocol_balance(&env, &symbol_short!("dex"));
+        let deployable = idle.saturating_add(blend_bal).saturating_add(dex_bal);
+
+        let (blend_target, dex_target) = Self::split_by_bps(deployable, blend_bps, dex_bps);
+
+        let mut amount_attempted = 0_i128;
+        let mut amount_supplied = 0_i128;
+        let mut amount_withdrawn = 0_i128;
+
+        // ── Step 1: exit over-allocated venues first, to free up liquidity ──
+        if blend_bal > blend_target {
+            let excess = blend_bal.saturating_sub(blend_target);
+            amount_attempted = amount_attempted.saturating_add(excess);
+            amount_withdrawn =
+                amount_withdrawn.saturating_add(Self::withdraw_from_blend(&env, excess, min_out));
+        }
+        if dex_bal > dex_target {
+            let excess = dex_bal.saturating_sub(dex_target);
+            amount_attempted = amount_attempted.saturating_add(excess);
+            amount_withdrawn =
+                amount_withdrawn.saturating_add(Self::withdraw_from_dex(&env, excess, min_out));
+        }
+
+        // ── Step 2: top up under-allocated venues from whatever is on hand ──
+        let mut available = token_client.balance(&env.current_contract_address());
+
+        let blend_now = Self::get_protocol_balance(&env, &symbol_short!("blend"));
+        if blend_target > blend_now && available > 0 {
+            let want = min(blend_target.saturating_sub(blend_now), available);
+            if want > 0 {
+                amount_attempted = amount_attempted.saturating_add(want);
+                let supplied = Self::supply_to_blend(&env, want, min_out, false);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+                available = available.saturating_sub(supplied);
+            }
+        }
+
+        let dex_now = Self::get_protocol_balance(&env, &symbol_short!("dex"));
+        if dex_target > dex_now && available > 0 {
+            let want = min(dex_target.saturating_sub(dex_now), available);
+            if want > 0 {
+                amount_attempted = amount_attempted.saturating_add(want);
+                let supplied = Self::supply_to_dex(&env, want, min_out, false);
+                amount_supplied = amount_supplied.saturating_add(supplied);
+            }
+        }
+
+        // ── Step 3: persist the new allocation and refresh derived state ────
+        env.storage()
+            .instance()
+            .set(&DataKey::AllocationBps, &(blend_bps, dex_bps));
+
+        let (deployed_to_blend, deployed_to_dex) = Self::sync_deployed_split(&env);
+        Self::set_current_protocol(
+            &env,
+            Self::derive_protocol_summary(deployed_to_blend, deployed_to_dex),
+        );
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_ALLOCATION_CHANGED,),
+            ProtocolAllocationChangedEvent {
+                old_blend_bps,
+                old_dex_bps,
+                new_blend_bps: blend_bps,
+                new_dex_bps: dex_bps,
+                deployed_to_blend,
+                deployed_to_dex,
+            },
+        );
+
+        let amount_moved = amount_supplied.saturating_add(amount_withdrawn);
+        let status = if amount_attempted == 0 {
+            symbol_short!("noop")
+        } else if amount_moved == 0 {
+            symbol_short!("failed")
+        } else if amount_moved < amount_attempted {
+            symbol_short!("partial")
+        } else {
+            symbol_short!("success")
+        };
+
+        env.events().publish(
+            (TOPIC_REBALANCE,),
+            RebalanceEvent {
+                protocol: symbol_short!("multi"),
+                expected_apy: i128::from(Self::get_composite_apy(env.clone())),
+                status: status.clone(),
+                amount_attempted,
+                amount_moved,
+                amount_supplied,
+                amount_withdrawn,
+            },
+        );
+
+        Self::record_rebalance_outcome(&env, &status);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+    }
+
+    // ==========================================================================
+    // CORE LIFECYCLE - HARVEST
+    // ==========================================================================
+
+    /// Withdraws and resupplies the active protocol position.
+    ///
+    /// In multi-protocol mode, the resupply follows the stored Blend/DEX
+    /// allocation. This is an accounting-neutral round-trip: `TotalAssets`
+    /// does not change, and `HarvestEvent.amount_cycled` reports only the
+    /// amount actually resupplied. The operation outcome is recorded by the
+    /// shared rebalance circuit breaker.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `min_out` - Minimum output constraint applied to each protocol leg.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `HarvestEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the agent.
+    /// - If the current protocol is unsupported.
+    /// - If the rebalance cooldown is active.
+    pub fn harvest(env: Env, agent: Address, min_out: i128) {
+        Self::require_initialized(&env);
+        Self::require_not_paused(&env);
+        Self::require_is_agent(&env, &agent);
+
+        if min_out < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        Self::require_rebalance_cooldown_elapsed(&env);
+
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        if current_protocol != symbol_short!("blend")
+            && current_protocol != symbol_short!("dex")
+            && current_protocol != symbol_short!("multi")
+        {
+            panic_with_error!(&env, VaultError::UnsupportedProtocol);
+        }
+
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+
+        let (blend_before, dex_before) = if current_protocol == symbol_short!("multi") {
+            (
+                Self::get_protocol_balance(&env, &symbol_short!("blend")),
+                Self::get_protocol_balance(&env, &symbol_short!("dex")),
+            )
+        } else if current_protocol == symbol_short!("blend") {
+            (Self::get_protocol_balance(&env, &symbol_short!("blend")), 0)
+        } else {
+            (0, Self::get_protocol_balance(&env, &symbol_short!("dex")))
+        };
+        let amount_before = blend_before.saturating_add(dex_before);
+
+        let (withdrawn_blend, withdrawn_dex) = if current_protocol == symbol_short!("multi") {
+            let blend = Self::withdraw_from_blend(&env, 0, min_out);
+            let dex = Self::withdraw_from_dex(&env, 0, min_out);
+            (blend, dex)
+        } else if current_protocol == symbol_short!("blend") {
+            (Self::withdraw_from_blend(&env, 0, min_out), 0)
+        } else {
+            (0, Self::withdraw_from_dex(&env, 0, min_out))
+        };
+        let withdrawn = withdrawn_blend.saturating_add(withdrawn_dex);
+
+        let (blend_to_supply, dex_to_supply) = if current_protocol == symbol_short!("multi") {
+            let (blend_bps, dex_bps) = Self::read_allocation(&env);
+            Self::split_by_bps(withdrawn, blend_bps, dex_bps)
+        } else if current_protocol == symbol_short!("blend") {
+            (withdrawn, 0)
+        } else {
+            (0, withdrawn)
+        };
+
+        let supplied_blend = if blend_to_supply > 0 {
+            Self::supply_to_blend(
+                &env,
+                blend_to_supply,
+                min_out,
+                current_protocol != symbol_short!("multi"),
+            )
+        } else {
+            0
+        };
+        let supplied_dex = if dex_to_supply > 0 {
+            Self::supply_to_dex(
+                &env,
+                dex_to_supply,
+                min_out,
+                current_protocol != symbol_short!("multi"),
+            )
+        } else {
+            0
+        };
+        let supplied = supplied_blend.saturating_add(supplied_dex);
+        if current_protocol == symbol_short!("multi") {
+            Self::sync_deployed_split(&env);
+        }
+
+        let status = if amount_before == 0 {
+            symbol_short!("success")
+        } else if withdrawn == 0
+            || (blend_to_supply.saturating_add(dex_to_supply) > 0 && supplied == 0)
+        {
+            symbol_short!("failed")
+        } else if withdrawn < amount_before
+            || supplied_blend < blend_to_supply
+            || supplied_dex < dex_to_supply
+        {
+            symbol_short!("partial")
+        } else {
+            symbol_short!("success")
+        };
+
+        env.events().publish(
+            (TOPIC_HARVEST,),
+            HarvestEvent {
+                protocol: current_protocol,
+                amount_cycled: supplied,
+            },
+        );
+
+        Self::record_rebalance_outcome(&env, &status);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - PAUSE CONTROL
+    // ==========================================================================
+
+    /// Pauses deposits, withdrawals, and agent operations until the owner calls
+    /// `unpause` or a circuit-breaker reset path.
+    ///
+    /// The owner must authorize the call. Read-only getters, rate-limit
+    /// configuration, and TTL maintenance remain available while paused.
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::OnlyOwnerCanPause`] if the caller is not the owner.
+    /// - [`VaultError::AlreadyPaused`] if the vault is already paused (#988).
+    ///   Mirrors `unpause`'s existing `NotPaused` guard — both transitions
+    ///   now reject a no-op call instead of silently repeating the
+    ///   `VaultPausedEvent`/`VaultUnpausedEvent` emission. This differs
+    ///   deliberately from `emergency_pause`, which instead no-ops
+    ///   (no error, no event) when already paused — see that function's
+    ///   doc comment for why that convention is kept separate.
+    pub fn pause(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::OnlyOwnerCanPause);
+
+        let already_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        Self::require(&env, !already_paused, VaultError::AlreadyPaused);
+
+        env.storage().instance().set(&DataKey::Paused, &true);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events()
+            .publish((TOPIC_PAUSED,), VaultPausedEvent { owner });
+    }
+
+    /// Unpauses the vault, re-enabling deposits and withdrawals.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize this call).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `VaultUnpausedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the vault is not currently paused.
+    pub fn unpause(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::OnlyOwnerCanUnpause);
+
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        Self::require(&env, paused, VaultError::NotPaused);
+
+        env.storage().instance().set(&DataKey::Paused, &false);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events()
+            .publish((TOPIC_UNPAUSED,), VaultUnpausedEvent { owner });
+    }
+
+    /// Emergency pause function that immediately halts all operations.
+    ///
+    /// This is a separate function from pause() to distinguish emergency
+    /// situations in event logs. Functionally identical to pause(), with
+    /// one deliberate difference (#988): calling this while the vault is
+    /// already paused is a silent no-op (no error, no event), whereas
+    /// `pause()` now rejects a repeat call with
+    /// [`VaultError::AlreadyPaused`]. The asymmetry is intentional — an
+    /// emergency responder racing another caller to pause the vault should
+    /// never be blocked by an error just because they were a few blocks
+    /// too slow; the vault ends up paused either way, which is the only
+    /// outcome that matters in an emergency. `pause()`, by contrast, is the
+    /// deliberate, non-emergency path, where a rejected repeat call is
+    /// useful signal (e.g. a misconfigured automation retrying blindly).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize this call).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `EmergencyPausedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    pub fn emergency_pause(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(
+            &env,
+            owner == stored_owner,
+            VaultError::OnlyOwnerCanEmergencyPause,
+        );
+
+        let already_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if already_paused {
+            return;
+        }
+
+        env.storage().instance().set(&DataKey::Paused, &true);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (topics::TOPIC_EMERGENCY_PAUSED,),
+            EmergencyPausedEvent { owner },
+        );
+    }
+
+    /// Resets the circuit breaker and unpauses the vault.
+    pub fn reset_circuit_breaker(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::OnlyOwnerCanUnpause);
+        Self::write_consecutive_failures(&env, 0);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish(
+            (topics::TOPIC_CIRCUIT_BREAKER_RESET,),
+            CircuitBreakerResetEvent { owner },
+        );
+    }
+
+    /// Owner-callable emergency harvest fallback for agent-key outages.
+    ///
+    /// When the agent key is lost, compromised, or mid-rotation via
+    /// `update_agent`'s timelock, accrued yield cannot be harvested through the
+    /// normal `harvest()` path (which requires agent auth). This function
+    /// provides a fallback gated by owner auth so that yield compounding can
+    /// continue during an agent-key outage.
+    ///
+    /// Unlike `harvest()`, this function:
+    /// - Requires **owner** auth instead of agent auth
+    /// - Bypasses the paused-state check (owner may need to compound during
+    ///   an emergency pause)
+    /// - Still enforces: initialization, cooldown, and an active protocol
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `min_out` - Slippage tolerance in basis points, applied independently
+    ///   to the withdrawal and supply legs.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `EmergencyHarvestEvent` with topic `TOPIC_EMERGENCY_HARVEST`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the stored owner.
+    /// - [`VaultError::UnsupportedProtocol`] if no active protocol exists.
+    /// - [`VaultError::MinOutMustBeNonNegative`] if `min_out` is negative.
+    /// - [`VaultError::RebalanceCooldownActive`] if called before the cooldown expires.
+    ///
+    /// # Panics
+    ///
+    /// None beyond the documented errors.
+    pub fn emergency_harvest(env: Env, min_out: i128) {
+        Self::require_initialized(&env);
+
+        // Owner-gated (not agent-gated).
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        if min_out < 0 || (min_out > i128::from(Self::BPS_DENOMINATOR)) {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        Self::require_rebalance_cooldown_elapsed(&env);
+
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        if current_protocol == symbol_short!("none") {
+            panic_with_error!(&env, VaultError::UnsupportedProtocol);
+        }
+
+        // Harvest also performs an external protocol round-trip. Reuse the
+        // global rebalance bucket so it cannot bypass the frequency guard by
+        // alternating between `rebalance` and `harvest`.
+        Self::enforce_global_rate_limit(&env, RATE_LIMIT_REBALANCE);
+
+        let withdrawn = Self::withdraw_from_protocol(&env, &current_protocol, min_out);
+
+        if withdrawn > 0 {
+            if current_protocol == symbol_short!("blend") {
+                Self::supply_to_blend(&env, withdrawn, min_out, true);
+            } else if current_protocol == symbol_short!("dex") {
+                Self::supply_to_dex(&env, withdrawn, min_out, true);
+            }
+        }
+
+        env.events().publish(
+            (TOPIC_EMERGENCY_HARVEST,),
+            EmergencyHarvestEvent {
+                protocol: current_protocol,
+                amount_harvested: withdrawn,
+            },
+        );
+
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - MIGRATION CONTROL (#637)
+    // ==========================================================================
+
+    /// Schedules a new migration target behind a timelock (step 1 of 2). (#969)
+    ///
+    /// `migrate_shares` sends user funds to the migration target, so changing it
+    /// is as sensitive as an upgrade. The new target only takes effect once
+    /// `execute_migration_target` is called after `MIGRATION_TARGET_TIMELOCK_LEDGERS`
+    /// (the same ~24 h delay as `schedule_upgrade`). Users can watch
+    /// `get_pending_migration_target` or the scheduled event and the owner can
+    /// `cancel_migration_target` during that window. Only one pending target is
+    /// allowed at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    /// * `target` - The new vault contract address to allow migration to.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MigrationTargetScheduledEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if `owner` is not the stored owner.
+    /// - [`VaultError::TimelockAlreadyPending`] if a target change is already pending.
+    pub fn schedule_migration_target(env: Env, owner: Address, target: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        Self::require(
+            &env,
+            !env.storage()
+                .instance()
+                .has(&DataKey::PendingMigrationTarget),
+            VaultError::TimelockAlreadyPending,
+        );
+
+        let effective_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(MIGRATION_TARGET_TIMELOCK_LEDGERS);
+
+        env.storage().instance().set(
+            &DataKey::PendingMigrationTarget,
+            &(target.clone(), effective_ledger),
+        );
+
+        env.events().publish(
+            (TOPIC_MIGRATION_TARGET_SCHEDULED,),
+            MigrationTargetScheduledEvent {
+                new_target: target,
+                effective_ledger,
+                owner,
+            },
+        );
+    }
+
+    /// Applies a scheduled migration target once the timelock has elapsed (step 2 of 2). (#969)
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MigrationTargetUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if `owner` is not the stored owner.
+    /// - [`VaultError::NoTimelockPending`] if nothing is scheduled.
+    /// - [`VaultError::TimelockNotExpired`] if the delay has not elapsed yet.
+    pub fn execute_migration_target(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        let pending: Option<(Address, u32)> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingMigrationTarget);
+        let (target, effective_ledger) =
+            pending.unwrap_or_else(|| panic_with_error!(&env, VaultError::NoTimelockPending));
+
+        Self::require(
+            &env,
+            env.ledger().sequence() >= effective_ledger,
+            VaultError::TimelockNotExpired,
+        );
+
+        let (old_target, migration_paused) = Self::read_migration_state(&env);
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingMigrationTarget);
+        env.storage().instance().set(
+            &DataKey::MigrationState,
+            &(Some(target.clone()), migration_paused),
+        );
+
+        env.events().publish(
+            (TOPIC_MIGRATION_TARGET_UPDATED,),
+            MigrationTargetUpdatedEvent {
+                old_target,
+                new_target: target,
+                owner,
+            },
+        );
+    }
+
+    /// Cancels a pending migration target change. (#969)
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MigrationTargetCancelledEvent`
+    ///
+    /// # Errors
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if `owner` is not the stored owner.
+    /// - [`VaultError::NoTimelockPending`] if nothing is scheduled.
+    pub fn cancel_migration_target(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        let pending: Option<(Address, u32)> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingMigrationTarget);
+        let (cancelled_target, _) =
+            pending.unwrap_or_else(|| panic_with_error!(&env, VaultError::NoTimelockPending));
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingMigrationTarget);
+
+        env.events().publish(
+            (TOPIC_MIGRATION_TARGET_CANCELLED,),
+            MigrationTargetCancelledEvent {
+                cancelled_target,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the pending migration target and the ledger it becomes executable at,
+    /// or `None` if no change is scheduled. (#969)
+    pub fn get_pending_migration_target(env: Env) -> Option<(Address, u32)> {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::PendingMigrationTarget)
+    }
+
+    /// Pauses or unpauses share migration independently of the main vault pause.
+    ///
+    /// The owner can pause migration without pausing deposits/withdrawals, or
+    /// vice versa. This provides granular control during upgrades.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `paused` - `true` to pause migration, `false` to unpause.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `MigrationPausedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    pub fn set_migration_paused(env: Env, paused: bool) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let (target, _old_paused) = Self::read_migration_state(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationState, &(target, paused));
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_MIGRATION_PAUSED,),
+            MigrationPausedEvent { paused, owner },
+        );
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - CONFIGURATION
+    // ==========================================================================
+
+    /// Sets the TVL (Total Value Locked) cap for the vault.
+    ///
+    /// Maximum total USDC that can be deposited in the vault.
+    /// Setting to 0 removes the cap.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `cap` - New TVL cap in USDC units (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `TvlCapUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the cap is negative.
+    pub fn set_tvl_cap(env: Env, cap: i128) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if cap < 0 {
+            panic_with_error!(&env, VaultError::TvlCapCannotBeNegative);
+        }
+
+        let old_tvl_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128);
+
+        env.storage().instance().set(&DataKey::TvLCap, &cap);
+
+        env.events().publish(
+            (TOPIC_TVL_CAP_UPDATED,),
+            TvlCapUpdatedEvent {
+                old_cap: old_tvl_cap,
+                new_cap: cap,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Sets the maximum deposit amount per user.
+    ///
+    /// Maximum amount that any single user can have deposited in the vault.
+    /// Setting to 0 removes the cap.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `cap` - New per-user deposit cap in USDC units (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `UserDepositCapUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the cap is negative.
+    pub fn set_user_deposit_cap(env: Env, cap: i128) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if cap < 0 {
+            panic_with_error!(&env, VaultError::UserDepositCapCannotBeNegative);
+        }
+
+        let old_user_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128);
+
+        env.storage().instance().set(&DataKey::UserDepositCap, &cap);
+
+        env.events().publish(
+            (TOPIC_USER_CAP_UPDATED,),
+            UserDepositCapUpdatedEvent {
+                old_cap: old_user_cap,
+                new_cap: cap,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Sets both the user deposit cap and TVL cap in a single transaction.
+    ///
+    /// This function allows updating both caps atomically and emits a
+    /// `CapsUpdatedEvent` with all old and new values.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user_deposit_cap` - New per-user deposit cap in USDC units (7 decimal places).
+    /// * `tvl_cap` - New TVL cap in USDC units (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `CapsUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If user_deposit_cap is negative.
+    /// - If tvl_cap is negative.
+    /// - If tvl_cap is less than user_deposit_cap (when both are non-zero).
+    pub fn set_caps(env: Env, user_deposit_cap: i128, tvl_cap: i128) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if user_deposit_cap < 0 {
+            panic_with_error!(&env, VaultError::UserDepositCapCannotBeNegative);
+        }
+        if tvl_cap < 0 {
+            panic_with_error!(&env, VaultError::TvlCapCannotBeNegative);
+        }
+        if tvl_cap > 0 && user_deposit_cap > 0 && tvl_cap < user_deposit_cap {
+            panic_with_error!(&env, VaultError::TvlCapBelowUserDepositCap);
+        }
+
+        let old_user_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128);
+        let old_tvl_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UserDepositCap, &user_deposit_cap);
+        env.storage().instance().set(&DataKey::TvLCap, &tvl_cap);
+
+        let timestamp = env.ledger().timestamp();
+
+        env.events().publish(
+            (TOPIC_USER_CAP_UPDATED,),
+            UserDepositCapUpdatedEvent {
+                old_cap: old_user_cap,
+                new_cap: user_deposit_cap,
+                timestamp,
+            },
+        );
+        env.events().publish(
+            (TOPIC_TVL_CAP_UPDATED,),
+            TvlCapUpdatedEvent {
+                old_cap: old_tvl_cap,
+                new_cap: tvl_cap,
+                timestamp,
+            },
+        );
+        env.events().publish(
+            (TOPIC_CAPS_UPDATED,),
+            CapsUpdatedEvent {
+                old_user_cap,
+                new_user_cap: user_deposit_cap,
+                old_tvl_cap,
+                new_tvl_cap: tvl_cap,
+            },
+        );
+    }
+
+    /// Sets both the user deposit cap (min) and TVL cap (max) in a single transaction.
+    ///
+    /// # Deprecated
+    /// This function is deprecated because its name and parameters ("min" / "max")
+    /// are confusing and conflict with per-transaction deposit limits.
+    /// Use `set_caps` instead.
+    ///
+    /// This function allows updating both limits atomically and emits a single
+    /// `LimitsUpdatedEvent` with all old and new values.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `min` - New per-user deposit cap in USDC units (7 decimal places).
+    ///   Despite the name, this is the user-deposit cap, not a per-deposit minimum.
+    /// * `max` - New TVL cap in USDC units (7 decimal places).
+    ///   Despite the name, this is the TVL cap, not a per-deposit maximum.
+    ///
+    /// Both values are validated to be non-negative, and `max` must be `>= min`,
+    /// so a negative input can never silently disable a cap (issues #280, #281).
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or a `VaultError` if validation fails.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `LimitsUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// Returns:
+    /// - `VaultError::AmountMustBePositive` if min is negative.
+    /// - `VaultError::AmountMustBePositive` if max is negative.
+    /// - `VaultError::TvlCapBelowUserDepositCap` if max < min.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// DEPRECATED: Use `set_caps` instead
+    ///
+    /// This function is marked for removal in the next major version.
+    /// See DEPRECATION.md for migration guidance.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use set_caps() or set_deposit_limits() instead. See DEPRECATION.md"
+    )]
+    pub fn set_limits(env: Env, min: i128, max: i128) -> Result<(), VaultError> {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if min < 0 {
+            return Err(VaultError::AmountMustBePositive);
+        }
+        if max < 0 {
+            return Err(VaultError::AmountMustBePositive);
+        }
+        if max < min {
+            return Err(VaultError::TvlCapBelowUserDepositCap);
+        }
+
+        let old_user_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128);
+        let old_tvl_cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128);
+
+        env.storage().instance().set(&DataKey::UserDepositCap, &min);
+        env.storage().instance().set(&DataKey::TvLCap, &max);
+
+        env.events().publish(
+            (TOPIC_LIMITS_UPDATED,),
+            LimitsUpdatedEvent {
+                old_min: old_user_cap,
+                new_min: min,
+                old_max: old_tvl_cap,
+                new_max: max,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Sets both the minimum and maximum deposit limits in a single transaction.
+    ///
+    /// This function allows updating both deposit limits atomically and emits a
+    /// `LimitsUpdatedEvent` with all old and new values.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `min` - New minimum deposit limit in USDC units (7 decimal places).
+    /// * `max` - New maximum deposit limit in USDC units (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `DepositLimitsUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If min is less than 1 USDC (1_000_000 stroops).
+    /// - If max is less than min.
+    /// - If max exceeds the absolute deposit ceiling.
+    pub fn set_deposit_limits(env: Env, min: i128, max: i128) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        // Validate limits
+        Self::require(
+            &env,
+            min >= DEFAULT_MIN_DEPOSIT,
+            VaultError::BelowMinimumDeposit,
+        );
+        Self::require(&env, max >= min, VaultError::MaximumDepositExceeded);
+        Self::require(
+            &env,
+            max <= MAX_DEPOSIT_CEILING,
+            VaultError::MaximumDepositExceedsCeiling,
+        );
+
+        let old_min = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(DEFAULT_MIN_DEPOSIT);
+        let old_max = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDeposit)
+            .unwrap_or(DEFAULT_MAX_DEPOSIT);
+
+        env.storage().instance().set(&DataKey::MinDeposit, &min);
+        env.storage().instance().set(&DataKey::MaxDeposit, &max);
+
+        env.events().publish(
+            (TOPIC_DEPOSIT_LIMITS_UPDATED,),
+            DepositLimitsUpdatedEvent {
+                old_min,
+                new_min: min,
+                old_max,
+                new_max: max,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - REBALANCE COOLDOWN (Issue #59)
+    // ==========================================================================
+
+    /// Sets the minimum number of ledgers that must elapse between consecutive
+    /// rebalance() calls.
+    ///
+    /// Only the owner can call this function. Setting `interval` to `0` disables
+    /// the cooldown entirely (no throttle).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `interval` - Minimum ledgers between rebalances. `0` = no cooldown.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `RebalanceCooldownUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None. Failures panic rather than returning a `Result`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the stored owner.
+    ///
+    /// # Storage
+    ///
+    /// Writes [`DataKey::MinRebalanceInterval`] in instance storage, or removes
+    /// the key entirely when `interval == 0`. `rebalance` compares
+    /// [`DataKey::LastRebalanceLedger`] against this value and panics with
+    /// [`VaultError::RebalanceCooldownActive`] while the window is open.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Throttle the agent to roughly one rebalance per hour
+    /// // (720 ledgers x ~5 s per ledger = 3,600 s).
+    /// vault_client.set_rebalance_cooldown(&720);
+    /// assert_eq!(vault_client.get_rebalance_cooldown(), 720);
+    ///
+    /// // Disable the throttle again.
+    /// vault_client.set_rebalance_cooldown(&0);
+    /// assert_eq!(vault_client.get_rebalance_cooldown(), 0);
+    /// ```
+    pub fn set_rebalance_cooldown(env: Env, interval: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_interval: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinRebalanceInterval)
+            .unwrap_or(0);
+
+        if interval == 0 {
+            // Removing the key disables the cooldown entirely.
+            env.storage()
+                .instance()
+                .remove(&DataKey::MinRebalanceInterval);
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MinRebalanceInterval, &interval);
+        }
+
+        env.events().publish(
+            (TOPIC_REBALANCE_COOLDOWN_UPDATED,),
+            RebalanceCooldownUpdatedEvent {
+                old_interval,
+                new_interval: interval,
+            },
+        );
+    }
+
+    /// Returns the configured minimum rebalance interval (ledgers), or `0` if
+    /// no cooldown has been set.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The minimum ledgers between rebalances, or `0` when disabled.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_rebalance_cooldown(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::MinRebalanceInterval)
+            .unwrap_or(0)
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - RATE LIMITS
+    // ==========================================================================
+
+    /// Configures the call allowance for one rate-limit category.
+    ///
+    /// The limit is a fixed-window allowance. A value of `max_calls == 0`
+    /// disables the category. When enabled, `window_ledgers` must be greater
+    /// than zero and a bucket accepts at most `max_calls` calls before the
+    /// window resets. Deposit, withdrawal, TTL, and batch categories are
+    /// tracked per user; rebalance and preview categories are tracked globally.
+    ///
+    /// The category must be one of the public `RATE_LIMIT_*` symbols. This
+    /// generic entrypoint lets the owner change policy without an upgrade.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `category` - Rate-limit category symbol.
+    /// * `max_calls` - Maximum accepted calls in one window; `0` disables it.
+    /// * `window_ledgers` - Window length in ledgers when enabled.
+    ///
+    /// # Events
+    ///
+    /// Emits `RateLimitConfigUpdatedEvent`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the owner.
+    /// - [`VaultError::InvalidRateLimitCategory`] for an unknown category.
+    /// - [`VaultError::InvalidRateLimitConfig`] when an enabled limit has a
+    ///   zero-length window.
+    pub fn set_rate_limit(env: Env, category: Symbol, max_calls: u32, window_ledgers: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        Self::require_valid_rate_limit_category(&env, &category);
+
+        if max_calls > 0 && window_ledgers == 0 {
+            panic_with_error!(&env, VaultError::InvalidRateLimitConfig);
+        }
+
+        // A disabled category has one canonical representation. Accepting any
+        // window with max_calls == 0 makes emergency disabling convenient while
+        // keeping the getter unambiguous.
+        let new_config = if max_calls == 0 {
+            RateLimitConfig {
+                max_calls: 0,
+                window_ledgers: 0,
+            }
+        } else {
+            RateLimitConfig {
+                max_calls,
+                window_ledgers,
+            }
+        };
+        let old_config = Self::get_rate_limit_config_internal(&env, &category);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::RateLimitConfig(category.clone()), &new_config);
+        // A global bucket can be reset without enumerating any user buckets.
+        // User buckets retain their consumption until their configured window
+        // expires, which prevents a caller from bypassing a newly tightened
+        // policy by relying on a stale reset. Avoid an unnecessary storage
+        // operation for per-user categories.
+        if category == RATE_LIMIT_REBALANCE || category == RATE_LIMIT_PREVIEW {
+            env.storage()
+                .instance()
+                .remove(&DataKey::RateLimitGlobalState(category.clone()));
+        }
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_RATE_LIMIT_CONFIG_UPDATED,),
+            RateLimitConfigUpdatedEvent {
+                category,
+                old_max_calls: old_config.max_calls,
+                old_window_ledgers: old_config.window_ledgers,
+                new_max_calls: new_config.max_calls,
+                new_window_ledgers: new_config.window_ledgers,
+                owner,
+            },
+        );
+    }
+
+    /// Alias for `set_rate_limit` using an explicit configuration-oriented
+    /// name for SDK consumers.
+    pub fn set_rate_limit_config(env: Env, category: Symbol, max_calls: u32, window_ledgers: u32) {
+        Self::set_rate_limit(env, category, max_calls, window_ledgers);
+    }
+
+    /// Returns the configured allowance for a rate-limit category.
+    ///
+    /// The result includes the deployment default when the key is absent, so
+    /// this getter remains useful for vaults initialized before rate limiting
+    /// was added. Unknown categories are rejected rather than silently
+    /// returning an unprotected configuration.
+    pub fn get_rate_limit(env: Env, category: Symbol) -> RateLimitConfig {
+        Self::require_initialized(&env);
+        Self::get_rate_limit_config_internal(&env, &category)
+    }
+
+    /// Alias for `get_rate_limit` with an explicit configuration-oriented
+    /// name for SDK consumers.
+    pub fn get_rate_limit_config(env: Env, category: Symbol) -> RateLimitConfig {
+        Self::require_initialized(&env);
+        Self::get_rate_limit_config_internal(&env, &category)
+    }
+
+    /// Returns the global usage bucket for a rate-limit category.
+    ///
+    /// A never-used bucket is returned as `{ window_start: 0, calls: 0 }`.
+    /// This is a read-only monitoring helper and is not itself rate-limited.
+    pub fn get_global_rate_limit_state(env: Env, category: Symbol) -> RateLimitState {
+        Self::require_initialized(&env);
+        Self::read_rate_limit_state(&env, &category, None)
+    }
+
+    /// Returns a user's usage bucket for a rate-limit category.
+    ///
+    /// The bucket is stored in instance storage so its reset cannot be caused
+    /// by persistent-entry TTL expiry. A never-used bucket is returned as
+    /// `{ window_start: 0, calls: 0 }`.
+    pub fn get_user_rate_limit_state(env: Env, user: Address, category: Symbol) -> RateLimitState {
+        Self::require_initialized(&env);
+        Self::read_rate_limit_state(&env, &category, Some(&user))
+    }
+
+    /// Sets the maximum number of entries accepted by `batch_deposit`.
+    ///
+    /// A value of `0` disables the batch-size guard. The separate
+    /// `RATE_LIMIT_BATCH_DEPOSIT` call allowance remains active, so disabling
+    /// the size guard does not disable frequency protection.
+    ///
+    /// # Events
+    ///
+    /// Emits `BatchSizeLimitUpdatedEvent`.
+    pub fn set_max_batch_size(env: Env, max_entries: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_max_entries: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::MaxBatchSize, &max_entries);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_BATCH_SIZE_LIMIT_UPDATED,),
+            BatchSizeLimitUpdatedEvent {
+                old_max_entries,
+                new_max_entries: max_entries,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the maximum number of entries accepted by `batch_deposit`.
+    ///
+    /// Returns `0` when the owner explicitly disabled the size guard.
+    pub fn get_max_batch_size(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Alias for `set_max_batch_size`.
+    pub fn set_batch_size_limit(env: Env, max_entries: u32) {
+        Self::set_max_batch_size(env, max_entries);
+    }
+
+    /// Alias for `get_max_batch_size`.
+    pub fn get_batch_size_limit(env: Env) -> u32 {
+        Self::get_max_batch_size(env)
+    }
+
+    /// Sets the minimum number of ledgers a user must hold their deposit before
+    /// they can withdraw. Passing `0` disables the holding period (default).
+    ///
+    /// Only callable by the vault owner. Used to mitigate flash-loan attacks
+    /// that manipulate share prices by depositing and immediately withdrawing
+    /// in the same or adjacent transactions (#659).
+    ///
+    /// A ledger on Stellar closes approximately every 5 seconds. A holding
+    /// period of 120 ledgers (~10 minutes) prevents same-block deposit/withdraw
+    /// cycles while keeping withdrawal UX acceptable for normal users.
+    ///
+    /// # Panics
+    /// - [`VaultError::CallerIsNotOwner`] if caller is not the owner.
+    pub fn set_min_holding_period(env: Env, ledgers: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if ledgers == 0 {
+            env.storage().instance().remove(&DataKey::MinHoldingPeriod);
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MinHoldingPeriod, &ledgers);
+        }
+    }
+
+    /// Returns the configured minimum holding period in ledgers, or `0` if
+    /// no holding period has been set (flash-loan protection disabled).
+    pub fn get_min_holding_period(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::MinHoldingPeriod)
+            .unwrap_or(0)
+    }
+
+    /// Sets the maximum allowed decrease in basis points for `update_total_assets` (#974).
+    ///
+    /// The owner can configure this cap to limit how much the agent can report as a loss
+    /// in a single call. This prevents a compromised agent from reporting a massive loss
+    /// (e.g., 100%) in one transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `bps` - Maximum decrease in basis points (100 = 1%, 1000 = 10%, 10_000 = 100%).
+    ///           Values above 10_000 are clamped to 10_000 (hard ceiling).
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::CallerIsNotOwner`] if caller is not the owner.
+    pub fn set_max_decrease_bps(env: Env, bps: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        // Hard ceiling of 10_000 bps (100%) to prevent disabling the cap entirely
+        let capped_bps = bps.min(10_000);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxDecreaseBps, &capped_bps);
+    }
+
+    /// Returns the configured maximum decrease in basis points, or `1000` (10%) if
+    /// not explicitly set (#974).
+    pub fn get_max_decrease_bps(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxDecreaseBps)
+            .unwrap_or(1000) // Default to 10% decrease cap
+    }
+
+    /// Records a suspected MEV extraction event after a rebalance (#658).
+    ///
+    /// Called by the off-chain agent when post-execution analysis suggests a
+    /// sandwich attack occurred (e.g., actual received amount was less than
+    /// expected even though `min_out` was satisfied). The agent computes the
+    /// estimated loss by comparing the simulated vs. actual fill price.
+    ///
+    /// Emits `MevExtractionSuspectedEvent`. If the reported loss exceeds the
+    /// owner-configured `MaxAcceptableMevLoss` threshold, the event payload
+    /// signals indexers/monitoring to alert the team.
+    ///
+    /// # Arguments
+    /// * `protocol` — Protocol on which MEV was detected ("blend" or "dex").
+    /// * `estimated_loss_stroops` — Agent-estimated stroops lost to MEV.
+    /// * `min_out_used` — The `min_out` parameter passed to `rebalance`.
+    ///
+    /// # Panics
+    /// - The caller must be the authorized agent.
+    /// - If `estimated_loss_stroops` is negative.
+    pub fn submit_mev_report(
+        env: Env,
+        agent: Address,
+        protocol: Symbol,
+        estimated_loss_stroops: i128,
+        min_out_used: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_is_agent(&env, &agent);
+
+        if estimated_loss_stroops < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+
+        let (cumulative, incident_count) = Self::read_mev_stats(&env);
+        let new_cumulative = cumulative
+            .checked_add(estimated_loss_stroops)
+            .expect("vault: mev cumulative overflow");
+        let new_count = incident_count.saturating_add(1);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MevStats, &(new_cumulative, new_count));
+
+        env.events().publish(
+            (symbol_short!("mev_alert"),),
+            MevExtractionSuspectedEvent {
+                protocol,
+                estimated_loss_stroops,
+                min_out_used,
+                cumulative_loss_stroops: new_cumulative,
+                incident_count: new_count,
+            },
+        );
+    }
+
+    /// Returns `(cumulative_mev_loss_stroops, incident_count)` for monitoring (#658).
+    pub fn get_mev_stats(env: Env) -> (i128, u32) {
+        Self::require_initialized(&env);
+        Self::read_mev_stats(&env)
+    }
+
+    /// Reads the stored `(cumulative_mev_loss_stroops, incident_count)` pair.
+    fn read_mev_stats(env: &Env) -> (i128, u32) {
+        env.storage()
+            .instance()
+            .get(&DataKey::MevStats)
+            .unwrap_or((0, 0))
+    }
+
+    /// Sets the maximum acceptable MEV loss per rebalance in stroops (#658).
+    /// A value of `0` disables the threshold check.
+    ///
+    /// Only callable by the vault owner.
+    pub fn set_max_acceptable_mev_loss(env: Env, max_loss_stroops: i128) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        if max_loss_stroops < 0 {
+            panic_with_error!(&env, VaultError::MinOutMustBeNonNegative);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAcceptableMevLoss, &max_loss_stroops);
+    }
+
+    /// Stores an ML model APY prediction on-chain for a given protocol (#650).
+    ///
+    /// Called by the off-chain agent after running inference on the LSTM /
+    /// Prophet model. Predictions are stored per-protocol and overwrite the
+    /// previous forecast. The `rebalance()` call can then read the latest
+    /// prediction via `get_apy_prediction` to make a more informed decision.
+    ///
+    /// # Arguments
+    /// * `prediction` — Populated `ApyPrediction` struct from the agent.
+    ///
+    /// # Panics
+    /// - The caller must be the authorized agent.
+    pub fn submit_apy_prediction(env: Env, agent: Address, prediction: ApyPrediction) {
+        Self::require_initialized(&env);
+        Self::require_is_agent(&env, &agent);
+
+        Self::require(
+            &env,
+            prediction.protocol == symbol_short!("blend")
+                || prediction.protocol == symbol_short!("dex"),
+            VaultError::UnsupportedProtocol,
+        );
+        Self::require(
+            &env,
+            (0..=10_000).contains(&prediction.predicted_apy_bps)
+                && (0..=10_000).contains(&prediction.apy_1h_bps)
+                && (0..=10_000).contains(&prediction.apy_6h_bps)
+                && (0..=10_000).contains(&prediction.apy_24h_bps)
+                && prediction.confidence_bps <= 10_000,
+            VaultError::InvalidStrategy,
+        );
+
+        let key = DataKey::ApyPrediction(prediction.protocol.clone());
+        let record = ApyPrediction {
+            submitted_at_ledger: env.ledger().sequence(),
+            ..prediction
+        };
+        env.storage().persistent().set(&key, &record);
+        env.storage().persistent().extend_ttl(
+            &key,
+            APY_PREDICTION_TTL_EXTEND_TO,
+            APY_PREDICTION_TTL_EXTEND_TO,
+        );
+        env.events().publish(
+            (TOPIC_APY_PREDICTION,),
+            ApyPredictionSubmittedEvent {
+                protocol: record.protocol,
+                predicted_apy_bps: record.predicted_apy_bps,
+                apy_1h_bps: record.apy_1h_bps,
+                apy_6h_bps: record.apy_6h_bps,
+                apy_24h_bps: record.apy_24h_bps,
+                confidence_bps: record.confidence_bps,
+                submitted_at_ledger: record.submitted_at_ledger,
+            },
+        );
+    }
+
+    /// Returns the most recent ML model APY prediction for a given protocol,
+    /// or `None` if no prediction has been submitted yet (#650).
+    ///
+    /// The `rebalance` caller (agent) should check this value to decide the
+    /// `expected_apy` argument for the next rebalance call. A `None` result
+    /// means the agent should fall back to the current observed APY.
+    pub fn get_apy_prediction(env: Env, protocol: Symbol) -> Option<ApyPrediction> {
+        Self::require_initialized(&env);
+        env.storage()
+            .persistent()
+            .get(&DataKey::ApyPrediction(protocol))
+    }
+
+    /// Returns the ledger sequence number of the most recent successful
+    /// rebalance() call, or `0` if rebalance has never been called.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The ledger of the last rebalance, or `0`.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_last_rebalance_ledger(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::LastRebalanceLedger)
+            .unwrap_or(0)
+    }
+
+    /// Sets the circuit-breaker threshold: the number of **consecutive** failed
+    /// rebalances that trips an automatic emergency pause (Issue #439).
+    ///
+    /// Only the owner can call this. The counter increments on every rebalance
+    /// that completes with a `"failed"` status and resets to zero on any
+    /// `"success"`. Once the counter reaches `threshold`, `rebalance` pauses the
+    /// vault (reusing the emergency-pause flag) and emits an
+    /// [`EmergencyPausedEvent`]. The owner must `unpause` to resume operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `threshold` - Consecutive failures that trip the breaker. Must be `>= 1`.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - [`MaxConsecutiveFailuresUpdatedEvent`] with the previous effective
+    ///   threshold and the newly configured one, so off-chain monitoring has a
+    ///   full audit trail of circuit-breaker sensitivity changes.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the stored owner.
+    /// - [`VaultError::InvalidStrategy`] if `threshold` is `0`. The error enum is
+    ///   at Soroban's 50-variant limit, so `InvalidStrategy` is reused for
+    ///   invalid configuration input (mirroring `rebalance`).
+    pub fn set_max_consecutive_failures(env: Env, threshold: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+        Self::require(&env, threshold >= 1, VaultError::InvalidStrategy);
+
+        let old_threshold = Self::effective_max_consecutive_failures(&env);
+
+        Self::write_max_consecutive_failures(&env, threshold);
+
+        env.events().publish(
+            (TOPIC_MAX_FAILURES_UPDATED,),
+            MaxConsecutiveFailuresUpdatedEvent {
+                old_threshold,
+                new_threshold: threshold,
+            },
+        );
+    }
+
+    /// Returns the configured circuit-breaker threshold (Issue #439), or
+    /// the default value when the owner has not set one.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The consecutive-failure threshold that trips the auto-pause.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_max_consecutive_failures(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        Self::effective_max_consecutive_failures(&env)
+    }
+
+    /// Returns the current count of consecutive failed rebalances (Issue #439).
+    ///
+    /// Resets to `0` after any successful rebalance. Useful for monitoring how
+    /// close the vault is to the auto-pause threshold.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    /// The number of consecutive failed rebalances since the last success.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_consecutive_failures(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        Self::read_circuit_breaker_state(&env).1
+    }
+
+    /// Sets the shared lifetime, in ledgers, of the token approvals the vault
+    /// grants to external protocols.
+    ///
+    /// The TTL applies to **both** the Blend and DEX integrations: before each
+    /// supply leg the vault approves the pool to spend USDC until
+    /// `current_ledger + ttl`. A short TTL limits the blast radius of a
+    /// compromised pool; a long TTL avoids re-approving on every rebalance.
+    ///
+    /// Only the owner can call this function. The value is clamped to
+    /// `[1_000, 500_000]` ledgers (roughly 1.4 to 29 days at ~5 s per ledger).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `ttl` - Number of ledgers added to the current ledger when approving.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `ApprovalTtlUpdatedEvent`
+    /// - `ProtocolApprovalScheduledEvent` (Issue #847) - announces the
+    ///   resulting expiry ledger and renewal deadline so operators can renew
+    ///   the approval before it lapses. Emitting it is side-effect free: no
+    ///   approval is extended or renewed by the event.
+    ///
+    /// # Errors
+    ///
+    /// None. Failures panic rather than returning a `Result`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - [`VaultError::CallerIsNotOwner`] if the caller is not the stored owner.
+    /// - [`VaultError::ApprovalTtlTooLow`] if `ttl < 1_000`.
+    /// - [`VaultError::ApprovalTtlTooHigh`] if `ttl > 500_000`.
+    ///
+    /// # Storage
+    ///
+    /// Writes [`DataKey::ApprovalTtl`]. The legacy
+    /// [`DataKey::BlendApprovalTtl`] key is only read as a fallback for vaults
+    /// initialized before the shared TTL existed, and is never written here.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Shorten approvals to ~1 day (17,280 ledgers x ~5 s).
+    /// vault_client.set_approval_ttl(&17_280);
+    /// assert_eq!(vault_client.get_approval_ttl(), 17_280);
+    /// ```
+    pub fn set_approval_ttl(env: Env, ttl: u32) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        if ttl < MIN_APPROVAL_TTL {
+            panic_with_error!(&env, VaultError::ApprovalTtlTooLow);
+        }
+        if ttl > MAX_APPROVAL_TTL {
+            panic_with_error!(&env, VaultError::ApprovalTtlTooHigh);
+        }
+
+        let old_ttl = Self::get_approval_ttl_internal(&env);
+
+        env.storage().instance().set(&DataKey::ApprovalTtl, &ttl);
+
+        env.events().publish(
+            (TOPIC_APPROVAL_TTL_UPDATED,),
+            ApprovalTtlUpdatedEvent {
+                old_ttl,
+                new_ttl: ttl,
+            },
+        );
+
+        // Issue #847 - announce the expiry ledger of every approval granted
+        // with this TTL. The emitted `expiry_ledger` is computed from the same
+        // `ledger().sequence() + ttl` expression the approve paths use, so it
+        // matches the persisted approval state exactly.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("both"), ttl);
+    }
+
+    /// Returns the shared protocol approval TTL in ledgers.
+    ///
+    /// Resolution order: [`DataKey::ApprovalTtl`], then the legacy
+    /// [`DataKey::BlendApprovalTtl`] for vaults initialized before the shared
+    /// key existed, then the `100_000`-ledger default (~5.7 days).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Number of ledgers added to the current ledger when approving Blend or
+    /// DEX pools to spend the vault's USDC.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_approval_ttl(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        Self::get_approval_ttl_internal(&env)
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - CONFIGURATION
+    // ==========================================================================
+
+    /// Returns the current TVL cap.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current TVL cap in USDC units (7 decimal places), or 0 if no cap
+    pub fn get_tvl_cap(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128)
+    }
+
+    /// Returns the current per-user deposit cap.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current per-user deposit cap in USDC units (7 decimal places), or 0 if no cap
+    pub fn get_user_deposit_cap(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128)
+    }
+
+    /// Returns the current minimum deposit limit.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current minimum deposit limit in USDC units (7 decimal places)
+    pub fn get_min_deposit(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_min_deposit_internal(&env)
+    }
+
+    /// Returns the current maximum deposit limit.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The current maximum deposit limit in USDC units (7 decimal places)
+    pub fn get_max_deposit(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_max_deposit_internal(&env)
+    }
+
+    // ==========================================================================
+    // USER STRATEGY PREFERENCE
+    // ==========================================================================
+
+    /// Sets the caller's investment strategy preference.
+    ///
+    /// Only the user themselves can set their own strategy (`require_auth`);
+    /// neither the owner nor the agent can set it on their behalf. The
+    /// preference is advisory: it is stored on-chain for the AI agent to read
+    /// when choosing where to deploy funds, and does not by itself move any
+    /// assets or restrict which protocol `rebalance` may target.
+    ///
+    /// Setting the same strategy twice is allowed and re-emits the event with
+    /// `old_strategy == new_strategy`.
+    ///
+    /// **Storage-only — no on-chain effect on fund deployment.**
+    /// `rebalance()` and `deposit()` never read `DataKey::UserStrategy`; the vault
+    /// deploys funds pooled to a single `CurrentProtocol` regardless of any
+    /// individual user's selection. The off-chain AI agent is expected to consume
+    /// this preference when deciding yield allocation. A user's chosen strategy can
+    /// therefore diverge from where their share of the pooled funds is actually
+    /// deployed.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address; must authorize the call.
+    /// * `strategy` - One of `"conservative"`, `"balanced"`, or `"growth"`.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits [`UserStrategyUpdatedEvent`] with topics
+    /// `("usr_strat", user)`. `old_strategy` is the empty symbol `""` the first
+    /// time a user sets a preference.
+    ///
+    /// # Errors
+    ///
+    /// None. Failures panic rather than returning a `Result`.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If `user` does not authorize the call.
+    /// - [`VaultError::InvalidStrategy`] if `strategy` is not one of the three
+    ///   accepted symbols.
+    ///
+    /// # Storage
+    ///
+    /// Writes [`DataKey::UserStrategy`] in persistent storage, keyed by `user`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// vault_client.set_user_strategy(&user, &Symbol::new(&env, "growth"));
+    /// assert_eq!(
+    ///     vault_client.get_user_strategy(&user),
+    ///     Symbol::new(&env, "growth"),
+    /// );
+    /// ```
+    pub fn set_user_strategy(env: Env, user: Address, strategy: Symbol) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        let valid = strategy == Symbol::new(&env, "conservative")
+            || strategy == Symbol::new(&env, "balanced")
+            || strategy == Symbol::new(&env, "growth");
+
+        Self::require(&env, valid, VaultError::InvalidStrategy);
+
+        let old_strategy: Symbol = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserStrategy(user.clone()))
+            .unwrap_or(Symbol::new(&env, ""));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserStrategy(user.clone()), &strategy);
+        env.storage().persistent().extend_ttl(
+            &DataKey::UserStrategy(user.clone()),
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (TOPIC_USER_STRATEGY_UPDATED, user.clone()),
+            UserStrategyUpdatedEvent {
+                user,
+                old_strategy,
+                new_strategy: strategy,
+            },
+        );
+    }
+
+    /// Returns a user's investment strategy preference.
+    ///
+    /// Read-only and unauthenticated: any caller may query any address. Users
+    /// who have never called [`set_user_strategy`](crate::NeuroWealthVault::set_user_strategy) are reported as
+    /// `"balanced"`, so callers cannot distinguish "never set" from
+    /// "explicitly set to balanced" through this function alone.
+    ///
+    /// **Storage-only — no on-chain effect on fund deployment.**
+    /// This value is a per-user preference stored for the off-chain AI agent to
+    /// read. `rebalance()` and `deposit()` do not consult it; the vault pools all
+    /// funds to a single `CurrentProtocol`. See `set_user_strategy` for details.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address to query.
+    ///
+    /// # Returns
+    ///
+    /// The strategy symbol: `"conservative"`, `"balanced"`, or `"growth"`.
+    /// Defaults to `"balanced"` when unset.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // A user who has never expressed a preference reads back as "balanced".
+    /// assert_eq!(
+    ///     vault_client.get_user_strategy(&fresh_user),
+    ///     Symbol::new(&env, "balanced"),
+    /// );
+    /// ```
+    pub fn get_user_strategy(env: Env, user: Address) -> Symbol {
+        Self::require_initialized(&env);
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserStrategy(user))
+            .unwrap_or(Symbol::new(&env, "balanced"))
+    }
+
+    /// Proposes an agent update with a 24-hour timelock (step 1 of 2). (#317)
+    ///
+    /// Records the new agent as pending and sets an expiry ledger after which
+    /// `confirm_agent_update()` may be called. During the delay, operators and
+    /// users can observe the proposal on-chain and react before the change takes
+    /// effect. Only one pending proposal is allowed at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_agent` - The proposed new AI agent address.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AgentUpdateProposedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If a pending agent update already exists (`TimelockAlreadyPending`).
+    pub fn update_agent(env: Env, new_agent: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::PendingAgentUpdate),
+            VaultError::TimelockAlreadyPending,
+        );
+
+        let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let effective_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(AGENT_TIMELOCK_LEDGERS);
+
+        env.storage().instance().set(
+            &DataKey::PendingAgentUpdate,
+            &(new_agent.clone(), effective_ledger),
+        );
+
+        env.events().publish(
+            (TOPIC_AGENT_UPDATE_PROPOSED,),
+            AgentUpdateProposedEvent {
+                old_agent,
+                new_agent,
+                effective_ledger,
+            },
+        );
+    }
+
+    /// Confirms a pending agent update after the timelock has elapsed (step 2 of 2). (#317)
+    ///
+    /// Can only be called once `env.ledger().sequence() >= AgentTimelockExpiry`.
+    /// On success the pending agent becomes the active agent and the proposal is cleared.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AgentUpdateConfirmedEvent`
+    /// - `AgentUpdatedEvent` (for backward-compatible indexers)
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If no pending proposal exists (`NoTimelockPending`).
+    /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
+    pub fn confirm_agent_update(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingAgentUpdate),
+            VaultError::NoTimelockPending,
+        );
+
+        let (new_agent, expiry): (Address, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAgentUpdate)
+            .unwrap();
+
+        Self::require(
+            &env,
+            env.ledger().sequence() >= expiry,
+            VaultError::TimelockNotExpired,
+        );
+
+        let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+
+        env.storage().instance().set(&DataKey::Agent, &new_agent);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAgentUpdate);
+
+        env.events().publish(
+            (TOPIC_AGENT_UPDATE_CONFIRMED,),
+            AgentUpdateConfirmedEvent {
+                old_agent: old_agent.clone(),
+                new_agent: new_agent.clone(),
+            },
+        );
+
+        // Emit backward-compatible event so existing indexers tracking TOPIC_AGENT_UPDATED see the change.
+        env.events().publish(
+            (TOPIC_AGENT_UPDATED,),
+            AgentUpdatedEvent {
+                old_agent,
+                new_agent,
+            },
+        );
+    }
+
+    /// Cancels a pending agent update before it can be confirmed. (#317)
+    ///
+    /// Only the owner may cancel. Clears the pending proposal so a new one can
+    /// be proposed. Safe to call at any point during the timelock window.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AgentUpdateCancelledEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If no pending proposal exists (`NoTimelockPending`).
+    pub fn cancel_agent_update(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingAgentUpdate),
+            VaultError::NoTimelockPending,
+        );
+
+        let old_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let (proposed_new_agent, _expiry): (Address, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAgentUpdate)
+            .unwrap();
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAgentUpdate);
+
+        env.events().publish(
+            (TOPIC_AGENT_UPDATE_CANCELLED,),
+            AgentUpdateCancelledEvent {
+                old_agent,
+                proposed_new_agent,
+            },
+        );
+    }
+
+    /// Returns the pending agent proposal, if one is active. (#317)
+    ///
+    /// Lets operators and indexers observe a proposed agent change during the
+    /// 24-hour timelock window opened by [`update_agent`](crate::NeuroWealthVault::update_agent), and decide
+    /// whether to let it proceed or call [`cancel_agent_update`](crate::NeuroWealthVault::cancel_agent_update).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// * `Some((new_agent, effective_ledger))` while a proposal is pending,
+    ///   where `effective_ledger` is the first ledger at which
+    ///   [`confirm_agent_update`](crate::NeuroWealthVault::confirm_agent_update) may be called.
+    /// * `None` when no proposal is pending — either none was made, or it was
+    ///   already confirmed or cancelled.
+    ///
+    /// Compare `effective_ledger` against `env.ledger().sequence()` to tell a
+    /// still-waiting proposal from a ready-to-confirm one. The currently active
+    /// agent is unchanged until confirmation; read it with [`get_agent`](crate::NeuroWealthVault::get_agent).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    ///
+    /// # Storage
+    ///
+    /// Reads [`DataKey::PendingAgentUpdate`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// match vault_client.get_pending_agent_update() {
+    ///     None => { /* no agent change in flight */ }
+    ///     Some((new_agent, effective_ledger)) => {
+    ///         if env.ledger().sequence() >= effective_ledger {
+    ///             vault_client.confirm_agent_update();
+    ///         } else {
+    ///             // Still inside the timelock window; cancel if unexpected.
+    ///             let _ = new_agent;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub fn get_pending_agent_update(env: Env) -> Option<(Address, u32)> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::PendingAgentUpdate)
+    }
+
+    // ==========================================================================
+    // AGENT KEY ROTATION — HOT-STANDBY PATTERN (#653)
+    // ==========================================================================
+
+    /// Returns the standby agent address, if one is configured. (#653)
+    ///
+    /// The standby agent can call `rebalance`, `harvest`, `update_total_assets`,
+    /// and `emergency_harvest` alongside the primary agent. It is set and
+    /// rotated independently via `update_standby_agent` with no timelock.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(standby_agent)` when a standby key is configured.
+    /// * `None` when no standby key is set (single-key operation).
+    pub fn get_standby_agent(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKeyExt::StandbyAgent)
+    }
+
+    /// Sets or replaces the standby agent key independently (#653).
+    ///
+    /// Unlike the primary agent update flow (`update_agent` /
+    /// `confirm_agent_update`), the standby key can be changed instantly with
+    /// no timelock — it is a hot-standby key, not the active rebalancing key.
+    /// This lets the operator rotate the standby key on a regular cadence
+    /// without any downtime.
+    ///
+    /// The standby key must not equal the primary agent key. Setting the
+    /// standby to the zero address clears it (disables hot-standby mode).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_standby` - The new standby agent address.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `StandbyAgentUpdatedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If `new_standby` equals the primary agent key.
+    pub fn update_standby_agent(env: Env, new_standby: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let primary: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        Self::require(
+            &env,
+            new_standby != primary,
+            VaultError::StandbyMatchesPrimaryAgent,
+        );
+
+        let old_standby: Option<Address> = env.storage().instance().get(&DataKeyExt::StandbyAgent);
+
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::StandbyAgent, &new_standby);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_STANDBY_AGENT_UPDATED,),
+            StandbyAgentUpdatedEvent {
+                old_standby,
+                new_standby,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Performs an instant hot-standby agent key switchover (#653).
+    ///
+    /// The standby agent becomes the new primary agent, and the old primary
+    /// agent is demoted to standby. This is the zero-downtime rotation path —
+    /// no timelock, no 24-hour wait. Both keys must be distinct and the
+    /// standby key must be configured before calling this function.
+    ///
+    /// After the switchover, the former primary can no longer call rebalance
+    /// (unless it is later re-promoted), reducing the blast radius of a key
+    /// compromise to the window between rotation and the next switchover.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AgentKeyRotatedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If no standby agent is configured.
+    pub fn switch_to_standby_agent(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let old_primary: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKeyExt::StandbyAgent);
+
+        let new_primary =
+            standby.unwrap_or_else(|| panic_with_error!(&env, VaultError::NotInitialized));
+
+        // Deliberately no timelock check here: this is the zero-downtime
+        // instant rotation path (see docstring above); only the two-step
+        // `update_agent` / `confirm_agent_update` flow is time-delayed.
+
+        // Promote standby to primary.
+        env.storage().instance().set(&DataKey::Agent, &new_primary);
+
+        // Demote old primary to standby (so the operator can rotate it out
+        // at leisure via update_standby_agent).
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::StandbyAgent, &old_primary);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_AGENT_KEY_ROTATED,),
+            AgentKeyRotatedEvent {
+                old_primary: old_primary.clone(),
+                new_primary,
+                new_standby: old_primary,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+    // ==========================================================================
+    // MULTI-ASSET SUPPORT (#646) — ADMINISTRATION
+    // ==========================================================================
+
+    /// Adds a supported deposit asset to the vault (#646).
+    ///
+    /// Registers the asset's token contract address and per-asset limits. Once
+    /// registered, users can call `deposit_asset` / `withdraw_asset` with the
+    /// asset symbol and mint shares in the asset's independent share pool.
+    ///
+    /// The vault's legacy `deposit` / `withdraw` functions (USDC-only) are
+    /// unaffected: existing deployments can continue using them and enable the
+    /// asset-aware path for USDC by calling `add_supported_asset("USDC",
+    /// <usdc_token>, ...)` — no storage migration is required.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `asset` - Asset symbol (e.g. `"XLM"`, `"USDT"`, `"EURC"`, `"USDC"`).
+    /// * `token_address` - Token contract address (or the zero address for
+    ///   native XLM, which uses the Stellar asset transfer path).
+    /// * `min_deposit` - Minimum per-deposit floor (`0` disables it).
+    /// * `deposit_limit` - Maximum per-deposit amount (`0` disables it).
+    /// * `tvl_cap` - Per-asset TVL cap in native units (`0` disables it).
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is already supported.
+    /// - If any limit is negative.
+    pub fn add_supported_asset(
+        env: Env,
+        asset: Symbol,
+        token_address: Address,
+        min_deposit: i128,
+        deposit_limit: i128,
+        tvl_cap: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(
+            &env,
+            !env.storage()
+                .instance()
+                .has(&MultiAssetKey::Config(asset.clone())),
+            VaultError::AlreadyInitialized,
+        );
+        Self::require(&env, min_deposit >= 0, VaultError::AmountMustBePositive);
+        Self::require(&env, deposit_limit >= 0, VaultError::AmountMustBePositive);
+        Self::require(&env, tvl_cap >= 0, VaultError::TvlCapCannotBeNegative);
+        if deposit_limit > 0 {
+            Self::require(
+                &env,
+                min_deposit <= deposit_limit,
+                VaultError::TvlCapBelowUserDepositCap,
+            );
+        }
+
+        env.storage().instance().set(
+            &MultiAssetKey::Config(asset.clone()),
+            &AssetConfig {
+                token_address,
+                min_deposit,
+                deposit_limit,
+                tvl_cap,
+            },
+        );
+        // Ensure an empty totals entry exists so read paths can unwrap normally.
+        if !env
+            .storage()
+            .instance()
+            .has(&MultiAssetKey::Totals(asset.clone()))
+        {
+            env.storage().instance().set(
+                &MultiAssetKey::Totals(asset.clone()),
+                &AssetTotals::default(),
+            );
+        }
+        Self::add_to_supported_assets_index(&env, &asset);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_SUPPORTED_ASSETS_UPDATED, asset.clone()),
+            SupportedAssetsUpdatedEvent {
+                asset,
+                added: true,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Updates the limits for an already-supported deposit asset (#646).
+    ///
+    /// Changing `tvl_cap` to a value below the current pool size is allowed;
+    /// subsequent deposits are simply rejected until the pool shrinks.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is not supported.
+    /// - If any limit is negative or the floor exceeds the ceiling.
+    pub fn update_asset_limits(
+        env: Env,
+        asset: Symbol,
+        min_deposit: i128,
+        deposit_limit: i128,
+        tvl_cap: i128,
+    ) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        Self::require(&env, min_deposit >= 0, VaultError::AmountMustBePositive);
+        Self::require(&env, deposit_limit >= 0, VaultError::AmountMustBePositive);
+        Self::require(&env, tvl_cap >= 0, VaultError::TvlCapCannotBeNegative);
+        if deposit_limit > 0 {
+            Self::require(
+                &env,
+                min_deposit <= deposit_limit,
+                VaultError::TvlCapBelowUserDepositCap,
+            );
+        }
+
+        let mut config: AssetConfig = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .expect("update_asset_limits: asset not supported");
+        config.min_deposit = min_deposit;
+        config.deposit_limit = deposit_limit;
+        config.tvl_cap = tvl_cap;
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::Config(asset.clone()), &config);
+    }
+
+    /// Removes a supported deposit asset from the vault (#646).
+    ///
+    /// Only allowed while the asset's share pool is empty (no outstanding
+    /// shares and no assets held), so no user position is stranded. The asset
+    /// symbol is also dropped from the supported-assets index.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the asset is not supported.
+    /// - If the asset's share pool still holds shares or assets.
+    pub fn remove_supported_asset(env: Env, asset: Symbol) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let totals: AssetTotals = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default();
+        Self::require(
+            &env,
+            totals.shares == 0 && totals.assets == 0,
+            VaultError::NoAssetsToWithdraw,
+        );
+
+        env.storage()
+            .instance()
+            .remove(&MultiAssetKey::Config(asset.clone()));
+        env.storage()
+            .instance()
+            .remove(&MultiAssetKey::Totals(asset.clone()));
+        Self::remove_from_supported_assets_index(&env, &asset);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_SUPPORTED_ASSETS_UPDATED, asset.clone()),
+            SupportedAssetsUpdatedEvent {
+                asset,
+                added: false,
+                owner,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+    }
+
+    /// Returns the list of supported deposit asset symbols (#646).
+    ///
+    /// Empty until the owner registers the first asset via
+    /// `add_supported_asset`.
+    pub fn get_supported_assets(env: Env) -> Vec<Symbol> {
+        Self::require_initialized(&env);
+        Self::read_supported_assets(&env)
+    }
+
+    /// Returns the configuration for a supported asset, or `None` (#646).
+    pub fn get_asset_config(env: Env, asset: Symbol) -> Option<AssetConfig> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&MultiAssetKey::Config(asset))
+    }
+
+    /// Returns the per-asset TVL cap in the asset's native units (`0` = uncapped)
+    /// for a supported asset, or `0` if the asset is not supported (#646).
+    pub fn get_asset_tvl_cap(env: Env, asset: Symbol) -> i128 {
+        Self::require_initialized(&env);
+        let config: Option<AssetConfig> =
+            env.storage().instance().get(&MultiAssetKey::Config(asset));
+        config.map(|c| c.tvl_cap).unwrap_or(0_i128)
+    }
+
+    /// Returns the accounting totals for one asset's share pool (#646).
+    pub fn get_asset_totals(env: Env, asset: Symbol) -> AssetTotals {
+        Self::require_initialized(&env);
+        Self::read_asset_totals(&env, &asset)
+    }
+
+    /// Returns a user's combined view of one asset's share pool: their share
+    /// balance, its native-unit value, and the pool totals (#646).
+    pub fn get_asset_balance(env: Env, user: Address, asset: Symbol) -> AssetBalance {
+        Self::require_initialized(&env);
+        let totals = Self::read_asset_totals(&env, &asset);
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&MultiAssetKey::Shares(user, asset.clone()))
+            .unwrap_or(0_i128);
+        let assets = if shares == 0 {
+            0
+        } else {
+            Self::convert_to_asset_assets_internal_from_totals(&env, &totals, shares)
+        };
+        AssetBalance {
+            shares,
+            assets,
+            pool_assets: totals.assets,
+            pool_shares: totals.shares,
+        }
+    }
+
+    /// Sets the Blend pool contract address for on-chain integration.
+    ///
+    /// Only the owner can set the Blend pool address. This must be called
+    /// before the vault can interact with Blend for yield generation.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize this call).
+    /// * `pool_address` - The Blend pool contract address.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `BlendPoolConfiguredEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the provided pool_address is not a valid Blend pool contract.
+    pub fn set_blend_pool(env: Env, owner: Address, pool_address: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(
+            &env,
+            owner == stored_owner,
+            VaultError::OnlyOwnerCanConfigurePool,
+        );
+
+        // Idempotent no-op guard (Issue #438): if the Blend pool is already set
+        // to this exact address, skip the interface probe, the storage write, and
+        // the event so a redundant re-configuration emits nothing at all.
+        let old_pool: Option<Address> = env.storage().instance().get(&DataKey::BlendPool);
+        if old_pool.as_ref() == Some(&pool_address) {
+            return;
+        }
+
+        // Validate pool interface by probing the `balance` function (Issue #148).
+        // If the address is not a valid Blend pool contract the invocation will
+        // panic here, rejecting the registration before the address is stored.
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let vault_address = env.current_contract_address();
+        BlendPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::BlendPool, &pool_address);
+
+        // Initialize CurrentProtocol to "none" if not set
+        if !env.storage().instance().has(&DataKey::CurrentProtocol) {
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentProtocol, &symbol_short!("none"));
+        }
+
+        env.events().publish(
+            (TOPIC_BLEND_POOL_CONFIGURED,),
+            BlendPoolConfiguredEvent {
+                old_pool,
+                new_pool: pool_address.clone(),
+                owner: owner.clone(),
+            },
+        );
+    }
+
+    /// Configures the DEX liquidity pool contract address (owner only).
+    ///
+    /// Mirrors [`set_blend_pool`](crate::NeuroWealthVault::set_blend_pool). The pool interface is validated by probing
+    /// its `balance` entrypoint before the address is stored, so an invalid pool
+    /// address is rejected at configuration time. `CurrentProtocol` is initialized
+    /// to `"none"` when not already set.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize this call).
+    /// * `pool_address` - The DEX liquidity pool contract address.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `DexPoolConfiguredEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    /// - If the provided `pool_address` is not a valid DEX pool contract.
+    pub fn set_dex_pool(env: Env, owner: Address, pool_address: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(
+            &env,
+            owner == stored_owner,
+            VaultError::OnlyOwnerCanConfigurePool,
+        );
+
+        // Idempotent no-op guard (Issue #438): if the DEX pool is already set to
+        // this exact address, skip the interface probe, the storage write, and the
+        // event so a redundant re-configuration emits nothing at all.
+        let old_pool: Option<Address> = env.storage().instance().get(&DataKey::DexPool);
+        if old_pool.as_ref() == Some(&pool_address) {
+            return;
+        }
+
+        // Validate the pool interface by probing the `balance` function. If the
+        // address is not a valid DEX pool contract the invocation panics here,
+        // rejecting the registration before the address is stored.
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let vault_address = env.current_contract_address();
+        DexPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DexPool, &pool_address);
+
+        // Initialize CurrentProtocol to "none" if not set
+        if !env.storage().instance().has(&DataKey::CurrentProtocol) {
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentProtocol, &symbol_short!("none"));
+        }
+
+        env.events().publish(
+            (TOPIC_DEX_POOL_CONFIGURED,),
+            DexPoolConfiguredEvent {
+                old_pool,
+                new_pool: pool_address.clone(),
+                owner: owner.clone(),
+            },
+        );
+    }
+
+    /// Updates the shared ledger TTL used when approving protocol token spend.
+    ///
+    /// The approval expiration ledger is computed as:
+    /// `env.ledger().sequence() + blend_approval_ttl`
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - [`ApprovalTtlUpdatedEvent`] (same topic as `set_approval_ttl`, since
+    ///   both mutate the shared [`DataKey::ApprovalTtl`]), so indexers can
+    ///   watch a single topic for every approval-TTL change.
+    /// - [`ProtocolApprovalScheduledEvent`] (Issue #847) carrying the expiry
+    ///   ledger, usable window and renewal deadline for the shared TTL.
+    pub fn set_blend_approval_ttl(env: Env, owner: Address, blend_approval_ttl: u32) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        let old_ttl = Self::get_approval_ttl_internal(&env);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ApprovalTtl, &blend_approval_ttl);
+
+        env.events().publish(
+            (TOPIC_APPROVAL_TTL_UPDATED,),
+            ApprovalTtlUpdatedEvent {
+                old_ttl,
+                new_ttl: blend_approval_ttl,
+            },
+        );
+
+        // Issue #847 - same expiry announcement as `set_approval_ttl`, scoped
+        // to the Blend approval that this legacy setter is named for.
+        Self::emit_approval_ttl_schedule(&env, symbol_short!("blend"), blend_approval_ttl);
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - OWNERSHIP TRANSFER
+    // ==========================================================================
+
+    /// Initiates ownership transfer to a new owner (step 1 of 2).
+    ///
+    /// This implements a two-step ownership transfer pattern for safety.
+    /// The current owner proposes a new owner, and the new owner must
+    /// explicitly accept ownership to complete the transfer.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_owner` - The proposed new owner address.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `OwnershipTransferInitiatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the current owner.
+    pub fn transfer_ownership(env: Env, new_owner: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let current_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingOwner, &new_owner);
+
+        env.events().publish(
+            (TOPIC_OWNERSHIP_INITIATED,),
+            OwnershipTransferInitiatedEvent {
+                current_owner,
+                pending_owner: new_owner,
+            },
+        );
+    }
+
+    /// Accepts ownership transfer (step 2 of 2).
+    ///
+    /// The pending owner must call this function to complete the ownership
+    /// transfer. This ensures the new owner has access to their keys and
+    /// prevents accidental transfers to wrong addresses.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `new_owner` - The new owner address (must match pending owner).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `OwnershipTransferredEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If there is no pending owner.
+    /// - If the caller is not the pending owner.
+    pub fn accept_ownership(env: Env, new_owner: Address) {
+        Self::require_initialized(&env);
+        new_owner.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwner)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::CallerIsNotPendingOwner));
+
+        Self::require(
+            &env,
+            new_owner == pending,
+            VaultError::CallerIsNotPendingOwner,
+        );
+
+        let old_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+
+        env.storage().instance().set(&DataKey::Owner, &new_owner);
+        env.storage().instance().remove(&DataKey::PendingOwner);
+
+        env.events().publish(
+            (TOPIC_OWNERSHIP_TRANSFERRED,),
+            OwnershipTransferredEvent {
+                old_owner,
+                new_owner,
+            },
+        );
+    }
+
+    /// Cancels a pending ownership transfer.
+    ///
+    /// Allows the current owner to cancel a pending ownership transfer
+    /// if they change their mind or made a mistake.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `OwnershipTransferCancelledEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the current owner.
+    /// - If there is no pending ownership transfer.
+    pub fn cancel_ownership_transfer(env: Env) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwner)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::CallerIsNotPendingOwner));
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+
+        env.storage().instance().remove(&DataKey::PendingOwner);
+
+        env.events().publish(
+            (TOPIC_OWNERSHIP_CANCELLED,),
+            OwnershipTransferCancelledEvent {
+                owner,
+                cancelled_pending: pending,
+            },
+        );
+    }
+
+    /// Returns the pending owner address, if any.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// The pending owner address, or None if no transfer is pending
+    pub fn get_pending_owner(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::PendingOwner)
+    }
+
+    /// Returns the pending ownership information, if any.
+    ///
+    /// Provides both the pending owner address and timelock expiry in a single
+    /// struct, making it easier for off-chain monitors to display pending
+    /// ownership transfers.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// `Some(PendingOwnershipInfo)` if a transfer is pending, `None` otherwise
+    pub fn get_pending_ownership(env: Env) -> Option<PendingOwnershipInfo> {
+        Self::require_initialized(&env);
+        let pending_owner: Option<Address> = env.storage().instance().get(&DataKey::PendingOwner);
+        pending_owner.map(|owner| PendingOwnershipInfo {
+            pending_owner: owner,
+            timelock_expiry: 0,
+        })
+    }
+
+    /// Updates the total assets tracked by the vault.
+    ///
+    /// The agent calls this to reflect realized yield (increase) or a confirmed
+    /// strategy loss / bad-debt write-down (decrease).
+    ///
+    /// ## Decrease policy
+    ///
+    /// Decreases are permitted only when **all** of the following hold:
+    ///
+    /// 1. `allow_decrease` is `true` — the caller explicitly opts in.
+    /// 2. The **owner** has co-signed this transaction (`owner.require_auth()`).
+    ///    A rogue agent cannot unilaterally slash user value; the loss must be
+    ///    countersigned by the vault operator.
+    /// 3. The decrease does not exceed `max_decrease_bps` basis points of the
+    ///    current total (minimum floor: 100 bps = 1%). This caps the worst-case
+    ///    loss any single call can commit, limiting damage from a compromised key.
+    ///
+    /// Typical values: `allow_decrease = true`, `max_decrease_bps = 1000` (10 %).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `agent` - The authorized AI agent address.
+    /// * `new_total` - The new total asset amount (principal + yield).
+    /// * `allow_decrease` - If true, permits the reported assets to decrease.
+    /// * `max_decrease_bps` - Maximum allowed decrease in basis points (e.g., 500 = 5%).
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `AssetsUpdatedEvent`
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If called by anyone other than the authorized agent.
+    /// - If new_total is negative.
+    /// - If there are assets but total_shares is zero.
+    /// - If the vault does not hold enough USDC to back the new_total.
+    /// - If a decrease is attempted but not allowed.
+    /// - If a decrease exceeds the maximum basis points.
+    /// - If a decrease lacks the vault owner's authorization.
+    pub fn update_total_assets(
+        env: Env,
+        agent: Address,
+        new_total: i128,
+        allow_decrease: bool,
+        _max_decrease_bps: u32, // Ignored - now uses owner-configured storage (#974)
+    ) {
+        Self::require_initialized(&env);
+        let stored_agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKeyExt::StandbyAgent);
+        // Hot-standby (#653): the standby key may also publish asset updates.
+        // Absent a standby key this reduces to the original single-key check.
+        let is_agent = agent == stored_agent || standby.map(|s| agent == s).unwrap_or(false);
+        Self::require(&env, is_agent, VaultError::OnlyAgentCanUpdateTotalAssets);
+        agent.require_auth();
+
+        let old_total = Self::get_total_assets_internal(&env);
+
+        if new_total < old_total {
+            Self::require(
+                &env,
+                allow_decrease,
+                VaultError::TotalAssetsDecreaseNotAllowed,
+            );
+
+            // Owner must co-sign any loss report. A single compromised key
+            // cannot unilaterally reduce user asset values.
+            Self::require_is_owner(&env);
+
+            // Cap the per-call decrease using owner-configured storage (#974).
+            // The caller-supplied argument is ignored to prevent bypassing the cap.
+            // Floor: 100 bps (1%) to prevent disabling decreases entirely.
+            // Ceiling: 10_000 bps (100%) enforced by set_max_decrease_bps.
+            let stored_max_bps = env
+                .storage()
+                .instance()
+                .get(&DataKey::MaxDecreaseBps)
+                .unwrap_or(1000); // Default to 10% if not set
+            let effective_cap_bps = stored_max_bps.clamp(100, 10_000);
+            let max_decrease = old_total
+                .checked_mul(i128::from(effective_cap_bps))
+                .expect("vault: total available overflow")
+                .checked_div(10_000)
+                .expect("vault: total available overflow");
+            let actual_decrease = old_total
+                .checked_sub(new_total)
+                .expect("vault: decrease underflow");
+
+            Self::require(
+                &env,
+                actual_decrease <= max_decrease,
+                VaultError::DecreaseExceedsMaximumAllowedBps,
+            );
+        }
+
+        // CRITICAL SECURITY CHECK: Verify vault actually holds sufficient USDC
+        // This prevents the agent from inflating total_assets beyond what the vault can pay out
+        // We must include both idle funds in vault AND funds deployed to Blend
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        // "multi" (derive_protocol_summary when both venues hold funds) must
+        // count deployed balances at both venues, otherwise full-value reports
+        // revert against idle funds alone.
+        let blend_pool: Option<Address> = if current_protocol == symbol_short!("blend")
+            || current_protocol == symbol_short!("multi")
+        {
+            env.storage().instance().get(&DataKey::BlendPool)
+        } else {
+            None
+        };
+
+        let dex_pool: Option<Address> = if current_protocol == symbol_short!("dex")
+            || current_protocol == symbol_short!("multi")
+        {
+            env.storage().instance().get(&DataKey::DexPool)
+        } else {
+            None
+        };
+
+        // --- Cross-Contract Calls ---
+        let token_client = token::Client::new(&env, &usdc_token);
+        let vault_balance = token_client.balance(&env.current_contract_address());
+        let mut total_available = vault_balance;
+
+        if let Some(pool) = blend_pool {
+            let deployed_balance = BlendPoolClient::get_balance(
+                &env,
+                &pool,
+                &usdc_token,
+                &env.current_contract_address(),
+            );
+            total_available = total_available
+                .checked_add(deployed_balance)
+                .expect("vault: total available overflow");
+        }
+
+        if let Some(pool) = dex_pool {
+            let deployed_balance = DexPoolClient::get_balance(
+                &env,
+                &pool,
+                &usdc_token,
+                &env.current_contract_address(),
+            );
+            total_available = total_available
+                .checked_add(deployed_balance)
+                .expect("vault: total available overflow");
+        }
+
+        Self::require(
+            &env,
+            total_available >= new_total,
+            VaultError::InsufficientBalanceForAssets,
+        );
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &new_total);
+
+        // On-chain yield attribution (#654): when the reported value grew, emit
+        // a per-user `YieldAttributedEvent` for each holder, apportioned by
+        // share weight and tagged with the protocol the vault is deployed to.
+        // The off-chain indexer aggregates these events into per-period
+        // earnings reports; no per-user per-period storage is written.
+        let yield_amount = new_total.saturating_sub(old_total);
+        if yield_amount > 0 {
+            Self::emit_yield_attribution(&env, yield_amount);
+        }
+
+        env.events().publish(
+            (TOPIC_ASSETS_UPDATED,),
+            AssetsUpdatedEvent {
+                old_total,
+                new_total,
+            },
+        );
+    }
+
+    // ==========================================================================
+    // ADMINISTRATIVE - UPGRADES
+    // ==========================================================================
+
+    /// Schedules a contract upgrade behind a timelock (step 1 of 2). (#316)
+    ///
+    /// Records `new_wasm_hash` as the pending upgrade and sets an expiry ledger
+    /// after which `execute_upgrade()` may be called. The delay
+    /// (`UPGRADE_TIMELOCK_LEDGERS`, ≈24 h) gives users and operators a recovery
+    /// window to observe the proposal on-chain and react — including calling
+    /// `cancel_upgrade()` — before new WASM takes effect. This closes the
+    /// "compromised owner key swaps WASM instantly" gap. Only one pending
+    /// upgrade is allowed at a time.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    /// * `new_wasm_hash` - Hash of the new WASM binary (32 bytes).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `UpgradeScheduledEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If the caller is not the stored owner.
+    /// - If an upgrade is already pending (`TimelockAlreadyPending`).
+    pub fn schedule_upgrade(env: Env, owner: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        Self::require_not_paused(&env);
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        Self::require(
+            &env,
+            !env.storage().instance().has(&DataKey::PendingUpgrade),
+            VaultError::TimelockAlreadyPending,
+        );
+
+        Self::require(
+            &env,
+            new_wasm_hash != BytesN::from_array(&env, &[0u8; 32]),
+            VaultError::InvalidStrategy,
+        );
+
+        let effective_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+
+        env.storage().instance().set(
+            &DataKey::PendingUpgrade,
+            &(new_wasm_hash.clone(), effective_ledger),
+        );
+
+        env.events().publish(
+            (TOPIC_UPGRADE_SCHEDULED,),
+            UpgradeScheduledEvent {
+                new_wasm_hash,
+                effective_ledger,
+            },
+        );
+    }
+
+    /// Executes a scheduled upgrade after the timelock has elapsed (step 2 of 2). (#316)
+    ///
+    /// Can only be called once `env.ledger().sequence() >= UpgradeTimelockExpiry`.
+    /// On success the pending WASM hash is activated, the contract `Version` is
+    /// incremented, and the pending proposal is cleared. All storage state (user
+    /// balances, configuration, owner, agent) is preserved across the upgrade.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `UpgradedEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the vault is paused.
+    /// - If the caller is not the stored owner.
+    /// - If no pending upgrade exists (`NoTimelockPending`).
+    /// - If the timelock delay has not yet elapsed (`TimelockNotExpired`).
+    /// - If the pending hash does not correspond to an uploaded WASM binary.
+    pub fn execute_upgrade(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+        Self::require_not_paused(&env);
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingUpgrade),
+            VaultError::NoTimelockPending,
+        );
+
+        let (new_wasm_hash, expiry): (BytesN<32>, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap();
+
+        Self::require(
+            &env,
+            env.ledger().sequence() >= expiry,
+            VaultError::TimelockNotExpired,
+        );
+
+        // Clear the pending proposal before applying the upgrade so a fresh
+        // proposal can be scheduled afterwards.
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+
+        // Soroban will trap/panic here if the hash is not installed on the network.
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        let old_version: u32 = env.storage().instance().get(&DataKey::Version).unwrap_or(1);
+        let new_version = old_version.checked_add(1).expect("vault: version overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &new_version);
+
+        env.events().publish(
+            (TOPIC_UPGRADED,),
+            UpgradedEvent {
+                old_version,
+                new_version,
+            },
+        );
+    }
+
+    /// Cancels a pending upgrade before it can be executed. (#316)
+    ///
+    /// Only the owner may cancel. Clears the pending proposal so a new one can
+    /// be scheduled. Safe to call at any point during the timelock window — this
+    /// is the recovery path if a malicious or mistaken upgrade was scheduled.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `owner` - The owner address (must authorize).
+    ///
+    /// # Events
+    ///
+    /// Emits:
+    /// - `UpgradeCancelledEvent`
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the stored owner.
+    /// - If no pending upgrade exists (`NoTimelockPending`).
+    pub fn cancel_upgrade(env: Env, owner: Address) {
+        Self::require_initialized(&env);
+        owner.require_auth();
+
+        let stored_owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        Self::require(&env, owner == stored_owner, VaultError::CallerIsNotOwner);
+
+        Self::require(
+            &env,
+            env.storage().instance().has(&DataKey::PendingUpgrade),
+            VaultError::NoTimelockPending,
+        );
+
+        let (cancelled_wasm_hash, _expiry): (BytesN<32>, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap();
+
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+
+        env.events().publish(
+            (TOPIC_UPGRADE_CANCELLED,),
+            UpgradeCancelledEvent {
+                cancelled_wasm_hash,
+            },
+        );
+    }
+
+    /// Returns the pending upgrade proposal, if one is active. (#316)
+    ///
+    /// This is the public monitoring hook for the two-step timelocked upgrade.
+    /// Users and watchtowers should poll it (or subscribe to
+    /// [`UpgradeScheduledEvent`]) to learn about a scheduled code change while
+    /// there is still time to exit the vault or for the owner to call
+    /// [`cancel_upgrade`](crate::NeuroWealthVault::cancel_upgrade).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// * `Some((new_wasm_hash, effective_ledger))` while an upgrade is pending,
+    ///   where `new_wasm_hash` is the WASM that [`execute_upgrade`](crate::NeuroWealthVault::execute_upgrade) will
+    ///   activate and `effective_ledger` is the first ledger at which it may be
+    ///   executed.
+    /// * `None` when no upgrade is pending — either none was scheduled, or it
+    ///   was already executed or cancelled.
+    ///
+    /// A `Some(..)` result does **not** mean the contract code has changed; the
+    /// running code is only replaced by [`execute_upgrade`](crate::NeuroWealthVault::execute_upgrade). Compare the
+    /// returned hash against the WASM you expect before allowing the timelock
+    /// to elapse.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    ///
+    /// # Storage
+    ///
+    /// Reads [`DataKey::PendingUpgrade`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some((wasm_hash, effective_ledger)) = vault_client.get_pending_upgrade() {
+    ///     let ledgers_remaining = effective_ledger.saturating_sub(env.ledger().sequence());
+    ///     if wasm_hash != expected_wasm_hash {
+    ///         // Unexpected code scheduled - cancel within the timelock window.
+    ///         vault_client.cancel_upgrade(&owner);
+    ///     }
+    ///     let _ = ledgers_remaining;
+    /// }
+    /// ```
+    pub fn get_pending_upgrade(env: Env) -> Option<(BytesN<32>, u32)> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::PendingUpgrade)
+    }
+
+    // ==========================================================================
+    // READ FUNCTIONS
+    // ==========================================================================
+
+    /// Reads a user's share balance from persistent storage (no TTL side effects).
+    fn read_shares(env: &Env, user: &Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128)
+    }
+
+    /// Records `user` in the active-share index the first time they hold
+    /// non-zero shares (Issue #440).
+    ///
+    /// The index is an append-only `Vec<Address>` in instance storage. Entries
+    /// are never removed, so a user who fully withdraws keeps their slot; the
+    /// `contains` guard keeps the index duplicate-free when such a user later
+    /// re-deposits. `get_users_with_shares` filters the stale zero-share slots
+    /// out at read time. See that function for the pagination trade-off.
+    fn add_to_user_index(env: &Env, user: &Address) {
+        let mut index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap_or_else(|| Vec::new(env));
+        if !index.contains(user) {
+            index.push_back(user.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::UserSharesIndex, &index);
+        }
+    }
+
+    /// Remove a user from the UserSharesIndex when their shares reach zero.
+    /// This is called on full withdrawal to prevent append-only index growth
+    /// and the associated CPU/memory degradation (Issue #440).
+    ///
+    /// Uses a linear scan with rebuild: O(n) but executed infrequently (only
+    /// on full withdrawal). For n >> 500, consider a secondary hash-based
+    /// removal index in a future optimization.
+    fn prune_user_from_index(env: &Env, user: &Address) {
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap_or_else(|| Vec::new(env));
+
+        // Fast path: if user not in index, nothing to do
+        if !index.contains(user) {
+            return;
+        }
+
+        // Rebuild the index without the user
+        let mut new_index = Vec::new(env);
+        for addr in index.iter() {
+            if addr != *user {
+                new_index.push_back(addr);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UserSharesIndex, &new_index);
+    }
+
+    /// Reads the stored `(max_consecutive_failures, consecutive_failures)`
+    /// circuit-breaker state, falling back to
+    /// `(DEFAULT_MAX_CONSECUTIVE_FAILURES, 0)` for instances initialized
+    /// before the circuit breaker existed.
+    fn read_circuit_breaker_state(env: &Env) -> (u32, u32) {
+        env.storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerState)
+            .unwrap_or((DEFAULT_MAX_CONSECUTIVE_FAILURES, 0))
+    }
+
+    /// Returns the effective circuit-breaker threshold (Issue #439), falling
+    /// back to [`DEFAULT_MAX_CONSECUTIVE_FAILURES`] for instances initialized
+    /// before the circuit breaker existed.
+    fn effective_max_consecutive_failures(env: &Env) -> u32 {
+        Self::read_circuit_breaker_state(env).0
+    }
+
+    /// Updates the owner-configurable threshold while preserving the current
+    /// running failure count.
+    fn write_max_consecutive_failures(env: &Env, threshold: u32) {
+        let (_old_threshold, failures) = Self::read_circuit_breaker_state(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerState, &(threshold, failures));
+    }
+
+    /// Updates the running failure counter while preserving the configured
+    /// threshold.
+    fn write_consecutive_failures(env: &Env, failures: u32) {
+        let (threshold, _old_failures) = Self::read_circuit_breaker_state(env);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerState, &(threshold, failures));
+    }
+
+    /// Folds a rebalance outcome into the consecutive-failure circuit breaker
+    /// (Issue #439).
+    ///
+    /// A `"failed"` status increments the counter; a `"success"` status resets
+    /// it to zero. `"partial"` and `"noop"` outcomes leave the counter
+    /// unchanged. When the counter reaches
+    /// [`DataKey::CircuitBreakerState`]'s threshold the vault auto-pauses by
+    /// setting the shared [`DataKey::Paused`] flag and emitting the existing
+    /// [`EmergencyPausedEvent`]. The pause is applied at most once per trip: if
+    /// the vault is already paused no duplicate event is emitted.
+    fn record_rebalance_outcome(env: &Env, status: &Symbol) {
+        if status == &symbol_short!("failed") {
+            let (threshold, current_failures) = Self::read_circuit_breaker_state(env);
+            let failures = current_failures.saturating_add(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerState, &(threshold, failures));
+
+            if failures >= threshold {
+                let already_paused: bool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Paused)
+                    .unwrap_or(false);
+                if !already_paused {
+                    env.storage().instance().set(&DataKey::Paused, &true);
+                    let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+                    env.events()
+                        .publish((TOPIC_EMERGENCY_PAUSED,), EmergencyPausedEvent { owner });
+                }
+            }
+        } else if status == &symbol_short!("success") {
+            Self::write_consecutive_failures(env, 0);
+        }
+    }
+
+    /// Extends the persistent TTL for a user's persistent entries when they exist (#1045).
+    fn extend_user_shares_ttl(env: &Env, user: &Address) {
+        let shares_key = DataKey::Shares(user.clone());
+        if env.storage().persistent().has(&shares_key) {
+            env.storage().persistent().extend_ttl(
+                &shares_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let lock_key = DataKey::LockState(user.clone());
+        if env.storage().persistent().has(&lock_key) {
+            env.storage().persistent().extend_ttl(
+                &lock_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let last_dep_key = DataKey::LastDepositLedger(user.clone());
+        if env.storage().persistent().has(&last_dep_key) {
+            env.storage().persistent().extend_ttl(
+                &last_dep_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let snapshot_key = DataKeyExt::DepositSnapshot(user.clone());
+        if env.storage().persistent().has(&snapshot_key) {
+            env.storage().persistent().extend_ttl(
+                &snapshot_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let strategy_key = DataKey::UserStrategy(user.clone());
+        if env.storage().persistent().has(&strategy_key) {
+            env.storage().persistent().extend_ttl(
+                &strategy_key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        let supported_assets: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(env));
+        for asset in supported_assets.iter() {
+            let asset_shares_key = MultiAssetKey::Shares(user.clone(), asset);
+            if env.storage().persistent().has(&asset_shares_key) {
+                env.storage().persistent().extend_ttl(
+                    &asset_shares_key,
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+            }
+        }
+    }
+
+    /// Reduces `TotalDeposits` by `amount`, flooring at zero.
+    ///
+    /// `TotalDeposits` tracks principal only. On withdrawal the returned amount
+    /// may include accrued yield, so the subtraction is saturating rather than
+    /// exact to avoid underflow.
+    fn reduce_total_deposits_on_withdraw(env: &Env, amount: i128) {
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalDeposits,
+            &total.saturating_sub(amount).max(0_i128),
+        );
+    }
+
+    /// Returns the USDC balance of a specific user.
+    ///
+    /// This is the user's claim on the vault's total managed assets, based
+    /// on their share balance. It includes any yield that has been accrued
+    /// and reflected in `TotalAssets`.
+    ///
+    /// This is a pure read and does not extend persistent storage TTL. See
+    /// `touch_user_ttl` for explicit TTL maintenance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address to query.
+    ///
+    /// # Returns
+    ///
+    /// Returns the user's USDC-equivalent balance in raw units (7 decimal places).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_balance(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        if shares == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(&env);
+        let total_assets = Self::get_total_assets_internal(&env);
+
+        if total_shares == 0 || total_assets == 0 {
+            0
+        } else {
+            // User's pro-rata claim: (user_shares / total_shares) * total_assets
+            shares
+                .checked_mul(total_assets)
+                .expect("vault: share to asset conversion overflow")
+                .checked_div(total_shares)
+                .expect("vault: conversion div error")
+        }
+    }
+
+    /// Returns the total USDC principal deposited in the vault (issue #299).
+    ///
+    /// **Relationship between `TotalDeposits`, `TotalAssets`, and shares:**
+    ///
+    /// | Value | Includes yield? | Used for |
+    /// |---|---|---|
+    /// | `TotalDeposits` | No  | Principal bookkeeping and reporting only |
+    /// | `TotalAssets`   | Yes | Share pricing, TVL cap guard, user balances |
+    ///
+    /// After `update_total_assets()` is called to reflect external yield,
+    /// `TotalAssets >= TotalDeposits`.  All economic quantities — share minting,
+    /// user redemption amounts, and the TVL cap check — use `TotalAssets`, never
+    /// `TotalDeposits`.  `TotalDeposits` is intentionally not synced on yield
+    /// updates; it is a principal-only counter useful for reporting.
+    ///
+    /// See also: `get_total_assets()`, ARCHITECTURE.md §"TotalDeposits vs TotalAssets".
+    ///
+    /// # Returns
+    ///
+    /// Returns total USDC principal deposits in raw units (7 decimal places).
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_total_deposits(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128)
+    }
+
+    /// Returns the total managed assets of the vault (principal + yield).
+    ///
+    /// This value is used for share pricing and reflects the full value
+    /// backing all outstanding shares.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the total managed assets.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_total_assets(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_total_assets_internal(&env)
+    }
+
+    /// Returns the total number of shares in circulation.
+    ///
+    /// This is the sum of all user shares and represents proportional ownership
+    /// of the vault's total assets.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the total number of shares.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_total_shares(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        Self::get_total_shares_internal(&env)
+    }
+
+    /// Returns the share balance of a specific user.
+    ///
+    /// This is the number of vault shares the user owns.
+    ///
+    /// This is a pure read and does not extend persistent storage TTL. Call
+    /// `touch_user_ttl` when an off-chain maintainer or indexer needs to
+    /// refresh rent for a user's `Shares` entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of shares the user owns.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_shares(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+        Self::read_shares(&env, &user)
+    }
+
+    /// Returns a paginated slice of `(user, shares)` pairs for holders with a
+    /// positive share balance, for off-chain indexer support (Issue #440).
+    ///
+    /// The vault maintains an append-only index of every address that has ever
+    /// held non-zero shares (populated on deposit).
+    ///
+    /// # Pagination and the stale-entry trade-off
+    ///
+    /// Pagination is applied over the **raw index positions** `[start, start +
+    /// limit)`, and the `shares > 0` filter is applied *within* that window. The
+    /// index is never pruned on withdrawal, so a fully-withdrawn holder keeps its
+    /// slot as a zero-share entry that is filtered out here. This keeps writes
+    /// cheap (deposits only ever append, and only for genuinely new holders) at
+    /// the cost of two documented read-time behaviours:
+    ///
+    /// - A page may return **fewer than `limit`** entries (or even be empty) while
+    ///   later pages still hold results, because stale slots occupy positions.
+    /// - Callers walk pages by advancing `start` by `limit` until an empty index
+    ///   window is returned (i.e. `start >= total index length`), not until a
+    ///   short page is seen.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `start` - Zero-based index offset to begin the page at.
+    /// * `limit` - Requested number of index slots to scan. Values above
+    ///   [`MAX_USERS_PER_PAGE`] are clamped to that bound.
+    ///
+    /// # Returns
+    ///
+    /// A pair containing holders in insertion order and the raw index offset for
+    /// the next page. The hint is `None` once the end is reached. The vector is
+    /// empty when `limit == 0` or `start` is beyond the end of the index.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    pub fn get_users_with_shares(
+        env: Env,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<(Address, i128)>, Option<u32>) {
+        Self::require_initialized(&env);
+
+        let mut result: Vec<(Address, i128)> = Vec::new(&env);
+        if limit == 0 {
+            return (result, None);
+        }
+
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = index.len();
+        if start >= len {
+            return (result, None);
+        }
+        let bounded_limit = core::cmp::min(limit, MAX_USERS_PER_PAGE);
+        let end = core::cmp::min(start.saturating_add(bounded_limit), len);
+
+        for i in start..end {
+            let user = index.get(i).unwrap();
+            let shares = Self::read_shares(&env, &user);
+            if shares > 0 {
+                result.push_back((user, shares));
+            }
+        }
+
+        let next_start = if end < len { Some(end) } else { None };
+        (result, next_start)
+    }
+
+    /// Extends the persistent TTL for a user's `Shares` entry.
+    ///
+    /// Off-chain indexers and maintenance jobs should call this instead of relying
+    /// on read-only getters (`get_balance`, `get_shares`) to keep user share data
+    /// from expiring. State-changing calls such as `deposit` and `withdraw` already
+    /// rewrite `Shares` and refresh TTL as part of normal ledger writes.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user whose share entry TTL should be extended.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if a `Shares` entry existed and TTL was extended; `false` otherwise.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If `user` does not authorize the invocation.
+    /// - [`VaultError::RateLimitExceeded`] if this user's TTL bucket is exhausted.
+    ///
+    /// # Storage
+    ///
+    /// Extends the TTL of [`DataKey::Shares`] in persistent storage when the
+    /// entry exists. Never creates an entry, so calling this for an address
+    /// that has never deposited is a cheap no-op returning `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Keeper job: refresh every tracked holder, skipping addresses that
+    /// // hold no shares.
+    /// for user in tracked_users {
+    ///     if !vault_client.touch_user_ttl(&user) {
+    ///         // No Shares entry - drop the address from the keeper set.
+    ///     }
+    /// }
+    /// ```
+    pub fn touch_user_ttl(env: Env, user: Address) -> bool {
+        Self::require_initialized(&env);
+        // Auth required: the rate-limit bucket below writes a per-user key to
+        // instance storage, and without auth anyone could grow that map without
+        // bound by rotating fresh addresses.
+        user.require_auth();
+        // Count maintenance attempts even when the requested entry is absent;
+        // otherwise an attacker could use missing-user probes as a cheap DoS.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
+
+        let has_shares = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Shares(user.clone()));
+        let has_lock = env
+            .storage()
+            .persistent()
+            .has(&DataKey::LockState(user.clone()));
+        let has_deposit = env
+            .storage()
+            .persistent()
+            .has(&DataKey::LastDepositLedger(user.clone()));
+        let has_snapshot = env
+            .storage()
+            .persistent()
+            .has(&DataKeyExt::DepositSnapshot(user.clone()));
+        let has_strategy = env
+            .storage()
+            .persistent()
+            .has(&DataKey::UserStrategy(user.clone()));
+
+        let mut has_asset_shares = false;
+        let supported_assets: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(&env));
+        for asset in supported_assets.iter() {
+            if env
+                .storage()
+                .persistent()
+                .has(&MultiAssetKey::Shares(user.clone(), asset))
+            {
+                has_asset_shares = true;
+                break;
+            }
+        }
+
+        if !has_shares && !has_lock && !has_deposit && !has_snapshot && !has_strategy && !has_asset_shares {
+            return false;
+        }
+
+        Self::extend_user_shares_ttl(&env, &user);
+        true
+    }
+
+    /// Extends the persistent TTL for a user's multi-asset `Shares` entry (#1045).
+    pub fn touch_user_asset_ttl(env: Env, user: Address, asset: Symbol) -> bool {
+        Self::require_initialized(&env);
+        user.require_auth();
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_TOUCH_TTL);
+        let key = MultiAssetKey::Shares(user, asset);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(
+                &key,
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns both the principal balance and share balance for a user.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - The user address.
+    ///
+    /// # Returns
+    ///
+    /// Returns `UserInfo` containing principal and shares.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_user_info(env: Env, user: Address) -> UserInfo {
+        Self::require_initialized(&env);
+        let shares = Self::read_shares(&env, &user);
+        let principal = Self::convert_to_assets_internal(&env, shares);
+
+        UserInfo { principal, shares }
+    }
+
+    /// Previews the number of shares that would be minted for a given deposit.
+    ///
+    /// Uses **floor** rounding, matching `deposit`: the caller may receive
+    /// fractionally fewer shares than exact division would give, and the
+    /// remainder accrues to the vault. This is the ERC-4626 convention.
+    ///
+    /// Read-only, but the preview is only valid for the current ledger state —
+    /// a deposit, withdrawal, or `update_total_assets` landing in between can
+    /// move the share price. Frontends should re-read immediately before
+    /// submitting.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `assets` - The amount of USDC to deposit, in raw units (7 decimals).
+    ///
+    /// # Returns
+    ///
+    /// The number of shares that would be minted:
+    /// `floor(assets * total_shares / total_assets)`, or `assets` in the
+    /// bootstrap case where `total_shares == 0` or `total_assets == 0`.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the intermediate `assets * total_shares` product overflows `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Vault holding 1,100 USDC against 1,000 shares (10% yield accrued).
+    /// // Depositing 110 USDC mints ~100 shares.
+    /// let shares = vault_client.preview_deposit_to_shares(&1_100_000_000);
+    /// ```
+    pub fn preview_deposit_to_shares(env: Env, assets: i128) -> i128 {
+        Self::require_initialized(&env);
+        Self::convert_to_shares_internal(&env, assets)
+    }
+
+    /// Previews the USDC value of a given number of shares.
+    ///
+    /// Uses **floor** rounding, matching the redemption path. Use this to show
+    /// a holder's current position value; use [`preview_withdraw`](crate::NeuroWealthVault::preview_withdraw) to
+    /// show how many shares a *target withdrawal amount* would burn.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `shares` - The number of vault shares to value.
+    ///
+    /// # Returns
+    ///
+    /// `floor(shares * total_assets / total_shares)` in USDC raw units
+    /// (7 decimals), or `0` when the vault holds no shares or no assets.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the intermediate `shares * total_assets` product overflows `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Display a user's position in USDC.
+    /// let shares = vault_client.get_shares(&user);
+    /// let value = vault_client.preview_shares_to_assets(&shares);
+    /// ```
+    pub fn preview_shares_to_assets(env: Env, shares: i128) -> i128 {
+        Self::require_initialized(&env);
+        Self::convert_to_assets_internal(&env, shares)
+    }
+
+    /// Previews the number of shares that would be burned for a given asset withdrawal.
+    ///
+    /// Unlike `preview_deposit_to_shares` (which uses floor), this function uses
+    /// ceiling division to match the actual `withdraw` behavior (ceil burn).
+    /// This ensures frontends can accurately display expected share burn before
+    /// a user submits a withdrawal transaction.
+    ///
+    /// NOTE: In partial liquidity scenarios (when Blend returns less than requested),
+    /// the actual shares burned may differ from this preview. This preview always
+    /// assumes full liquidity is available.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `assets` - The amount of USDC to withdraw (7 decimal places).
+    ///
+    /// # Returns
+    ///
+    /// The number of shares that would be burned:
+    /// `ceil(assets * total_shares / total_assets)`. Always at least `1` when
+    /// `assets > 0`, which is what makes dust withdrawals non-free.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the intermediate `assets * total_shares` product overflows `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Show the user the share cost of a withdrawal before they confirm.
+    /// let shares_burned = vault_client.preview_withdraw(&amount);
+    /// assert!(shares_burned <= vault_client.get_shares(&user));
+    ///
+    /// // Ceil burn: preview_withdraw is never smaller than the floor-rounded
+    /// // conversion of the same amount.
+    /// assert!(shares_burned >= vault_client.convert_to_shares(&amount));
+    /// ```
+    pub fn preview_withdraw(env: Env, assets: i128) -> i128 {
+        Self::require_initialized(&env);
+        Self::convert_to_shares_internal_ceil(&env, assets)
+    }
+
+    /// Converts a USDC amount to shares at the current share price.
+    ///
+    /// The ERC-4626 `convertToShares` equivalent: an idealised, fee-free
+    /// conversion for accounting and display. It is identical to
+    /// [`preview_deposit_to_shares`](crate::NeuroWealthVault::preview_deposit_to_shares) in this vault because deposits carry
+    /// no fee, and both round **down**. When previewing a *withdrawal*, use
+    /// [`preview_withdraw`](crate::NeuroWealthVault::preview_withdraw) instead — that path rounds up.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `assets` - The USDC amount in raw units (7 decimals).
+    ///
+    /// # Returns
+    ///
+    /// `floor(assets * total_shares / total_assets)`, or `assets` in the
+    /// bootstrap case where `total_shares == 0` or `total_assets == 0`.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the intermediate `assets * total_shares` product overflows `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Round-tripping is lossy in the vault's favour, never the user's.
+    /// let shares = vault_client.convert_to_shares(&assets);
+    /// assert!(vault_client.convert_to_assets(&shares) <= assets);
+    /// ```
+    pub fn convert_to_shares(env: Env, assets: i128) -> i128 {
+        Self::require_initialized(&env);
+        Self::convert_to_shares_internal(&env, assets)
+    }
+
+    /// Converts a share amount to USDC at the current share price.
+    ///
+    /// The ERC-4626 `convertToAssets` equivalent, identical to
+    /// [`preview_shares_to_assets`](crate::NeuroWealthVault::preview_shares_to_assets) in this vault. Rounds **down**.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `shares` - The number of vault shares.
+    ///
+    /// # Returns
+    ///
+    /// `floor(shares * total_assets / total_shares)` in USDC raw units
+    /// (7 decimals), or `0` when the vault holds no shares or no assets.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the intermediate `shares * total_assets` product overflows `i128`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Value the whole supply: equals total_assets up to floor rounding.
+    /// let all = vault_client.convert_to_assets(&vault_client.get_total_shares());
+    /// assert!(all <= vault_client.get_total_assets());
+    /// ```
+    pub fn convert_to_assets(env: Env, shares: i128) -> i128 {
+        Self::require_initialized(&env);
+        Self::convert_to_assets_internal(&env, shares)
+    }
+
+    /// Returns the user's realized APY in basis points since their first
+    /// deposit (#462).
+    ///
+    /// APY is computed from the first-deposit snapshot recorded in `deposit`:
+    ///
+    /// ```text
+    /// growth_bps = (current_value_of_snapshot_shares / principal - 1) * 10_000
+    /// apy_bps    = growth_bps * 365 / days_held
+    /// ```
+    ///
+    /// where `days_held` is the whole days elapsed since the snapshot (at
+    /// least 1). Users with no snapshot (e.g. funded via `batch_deposit`),
+    /// zero shares, or a holding period under a day return `0`. Purely a
+    /// read-only view: it never touches storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The address whose realized APY should be computed.
+    ///
+    /// # Returns
+    ///
+    /// Realized APY in basis points (10000 = 100%). Negative when the
+    /// position has lost value since the snapshot.
+    pub fn get_user_apy(env: Env, user: Address) -> i128 {
+        Self::require_initialized(&env);
+
+        let snapshot: Option<DepositSnapshot> = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt::DepositSnapshot(user.clone()));
+        let Some(snapshot) = snapshot else {
+            return 0;
+        };
+        if snapshot.shares <= 0 || snapshot.principal <= 0 {
+            return 0;
+        }
+
+        let now = env.ledger().timestamp();
+        let held_seconds = now.saturating_sub(snapshot.deposited_at);
+        if held_seconds < 86_400 {
+            // APY over a sub-day window is noise; report zero.
+            return 0;
+        }
+
+        // Current value of the shares held at the snapshot, floored like every
+        // other share-to-asset conversion in the vault.
+        let current_value = Self::convert_to_assets_internal(&env, snapshot.shares);
+
+        // growth_bps, in integer arithmetic to avoid float drift:
+        // (current_value / principal - 1) * 10_000.
+        let growth_bps = current_value
+            .checked_mul(10_000)
+            .and_then(|v| v.checked_div(snapshot.principal))
+            .unwrap_or(0)
+            .saturating_sub(10_000);
+
+        let days_held = i128::from(held_seconds.checked_div(86_400).unwrap_or(1));
+        growth_bps
+            .checked_mul(365)
+            .and_then(|v| v.checked_div(days_held))
+            .unwrap_or(0)
+    }
+
+    /// Returns the authorized AI agent address.
+    ///
+    /// This is the only address that can call rebalance() to move funds
+    /// between yield strategies.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the agent's Address.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_agent(env: Env) -> Address {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::Agent).unwrap()
+    }
+
+    /// Returns the contract owner address.
+    ///
+    /// The owner can pause/unpause the vault, set limits, and upgrade the contract.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the owner's Address.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_owner(env: Env) -> Address {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    }
+
+    /// Returns whether the vault is currently paused.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns true if paused, false otherwise.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn is_paused(env: Env) -> bool {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Returns a read-only snapshot of vault health and operational state (#838).
+    ///
+    /// This function consolidates multiple health indicators into a single atomic
+    /// read to avoid cross-ledger inconsistencies when monitoring vault status.
+    /// It performs no storage mutations, emits no events, and has no authorization
+    /// side effects.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// A `VaultHealthSnapshot` containing:
+    /// - `initialized`: Whether the vault has been initialized
+    /// - `paused`: Emergency pause state
+    /// - `tvl_cap`: Maximum total value locked
+    /// - `total_assets`: Total managed assets (principal + yield)
+    /// - `total_shares`: Total vault shares in circulation
+    /// - `idle_assets`: Idle USDC balance (not deployed to protocols)
+    /// - `deployed_assets`: USDC deployed to external yield protocols
+    /// - `current_protocol`: Active protocol summary
+    /// - `active_failure_count`: Consecutive failed rebalances
+    /// - `pending_agent_update`: Whether agent rotation is pending
+    /// - `pending_upgrade`: Whether contract upgrade is pending
+    /// - `pending_ownership_transfer`: Whether ownership transfer is pending
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let snapshot = vault_client.get_vault_health_snapshot();
+    /// if !snapshot.paused && snapshot.active_failure_count < 3 {
+    ///     // Vault is healthy and operational
+    /// }
+    /// ```
+    pub fn get_vault_health_snapshot(env: Env) -> VaultHealthSnapshot {
+        // Check initialization without requiring it - return false if not initialized
+        let initialized = env.storage().instance().has(&DataKey::TotalAssets);
+
+        if !initialized {
+            return VaultHealthSnapshot {
+                initialized: false,
+                paused: false,
+                tvl_cap: 0,
+                total_assets: 0,
+                total_shares: 0,
+                idle_assets: 0,
+                deployed_assets: 0,
+                current_protocol: symbol_short!("none"),
+                active_failure_count: 0,
+                pending_agent_update: false,
+                pending_upgrade: false,
+                pending_ownership_transfer: false,
+            };
+        }
+
+        let paused = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        let tvl_cap = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(DEFAULT_TVL_CAP);
+
+        let total_assets = Self::get_total_assets_internal(&env);
+        let total_shares = Self::get_total_shares_internal(&env);
+
+        let idle_assets = {
+            let usdc: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+            token::Client::new(&env, &usdc).balance(&env.current_contract_address())
+        };
+
+        let deployed_assets = {
+            let protocol: Symbol = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentProtocol)
+                .unwrap_or(symbol_short!("none"));
+            Self::get_protocol_balance(&env, &protocol)
+        };
+
+        let current_protocol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        let active_failure_count = Self::read_circuit_breaker_state(&env).1;
+
+        let pending_agent_update = env.storage().instance().has(&DataKey::PendingAgentUpdate);
+        let pending_upgrade = env.storage().instance().has(&DataKey::PendingUpgrade);
+        let pending_ownership_transfer = env.storage().instance().has(&DataKey::PendingOwner);
+
+        VaultHealthSnapshot {
+            initialized: true,
+            paused,
+            tvl_cap,
+            total_assets,
+            total_shares,
+            idle_assets,
+            deployed_assets,
+            current_protocol,
+            active_failure_count,
+            pending_agent_update,
+            pending_upgrade,
+            pending_ownership_transfer,
+        }
+    }
+
+    /// Returns the contract version.
+    ///
+    /// Used to track upgrades and ensure compatibility with external systems.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the current contract version (u32).
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_version(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::Version).unwrap_or(1)
+    }
+
+    /// Returns the USDC token address.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the USDC token contract address.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_usdc_token(env: Env) -> Address {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::UsdcToken).unwrap()
+    }
+
+    /// Returns the current protocol where funds are deployed.
+    ///
+    /// This getter enables tests to verify storage state changes after rebalance()
+    /// instead of relying solely on event assertions.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the current protocol symbol (e.g., "blend", "none").
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_current_protocol(env: Env) -> Symbol {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"))
+    }
+
+    /// Returns the Blend pool contract address, if configured.
+    ///
+    /// This getter enables tests to verify storage state changes for the Blend
+    /// pool configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the Blend pool contract address, or None if not configured.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    pub fn get_blend_pool(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::BlendPool)
+    }
+
+    /// Returns the DEX liquidity pool contract address, if configured.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the DEX pool contract address, or None if not configured.
+    pub fn get_dex_pool(env: Env) -> Option<Address> {
+        Self::require_initialized(&env);
+        env.storage().instance().get(&DataKey::DexPool)
+    }
+
+    /// Returns the shared ledger TTL used when approving Blend token spend.
+    pub fn get_blend_approval_ttl(env: Env) -> u32 {
+        Self::require_initialized(&env);
+        Self::get_approval_ttl_internal(&env)
+    }
+
+    /// Returns the current exchange rate: assets per share, scaled by `EXCHANGE_RATE_SCALAR`.
+    ///
+    /// ## Formula
+    ///
+    /// ```text
+    /// exchange_rate = (total_assets * EXCHANGE_RATE_SCALAR) / total_shares
+    /// ```
+    ///
+    /// Where `EXCHANGE_RATE_SCALAR = 10_000_000` (7 decimal places, matching USDC
+    /// precision on Stellar).
+    ///
+    /// ### Bootstrap / Empty-vault case
+    ///
+    /// When `total_shares == 0` or `total_assets == 0` (i.e. the vault has never
+    /// had a deposit, or all funds have been withdrawn), the function returns
+    /// `EXCHANGE_RATE_SCALAR` (i.e. `1.0000000`), representing parity between one
+    /// share and one asset unit.  This prevents a division-by-zero panic and gives
+    /// external callers a well-defined initial price.
+    ///
+    /// ### Rounding
+    ///
+    /// Integer division truncates toward zero (floor rounding).  The result is
+    /// therefore always <= the true rational value, which is the conservative
+    /// direction for a vault: it never over-reports the share price.
+    ///
+    /// ### Interpretation
+    ///
+    /// A return value of `10_500_000` means each share is currently worth
+    /// `1.05` USDC (5% yield accrued since inception).
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// Returns the exchange rate as a scaled `i128`. Divide by `10_000_000` (7 decimal
+    /// places) to obtain the human-readable assets-per-share ratio.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - If the vault has not been initialized yet.
+    ///
+    /// ## Example (off-chain pseudo-code)
+    /// ```text
+    /// let rate = vault.get_exchange_rate();           // e.g. 10_500_000
+    /// let human_rate = rate as f64 / 10_000_000.0;   // → 1.05
+    /// let user_assets = user_shares as f64 * human_rate;
+    /// ```
+    pub fn get_exchange_rate(env: Env) -> i128 {
+        Self::require_initialized(&env);
+
+        /// Scalar used to preserve 7 decimal places of precision in the
+        /// integer result (matches USDC's 7-decimal precision on Stellar).
+        const EXCHANGE_RATE_SCALAR: i128 = 10_000_000;
+
+        let total_shares = Self::get_total_shares_internal(&env);
+        let total_assets = Self::get_total_assets_internal(&env);
+
+        // Bootstrap / empty-vault: return 1:1 parity (no division-by-zero).
+        if total_shares == 0 || total_assets == 0 {
+            return EXCHANGE_RATE_SCALAR;
+        }
+
+        // exchange_rate = (total_assets * SCALAR) / total_shares
+        // Floor-rounded (conservative – never over-reports share price).
+        total_assets
+            .checked_mul(EXCHANGE_RATE_SCALAR)
+            .expect("vault: exchange rate product overflow")
+            .checked_div(total_shares)
+            .expect("vault: exchange rate div overflow")
+    }
+
+    /// Returns the vault's idle USDC balance (funds sitting in the vault, not deployed).
+    ///
+    /// Idle funds are USDC held directly by the vault contract that have not yet
+    /// been deployed to an external yield protocol via `rebalance()`. This value
+    /// reflects the vault's on-chain token balance and decreases when the agent
+    /// deploys funds (e.g., to Blend) and increases after protocol withdrawals.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// The idle USDC balance in raw units (7 decimals), read live from the USDC
+    /// token contract.
+    ///
+    /// This is the token balance, not an accounting figure: it is not the same
+    /// as `get_total_assets() - get_deployed_assets()`, and it is the amount a
+    /// withdrawal can be served from without exiting a protocol position.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the USDC token contract traps on the `balance` call.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Can this withdrawal be served without touching the protocol position?
+    /// let instant = vault_client.get_idle_balance() >= amount;
+    /// ```
+    pub fn get_idle_balance(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        let usdc: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        token::Client::new(&env, &usdc).balance(&env.current_contract_address())
+    }
+
+    /// Returns the amount of USDC currently deployed to an external yield protocol.
+    ///
+    /// Deployed assets are funds that have been supplied to an external protocol
+    /// (e.g., Blend, DEX) via `rebalance()`. When `CurrentProtocol` is `"none"`,
+    /// no funds are deployed and this function returns `0`. The value is queried
+    /// live from the protocol's `balance` entrypoint.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// The deployed USDC amount in raw units (7 decimals), queried live from
+    /// the active protocol's `balance` entrypoint.
+    ///
+    /// Returns `0` when [`DataKey::CurrentProtocol`] is `"none"`, when it names
+    /// a protocol the vault does not integrate, or when the matching pool
+    /// address ([`DataKey::BlendPool`] / [`DataKey::DexPool`]) is unset — an
+    /// unconfigured pool reads as zero rather than panicking.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the configured pool contract traps on the cross-contract `balance`
+    ///   call. Because this is a cross-contract read, the call also costs more
+    ///   than a plain storage getter.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // Yield to date, ignoring rounding, once funds are deployed.
+    /// let deployed = vault_client.get_deployed_assets();
+    /// let idle = vault_client.get_idle_balance();
+    /// let unreported = (idle + deployed) - vault_client.get_total_assets();
+    /// ```
+    pub fn get_deployed_assets(env: Env) -> i128 {
+        Self::require_initialized(&env);
+        let protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+        Self::get_protocol_balance(&env, &protocol)
+    }
+
+    /// Returns the vault's asset breakdown as `(idle, deployed)`.
+    ///
+    /// Combines [`get_idle_balance`](crate::NeuroWealthVault::get_idle_balance) and [`get_deployed_assets`](crate::NeuroWealthVault::get_deployed_assets) into
+    /// a single call for convenience. Useful for dashboards and AI agents that need
+    /// both values atomically in one RPC round-trip.
+    ///
+    /// - `idle`:     USDC held directly by the vault contract (not in any protocol).
+    /// - `deployed`: USDC currently supplied to an external yield protocol.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Returns
+    ///
+    /// `(idle, deployed)`, both in USDC raw units (7 decimals). The two values
+    /// are read within one invocation, so they are consistent with each other —
+    /// unlike calling the two getters separately, which can straddle a
+    /// rebalance.
+    ///
+    /// Their sum is the vault's economic position and need not equal
+    /// [`get_total_assets`](crate::NeuroWealthVault::get_total_assets), which only moves when the agent reports it
+    /// via `update_total_assets`. A persistent gap means unreported yield.
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// - [`VaultError::NotInitialized`] if the vault has not been initialized.
+    /// - If the USDC token or the configured pool contract traps on its
+    ///   `balance` call.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let (idle, deployed) = vault_client.get_asset_breakdown();
+    /// let deployed_pct = if idle + deployed == 0 {
+    ///     0
+    /// } else {
+    ///     deployed * 100 / (idle + deployed)
+    /// };
+    /// ```
+    pub fn get_asset_breakdown(env: Env) -> (i128, i128) {
+        Self::require_initialized(&env);
+        let usdc: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let idle = token::Client::new(&env, &usdc).balance(&env.current_contract_address());
+        let protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+        let deployed = Self::get_protocol_balance(&env, &protocol);
+        (idle, deployed)
+    }
+
+    // ==========================================================================
+    // WITHDRAWAL QUEUE (#757)
+    // ==========================================================================
+
+    /// Configures the withdrawal queue parameters. Only the owner may call this.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment.
+    /// * `max_size` - Maximum number of pending requests (0 = unlimited).
+    /// * `ttl` - Request time-to-live in seconds; expired requests are skipped.
+    ///
+    /// # Events
+    /// Emits `QueueConfigUpdatedEvent`.
+    pub fn set_queue_config(env: Env, max_size: u32, ttl: u64) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let config = QueueConfig { max_size, ttl };
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::QueueConfig, &config);
+
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        env.events().publish(
+            (TOPIC_QUEUE_CONFIG_UPDATED,),
+            QueueConfigUpdatedEvent {
+                new_max_size: max_size,
+                new_ttl: ttl,
+                owner,
+            },
+        );
+    }
+
+    /// Returns the current queue configuration.
+    ///
+    /// Defaults to `(0, 0)` (unlimited size, no TTL) when never configured.
+    pub fn get_queue_config(env: Env) -> (u32, u64) {
+        Self::require_initialized(&env);
+        let config: QueueConfig = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueConfig)
+            .unwrap_or(QueueConfig {
+                max_size: 0,
+                ttl: 0,
+            });
+        (config.max_size, config.ttl)
+    }
+
+    /// Queues a withdrawal request for later processing by the agent.
+    ///
+    /// Returns the auto-incrementing request ID. The request is fulfilled
+    /// asynchronously when the agent calls `process_withdrawal_queue`.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment.
+    /// * `user` - Address of the user requesting withdrawal.
+    /// * `amount` - USDC amount in base units (7 decimals).
+    ///
+    /// # Panics
+    /// * If vault is paused.
+    /// * If user has insufficient shares.
+    /// * If queue is at capacity.
+    ///
+    /// # Events
+    /// Emits `WithdrawalQueuedEvent`.
+    pub fn queue_withdrawal(env: Env, user: Address, amount: i128) -> u32 {
+        Self::require_initialized(&env);
+        Self::require_not_paused(&env);
+        user.require_auth();
+
+        Self::require(&env, amount > 0, VaultError::AmountMustBePositive);
+
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+
+        // Locked shares (#636) cannot be queued for withdrawal, mirroring
+        // `burn_and_pay`'s `BurnAndPayMode::All` lock check (#990 -- this
+        // entrypoint never excluded locked shares at all before).
+        let (locked_shares, _lock_expiry) = Self::read_lock_state(&env, &user);
+        let available_shares = user_shares.checked_sub(locked_shares).unwrap_or(0);
+
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
+        let total_assets: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0);
+
+        // Ensure the user has enough shares to cover this request PLUS
+        // every other pending request they already have queued (#990).
+        // Without the reserved-amount check, a user could queue several
+        // requests that individually look affordable against their raw
+        // share balance but together exceed it.
+        let already_reserved = Self::read_reserved_withdrawal_amount(&env, &user);
+        let total_reserved_after = already_reserved
+            .checked_add(amount)
+            .expect("vault: reserved withdrawal amount overflow");
+        // True ceiling division — the exact inverse of get_balance's floor
+        // division (shares * total_assets / total_shares) — so that a
+        // request for a user's exact current balance resolves to exactly
+        // their current share count, never one more. `(x + y - 1) / y`
+        // rounds up only when there is a genuine remainder, unlike an
+        // unconditional `x / y + 1`, which would overshoot by a full share
+        // on an exact division and spuriously reject a legitimate
+        // full-balance withdrawal request with InsufficientSharesForAmount.
+        let shares_needed = if total_shares > 0 {
+            let numerator = total_reserved_after
+                .checked_mul(total_shares)
+                .expect("vault: shares overflow");
+            numerator
+                .checked_add(total_assets)
+                .expect("vault: shares overflow")
+                .checked_sub(1)
+                .expect("vault: shares underflow")
+                .checked_div(total_assets)
+                .expect("vault: divide by zero")
+        } else {
+            total_reserved_after
+        };
+
+        Self::require(
+            &env,
+            available_shares >= shares_needed,
+            VaultError::InsufficientSharesForAmount,
+        );
+
+        // Check queue capacity
+        let config: QueueConfig = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueConfig)
+            .unwrap_or(QueueConfig {
+                max_size: 0,
+                ttl: 0,
+            });
+
+        if config.max_size > 0 {
+            let order: Vec<u32> = env
+                .storage()
+                .instance()
+                .get(&DataKeyExt::QueueOrder)
+                .unwrap_or_else(|| Vec::new(&env));
+            Self::require(
+                &env,
+                order.len() < config.max_size,
+                VaultError::BatchSizeExceeded,
+            );
+        }
+
+        Self::adjust_reserved_withdrawal_amount(&env, &user, amount);
+
+        // Assign request ID
+        let next_id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::NextRequestId)
+            .unwrap_or(1u32);
+        let request_id = next_id;
+        env.storage().instance().set(
+            &DataKeyExt::NextRequestId,
+            &next_id.checked_add(1).expect("vault: queue id overflow"),
+        );
+
+        let timestamp = env.ledger().timestamp();
+        let request = WithdrawalRequest {
+            user: user.clone(),
+            amount,
+            fulfilled: false,
+            cancelled: false,
+            created_at: timestamp,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::WithdrawalRequest(request_id), &request);
+        env.storage().instance().extend_ttl(
+            USER_SHARES_TTL_THRESHOLD,
+            USER_SHARES_TTL_EXTEND_TO,
+        );
+
+        // Append to order queue
+        let mut order: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueOrder)
+            .unwrap_or_else(|| Vec::new(&env));
+        order.push_back(request_id);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::QueueOrder, &order);
+
+        env.events().publish(
+            (TOPIC_WITHDRAWAL_QUEUED,),
+            WithdrawalQueuedEvent {
+                request_id,
+                user,
+                amount,
+                timestamp,
+            },
+        );
+
+        request_id
+    }
+
+    /// Returns the withdrawal request for the given ID, or panics if not found.
+    pub fn get_withdrawal_request(env: Env, request_id: u32) -> WithdrawalRequest {
+        Self::require_initialized(&env);
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::WithdrawalRequest(request_id))
+            .expect("withdrawal request not found")
+    }
+
+    /// Cancels a pending withdrawal request. Only the request creator may cancel.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment.
+    /// * `user` - Address of the user who created the request.
+    /// * `request_id` - ID of the request to cancel.
+    ///
+    /// # Panics
+    /// * If the request does not exist, is already fulfilled, or was cancelled.
+    /// * If the caller is not the request creator.
+    ///
+    /// # Events
+    /// Emits `WithdrawalCancelledEvent`.
+    pub fn cancel_withdrawal_request(env: Env, user: Address, request_id: u32) {
+        Self::require_initialized(&env);
+        user.require_auth();
+
+        let request: WithdrawalRequest = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::WithdrawalRequest(request_id))
+            .expect("withdrawal request not found");
+
+        Self::require(
+            &env,
+            !request.fulfilled,
+            VaultError::WithdrawalRequestAlreadyFulfilled,
+        );
+        Self::require(
+            &env,
+            !request.cancelled,
+            VaultError::WithdrawalRequestAlreadyCancelled,
+        );
+        Self::require(&env, request.user == user, VaultError::NotRequestOwner);
+
+        Self::adjust_reserved_withdrawal_amount(&env, &user, 0_i128.saturating_sub(request.amount));
+
+        env.storage()
+            .instance()
+            .remove(&DataKeyExt::WithdrawalRequest(request_id));
+
+        let order: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueOrder)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut remaining = Vec::new(&env);
+        for id in order.iter() {
+            if id != request_id {
+                remaining.push_back(id);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::QueueOrder, &remaining);
+
+        env.events().publish(
+            (TOPIC_WITHDRAWAL_CANCELLED,),
+            WithdrawalCancelledEvent { request_id, user },
+        );
+    }
+
+    /// Returns the next withdrawal eligibility for a user (#846).
+    ///
+    /// This function provides a deterministic read value for when a queued or
+    /// cooldown-constrained withdrawal can next progress. It checks pause state,
+    /// minimum holding period, queue position, and share balance.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `user` - Address of the user to check.
+    ///
+    /// # Returns
+    ///
+    /// A `WithdrawalEligibility` containing:
+    /// - `eligible_ledger`: The ledger at which the user can next withdraw
+    /// - `eligible_now`: Whether the user can withdraw immediately
+    /// - `reason`: Reason for ineligibility (empty if eligible)
+    ///
+    /// # Events
+    ///
+    /// None.
+    ///
+    /// # Errors
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// None.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let eligibility = vault_client.get_withdrawal_eligibility(&user);
+    /// if eligibility.eligible_now {
+    ///     vault_client.withdraw(&user, &amount);
+    /// } else {
+    ///     println!("Can withdraw at ledger {}", eligibility.eligible_ledger);
+    /// }
+    /// ```
+    pub fn get_withdrawal_eligibility(env: Env, user: Address) -> WithdrawalEligibility {
+        // Check initialization without requiring it
+        let initialized = env.storage().instance().has(&DataKey::TotalAssets);
+
+        if !initialized {
+            return WithdrawalEligibility {
+                eligible_ledger: 0,
+                eligible_now: false,
+                reason: symbol_short!("not_init"),
+            };
+        }
+
+        let current_ledger = env.ledger().sequence();
+
+        // Check pause state
+        let paused = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        if paused {
+            return WithdrawalEligibility {
+                eligible_ledger: 0, // Unknown when pause will be lifted
+                eligible_now: false,
+                reason: symbol_short!("paused"),
+            };
+        }
+
+        // Check if user has shares
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0);
+
+        if user_shares == 0 {
+            return WithdrawalEligibility {
+                eligible_ledger: 0,
+                eligible_now: false,
+                reason: symbol_short!("no_shares"),
+            };
+        }
+
+        // Check minimum holding period
+        let min_holding_period: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinHoldingPeriod)
+            .unwrap_or(0);
+
+        if min_holding_period > 0 {
+            let last_deposit_ledger: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LastDepositLedger(user.clone()))
+                .unwrap_or(0);
+
+            if last_deposit_ledger > 0 {
+                let holding_elapsed = current_ledger.saturating_sub(last_deposit_ledger);
+                if holding_elapsed < min_holding_period {
+                    let eligible_ledger = last_deposit_ledger.saturating_add(min_holding_period);
+                    return WithdrawalEligibility {
+                        eligible_ledger,
+                        eligible_now: false,
+                        reason: symbol_short!("cooldown"),
+                    };
+                }
+            }
+        }
+
+        // Check if user has a pending withdrawal request in the queue
+        let order: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueOrder)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut user_position_in_queue: Option<u32> = None;
+        for (index, request_id) in order.iter().enumerate() {
+            if let Some(request) = env
+                .storage()
+                .instance()
+                .get::<_, WithdrawalRequest>(&DataKeyExt::WithdrawalRequest(request_id))
+            {
+                if request.user == user && !request.fulfilled && !request.cancelled {
+                    user_position_in_queue = u32::try_from(index).ok();
+                    break;
+                }
+            }
+        }
+
+        if let Some(position) = user_position_in_queue {
+            // User is in queue - estimate processing time based on position
+            // Assume batch processing of MAX_WITHDRAWAL_PROCESS_BATCH per call
+            const BATCH_SIZE: u32 = 10;
+            let estimated_batches = position
+                .checked_div(BATCH_SIZE)
+                .unwrap_or(0)
+                .saturating_add(1);
+            // Assume one batch per ledger (conservative estimate)
+            let eligible_ledger = current_ledger.saturating_add(estimated_batches);
+
+            return WithdrawalEligibility {
+                eligible_ledger,
+                eligible_now: false,
+                reason: symbol_short!("queue"),
+            };
+        }
+
+        // User is eligible to withdraw immediately
+        WithdrawalEligibility {
+            eligible_ledger: current_ledger,
+            eligible_now: true,
+            reason: symbol_short!(""),
+        }
+    }
+
+    /// Processes pending withdrawal requests in FIFO order. Any authenticated
+    /// caller may advance the queue so withdrawals cannot stall when the
+    /// configured operator is unavailable.
+    ///
+    /// Skips cancelled and expired requests. Processes up to `batch_size` requests.
+    /// Returns the number of requests successfully fulfilled.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment.
+    /// * `agent` - The authenticated caller (kept for ABI compatibility).
+    /// * `batch_size` - Requested number of requests to inspect, capped at
+    ///   [`MAX_WITHDRAWAL_PROCESS_BATCH`].
+    ///
+    /// # Events
+    /// Emits `WithdrawalFulfilledEvent` for each fulfilled request.
+    pub fn process_withdrawal_queue(env: Env, agent: Address, batch_size: u32) -> u32 {
+        Self::require_initialized(&env);
+        agent.require_auth();
+
+        let batch_size = core::cmp::min(batch_size, MAX_WITHDRAWAL_PROCESS_BATCH);
+        if batch_size == 0 {
+            return 0;
+        }
+
+        let config: QueueConfig = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueConfig)
+            .unwrap_or(QueueConfig {
+                max_size: 0,
+                ttl: 0,
+            });
+
+        let current_timestamp = env.ledger().timestamp();
+
+        let order: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::QueueOrder)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut processed = 0u32;
+        let mut new_order = Vec::new(&env);
+        let mut inspected = 0u32;
+
+        for id in order.iter() {
+            if inspected >= batch_size {
+                new_order.push_back(id);
+                continue;
+            }
+            inspected = inspected.saturating_add(1);
+
+            let Some(request): Option<WithdrawalRequest> = env
+                .storage()
+                .instance()
+                .get(&DataKeyExt::WithdrawalRequest(id))
+            else {
+                // Compact legacy queue entries whose records were already removed.
+                continue;
+            };
+
+            // Compact terminal records created by older contract versions.
+            if request.cancelled || request.fulfilled {
+                env.storage()
+                    .instance()
+                    .remove(&DataKeyExt::WithdrawalRequest(id));
+                continue;
+            }
+
+            // Expired requests are terminal and must not occupy storage forever.
+            if config.ttl > 0 && current_timestamp > request.created_at.saturating_add(config.ttl) {
+                Self::adjust_reserved_withdrawal_amount(
+                    &env,
+                    &request.user,
+                    0_i128.saturating_sub(request.amount),
+                );
+                env.storage()
+                    .instance()
+                    .remove(&DataKeyExt::WithdrawalRequest(id));
+                continue;
+            }
+
+            let usdc_token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::UsdcToken)
+                .unwrap_or_else(|| panic_with_error!(&env, VaultError::NotInitialized));
+            let vault_address = env.current_contract_address();
+            let available = token::Client::new(&env, &usdc_token).balance(&vault_address);
+            if available < request.amount {
+                new_order.push_back(id);
+                continue;
+            }
+
+            let (paid, _) = Self::burn_and_pay(
+                &env,
+                &request.user,
+                request.amount,
+                BurnAndPayMode::Requested,
+            );
+
+            Self::adjust_reserved_withdrawal_amount(
+                &env,
+                &request.user,
+                0_i128.saturating_sub(request.amount),
+            );
+
+            // Fulfil only after payment and share accounting have succeeded.
+            env.storage()
+                .instance()
+                .remove(&DataKeyExt::WithdrawalRequest(id));
+
+            processed = processed.saturating_add(1);
+
+            env.events().publish(
+                (TOPIC_WITHDRAWAL_FULFILLED,),
+                WithdrawalFulfilledEvent {
+                    request_id: id,
+                    user: request.user,
+                    amount: paid,
+                },
+            );
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::QueueOrder, &new_order);
+        env.storage().instance().set(
+            &DataKeyExt::WithdrawalQueueStorageVersion,
+            &WITHDRAWAL_QUEUE_STORAGE_VERSION,
+        );
+
+        processed
+    }
+
+    // ==========================================================================
+    // INTERNAL HELPERS
+    // ==========================================================================
+
+    // ── Multi-asset share conversion helpers (#646) ──────────────────────────
+
+    /// Reads the `AssetTotals` for an asset, returning a default if absent.
+    #[inline]
+    fn read_asset_totals(env: &Env, asset: &Symbol) -> AssetTotals {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::Totals(asset.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Reads the append-only supported-assets index (#646).
+    #[inline]
+    fn read_supported_assets(env: &Env) -> Vec<Symbol> {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::SupportedAssets)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Appends an asset symbol to the supported-assets index if absent (#646).
+    #[inline]
+    fn add_to_supported_assets_index(env: &Env, asset: &Symbol) {
+        let mut index = Self::read_supported_assets(env);
+        if !index.contains(asset) {
+            index.push_back(asset.clone());
+            env.storage()
+                .instance()
+                .set(&MultiAssetKey::SupportedAssets, &index);
+        }
+    }
+
+    /// Removes an asset symbol from the supported-assets index (#646).
+    #[inline]
+    fn remove_from_supported_assets_index(env: &Env, asset: &Symbol) {
+        let index = Self::read_supported_assets(env);
+        let mut kept = Vec::new(env);
+        for a in index.iter() {
+            if &a != asset {
+                kept.push_back(a);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&MultiAssetKey::SupportedAssets, &kept);
+    }
+
+    /// Returns `true` when the asset has been registered by the owner (#646).
+    #[inline]
+    #[allow(dead_code)]
+    fn is_asset_supported(env: &Env, asset: &Symbol) -> bool {
+        env.storage()
+            .instance()
+            .has(&MultiAssetKey::Config(asset.clone()))
+    }
+
+    /// Loads an owner-registered asset configuration or returns a typed error.
+    #[inline]
+    fn require_asset_config(env: &Env, asset: &Symbol) -> AssetConfig {
+        env.storage()
+            .instance()
+            .get(&MultiAssetKey::Config(asset.clone()))
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::UnsupportedAsset))
+    }
+
+    /// Converts shares to assets given pre-loaded pool totals (no re-read).
+    #[inline]
+    fn convert_to_asset_assets_internal_from_totals(
+        _env: &Env,
+        totals: &AssetTotals,
+        shares: i128,
+    ) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+        if totals.shares == 0 || totals.assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(totals.assets)
+                .expect("vault: asset share to asset overflow")
+                .checked_div(totals.shares)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Emits per-user `YieldAttributedEvent`s for a positive yield step (#654).
+    ///
+    /// Called by `update_total_assets` when the reported TotalAssets grows.
+    /// The increase is apportioned to every holder proportional to their share
+    /// of the vault and attributed to the protocol the vault is currently
+    /// deployed to. On-chain events only — no per-user per-period storage is
+    /// written (storage cost too high, per issue #654); the off-chain indexer
+    /// aggregates these events into per-period earnings reports.
+    fn emit_yield_attribution(env: &Env, total_yield: i128) {
+        if total_yield <= 0 {
+            return;
+        }
+        let total_shares: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128);
+        if total_shares == 0 {
+            return;
+        }
+        let protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+        let timestamp = env.ledger().timestamp();
+
+        let index: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserSharesIndex)
+            .unwrap_or_else(|| Vec::new(env));
+
+        let len = index.len();
+        let limit = core::cmp::min(len, MAX_USERS_PER_PAGE);
+
+        for i in 0..limit {
+            let user = index.get(i).unwrap();
+            let shares: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Shares(user.clone()))
+                .unwrap_or(0_i128);
+            if shares == 0 {
+                continue;
+            }
+            let yield_user = total_yield
+                .checked_mul(shares)
+                .expect("vault: yield attribution overflow")
+                .checked_div(total_shares)
+                .expect("vault: yield attribution div error");
+            if yield_user == 0 {
+                continue;
+            }
+            env.events().publish(
+                (TOPIC_YIELD_ATTRIBUTED, user.clone()),
+                YieldAttributedEvent {
+                    user: user.clone(),
+                    protocol: protocol.clone(),
+                    amount: yield_user,
+                    period: symbol_short!("since_dep"),
+                    timestamp,
+                },
+            );
+        }
+    }
+
+    /// Converts an asset amount to shares in the asset's share pool (floor).
+    #[inline]
+    fn convert_to_asset_shares_internal(env: &Env, asset: &Symbol, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            assets
+        } else {
+            assets
+                .checked_mul(totals.shares)
+                .expect("vault: asset share conversion overflow")
+                .checked_div(totals.assets)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Converts an asset amount to shares in the asset's share pool (ceiling).
+    #[inline]
+    fn convert_to_asset_shares_internal_ceil(env: &Env, asset: &Symbol, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            assets
+        } else {
+            let product = assets
+                .checked_mul(totals.shares)
+                .expect("vault: asset conversion mul overflow");
+            let numerator = product
+                .checked_add(
+                    totals
+                        .assets
+                        .checked_sub(1)
+                        .expect("vault: asset conversion sub underflow"),
+                )
+                .expect("vault: asset conversion add overflow");
+            numerator
+                .checked_div(totals.assets)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Converts shares in an asset's pool to the asset amount (floor).
+    #[inline]
+    fn convert_to_asset_assets_internal(env: &Env, asset: &Symbol, shares: i128) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+        let totals = Self::read_asset_totals(env, asset);
+        if totals.shares == 0 || totals.assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(totals.assets)
+                .expect("vault: asset share to asset overflow")
+                .checked_div(totals.shares)
+                .expect("vault: asset conversion div error")
+        }
+    }
+
+    /// Adds `amount` to the global TotalAssets and TotalDeposits counters (#646).
+    ///
+    /// Called by `deposit_asset` to keep the legacy global counters in sync with
+    /// per-asset accounting, so that `get_total_assets()` and TVL cap checks
+    /// reflect the full multi-asset position.
+    #[allow(dead_code)]
+    #[inline]
+    fn add_to_global_totals_on_deposit(env: &Env, amount: i128) {
+        let total_assets: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalAssets,
+            &(total_assets.saturating_add(amount)),
+        );
+
+        let total_deposits: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalDeposits,
+            &(total_deposits.saturating_add(amount)),
+        );
+    }
+
+    /// Subtracts `amount` from the global TotalAssets and TotalDeposits (#646).
+    #[allow(dead_code)]
+    #[inline]
+    fn reduce_global_totals_on_withdraw(env: &Env, amount: i128) {
+        let total_assets: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalAssets)
+            .unwrap_or(0_i128);
+        env.storage().instance().set(
+            &DataKey::TotalAssets,
+            &total_assets.saturating_sub(amount).max(0_i128),
+        );
+
+        Self::reduce_total_deposits_on_withdraw(env, amount);
+    }
+
+    /// Writes the default rate-limit policy during initialization.
+    ///
+    /// These defaults are intentionally generous enough for normal batching
+    /// and preview composition while still placing an on-chain ceiling on
+    /// high-frequency activity. The owner can tighten or disable every bucket
+    /// with `set_rate_limit`.
+    #[inline]
+    fn initialize_rate_limit_defaults(env: &Env) {
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_DEPOSIT),
+            &RateLimitConfig {
+                max_calls: DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_WITHDRAW),
+            &RateLimitConfig {
+                max_calls: DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_REBALANCE),
+            &RateLimitConfig {
+                max_calls: DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_REBALANCE_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_TOUCH_TTL),
+            &RateLimitConfig {
+                max_calls: DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_PREVIEW),
+            &RateLimitConfig {
+                max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage().instance().set(
+            &DataKey::RateLimitConfig(RATE_LIMIT_BATCH_DEPOSIT),
+            &RateLimitConfig {
+                max_calls: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
+            },
+        );
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
+    }
+
+    /// Returns whether `category` is one of the supported rate-limit buckets.
+    #[inline]
+    fn is_valid_rate_limit_category(category: &Symbol) -> bool {
+        category == &RATE_LIMIT_DEPOSIT
+            || category == &RATE_LIMIT_WITHDRAW
+            || category == &RATE_LIMIT_REBALANCE
+            || category == &RATE_LIMIT_TOUCH_TTL
+            || category == &RATE_LIMIT_PREVIEW
+            || category == &RATE_LIMIT_BATCH_DEPOSIT
+    }
+
+    /// Rejects unknown category symbols before they can create arbitrary
+    /// storage keys. This bounds the policy surface and prevents a caller from
+    /// accidentally configuring a bucket that no entrypoint consumes.
+    #[inline]
+    fn require_valid_rate_limit_category(env: &Env, category: &Symbol) {
+        Self::require(
+            env,
+            Self::is_valid_rate_limit_category(category),
+            VaultError::InvalidRateLimitCategory,
+        );
+    }
+
+    /// Returns the deployment default for a validated category.
+    #[inline]
+    fn default_rate_limit_config(category: &Symbol) -> RateLimitConfig {
+        if category == &RATE_LIMIT_DEPOSIT {
+            RateLimitConfig {
+                max_calls: DEFAULT_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_DEPOSIT_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_WITHDRAW {
+            RateLimitConfig {
+                max_calls: DEFAULT_WITHDRAW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_WITHDRAW_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_REBALANCE {
+            RateLimitConfig {
+                max_calls: DEFAULT_REBALANCE_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_REBALANCE_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_TOUCH_TTL {
+            RateLimitConfig {
+                max_calls: DEFAULT_TOUCH_TTL_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_TOUCH_TTL_RATE_LIMIT_WINDOW,
+            }
+        } else if category == &RATE_LIMIT_PREVIEW {
+            RateLimitConfig {
+                max_calls: DEFAULT_PREVIEW_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_PREVIEW_RATE_LIMIT_WINDOW,
+            }
+        } else {
+            RateLimitConfig {
+                max_calls: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_MAX_CALLS,
+                window_ledgers: DEFAULT_BATCH_DEPOSIT_RATE_LIMIT_WINDOW,
+            }
+        }
+    }
+
+    /// Reads one rate-limit configuration with a legacy-deployment fallback.
+    #[inline]
+    fn get_rate_limit_config_internal(env: &Env, category: &Symbol) -> RateLimitConfig {
+        Self::require_valid_rate_limit_category(env, category);
+        env.storage()
+            .instance()
+            .get(&DataKey::RateLimitConfig(category.clone()))
+            .unwrap_or_else(|| Self::default_rate_limit_config(category))
+    }
+
+    /// Reads a bucket without writing it. If its window has elapsed, returns a
+    /// fresh empty bucket; the next accepted call persists that reset.
+    #[inline]
+    fn read_rate_limit_state(
+        env: &Env,
+        category: &Symbol,
+        user: Option<&Address>,
+    ) -> RateLimitState {
+        let config = Self::get_rate_limit_config_internal(env, category);
+        if config.max_calls == 0 {
+            return RateLimitState {
+                window_start: 0,
+                calls: 0,
+            };
+        }
+
+        let state: Option<RateLimitState> = if let Some(user) = user {
+            env.storage()
+                .instance()
+                .get(&DataKeyExt::RateLimitUserState(
+                    user.clone(),
+                    category.clone(),
+                ))
+        } else {
+            env.storage()
+                .instance()
+                .get(&DataKey::RateLimitGlobalState(category.clone()))
+        };
+        let current_ledger = env.ledger().sequence();
+        match state {
+            Some(state)
+                if current_ledger.saturating_sub(state.window_start) < config.window_ledgers =>
+            {
+                state
+            }
+            Some(_) => RateLimitState {
+                window_start: current_ledger,
+                calls: 0,
+            },
+            None => RateLimitState {
+                window_start: 0,
+                calls: 0,
+            },
+        }
+    }
+
+    /// Checks and records one accepted call in a fixed-window bucket.
+    ///
+    /// The configuration is read once and the bucket is read once, then the
+    /// bucket is written once on success. User and global keys are both kept in
+    /// instance storage: this avoids TTL-expiry reset bypasses and means a
+    /// window reset overwrites an existing key rather than creating history.
+    #[inline]
+    fn enforce_rate_limit(env: &Env, category: Symbol, user: Option<&Address>) {
+        let config = Self::get_rate_limit_config_internal(env, &category);
+        if config.max_calls == 0 {
+            return;
+        }
+
+        // `DataKey` hit soroban-sdk's 50-variant `#[contracttype]` ceiling, so
+        // the per-user key lives in the newer `DataKeyExt` enum while the
+        // global key stayed in `DataKey` (#985-988 cleanup). The two key
+        // types differ, so the get/set pair is branched instead of unified
+        // behind one `key` variable.
+        let current_ledger = env.ledger().sequence();
+        let stored_state: Option<RateLimitState> = match user {
+            Some(user) => env
+                .storage()
+                .instance()
+                .get(&DataKeyExt::RateLimitUserState(
+                    user.clone(),
+                    category.clone(),
+                )),
+            None => env
+                .storage()
+                .instance()
+                .get(&DataKey::RateLimitGlobalState(category.clone())),
+        };
+        let mut state = match stored_state {
+            Some(state)
+                if current_ledger.saturating_sub(state.window_start) < config.window_ledgers =>
+            {
+                state
+            }
+            _ => RateLimitState {
+                window_start: current_ledger,
+                calls: 0,
+            },
+        };
+
+        if state.calls >= config.max_calls {
+            env.events().publish(
+                (TOPIC_RATE_LIMIT_HIT,),
+                RateLimitExceededEvent {
+                    category,
+                    user: user.cloned(),
+                    current_ledger,
+                    window_start: state.window_start,
+                    max_calls: config.max_calls,
+                    calls: state.calls,
+                },
+            );
+            panic_with_error!(env, VaultError::RateLimitExceeded);
+        }
+
+        state.calls = state.calls.saturating_add(1);
+        match user {
+            Some(user) => env.storage().instance().set(
+                &DataKeyExt::RateLimitUserState(user.clone(), category.clone()),
+                &state,
+            ),
+            None => env
+                .storage()
+                .instance()
+                .set(&DataKey::RateLimitGlobalState(category.clone()), &state),
+        }
+    }
+
+    /// Requires an adapter to be configured and the protocol to be whitelisted.
+    #[allow(dead_code)]
+    #[inline]
+    fn require_protocol_adapter_ready(env: &Env, protocol: &Symbol) {
+        let whitelisted: bool = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol.clone()))
+            .unwrap_or(false);
+        Self::require(env, whitelisted, VaultError::ProtocolNotWhitelisted);
+        let configured: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        Self::require(
+            env,
+            configured.is_some(),
+            VaultError::ProtocolAdapterNotConfigured,
+        );
+    }
+
+    /// Enforces a per-user call allowance.
+    #[inline]
+    fn enforce_user_rate_limit(env: &Env, user: &Address, category: Symbol) {
+        Self::enforce_rate_limit(env, category, Some(user));
+    }
+
+    /// Enforces a global call allowance.
+    #[inline]
+    fn enforce_global_rate_limit(env: &Env, category: Symbol) {
+        Self::enforce_rate_limit(env, category, None);
+    }
+
+    /// Returns the configured maximum batch size, falling back for upgraded
+    /// instances that predate the key.
+    #[inline]
+    fn get_max_batch_size_internal(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Rejects a batch that exceeds the owner-configured entry count.
+    #[inline]
+    fn require_batch_size(env: &Env, entries: u32) {
+        let max_entries = Self::get_max_batch_size_internal(env);
+        Self::require(
+            env,
+            max_entries == 0 || entries <= max_entries,
+            VaultError::BatchSizeExceeded,
+        );
+    }
+
+    /// Validates that the vault is not paused.
+    ///
+    /// # Panics
+    /// - If the vault is paused
+    #[inline]
+    fn require_not_paused(env: &Env) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        Self::require(env, !paused, VaultError::Paused);
+    }
+
+    /// Validates that the vault has been initialized.
+    ///
+    /// # Panics
+    /// - If the vault has not been initialized yet
+    #[inline]
+    fn require_initialized(env: &Env) {
+        Self::require(
+            env,
+            env.storage().instance().has(&DataKey::Agent)
+                && env.storage().instance().has(&DataKey::UsdcToken)
+                && env.storage().instance().has(&DataKey::Owner),
+            VaultError::NotInitialized,
+        );
+    }
+
+    /// Validates that the caller is the contract owner.
+    ///
+    /// # Panics
+    /// - If the caller is not the owner
+    #[inline]
+    fn require_is_owner(env: &Env) {
+        Self::require_initialized(env);
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+    }
+
+    /// Validates that `caller` is the AI agent or the standby agent (#653).
+    ///
+    /// When a standby agent key is configured, both the primary agent and the
+    /// standby agent are authorized to call `rebalance`, `harvest`,
+    /// `update_total_assets`, and `emergency_harvest`. This enables the
+    /// hot-standby pattern: either key can execute rebalances during normal
+    /// operation, and the owner can rotate between them with zero downtime.
+    ///
+    /// `caller` must be passed explicitly by the function invoking this
+    /// check (mirroring every other identity-checked entrypoint, e.g.
+    /// `pause(owner)`): Soroban's production `Env` has no API to introspect
+    /// which addresses authorized the current invocation
+    /// (`env.auths()`/`env.auth_contexts()` are test-only, gated behind the
+    /// `testutils` feature, and compiling this contract for Wasm without
+    /// that feature fails outright if either is called here). `require_auth`
+    /// is also not fallible, so there is no way to "try the primary key,
+    /// then try standby" without a caller-supplied identity to check against
+    /// the stored primary/standby addresses first.
+    ///
+    /// # Arguments
+    /// * `caller` - The address the entry point's caller claims to be. Must
+    ///   be either the primary agent or the standby agent, and must
+    ///   authorize this call.
+    ///
+    /// # Panics
+    /// - If `caller` is neither the primary agent nor the standby agent.
+    /// - If `caller` does not authorize this call.
+    ///
+    /// `env.auths()` (a `testutils`-only introspection of which addresses
+    /// signed, usable only in tests, never in a deployed contract) cannot be
+    /// used here: production code has no way to ask "who signed this
+    /// transaction" other than taking the claimed identity as a parameter and
+    /// calling `require_auth()` on it, which is why `caller` exists.
+    #[inline]
+    fn require_is_agent(env: &Env, caller: &Address) {
+        Self::require_initialized(env);
+
+        let agent: Address = env.storage().instance().get(&DataKey::Agent).unwrap();
+        let standby: Option<Address> = env.storage().instance().get(&DataKeyExt::StandbyAgent);
+
+        let is_agent = *caller == agent;
+        let is_standby = standby.as_ref().is_some_and(|s| caller == s);
+        Self::require(
+            env,
+            is_agent || is_standby,
+            VaultError::UnauthorizedAgentError,
+        );
+
+        caller.require_auth();
+    }
+
+    /// Validates that an amount is positive.
+    ///
+    /// # Panics
+    /// - If amount is <= 0
+    #[inline]
+    fn require_positive_amount(env: &Env, amount: i128) {
+        Self::require(env, amount > 0, VaultError::AmountMustBePositive);
+    }
+
+    /// Validates that a deposit meets the minimum requirement.
+    ///
+    /// Minimum deposit is read from storage (default 1 USDC).
+    ///
+    /// # Panics
+    /// - If amount < minimum deposit
+    #[inline]
+    fn require_minimum_deposit(env: &Env, amount: i128) {
+        let min_deposit: i128 = Self::get_min_deposit_internal(env);
+        Self::require(env, amount >= min_deposit, VaultError::BelowMinimumDeposit);
+    }
+
+    #[inline]
+    fn get_min_deposit_internal(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinDeposit)
+            .unwrap_or(DEFAULT_MIN_DEPOSIT)
+    }
+
+    /// Validates that a deposit is within the maximum limit.
+    ///
+    /// Maximum deposit is read from storage (default 10,000 USDC).
+    ///
+    /// # Panics
+    /// - If amount > maximum deposit
+    #[inline]
+    fn require_maximum_deposit(env: &Env, amount: i128) {
+        let max_deposit: i128 = Self::get_max_deposit_internal(env);
+        Self::require(
+            env,
+            amount <= max_deposit,
+            VaultError::MaximumDepositExceeded,
+        );
+    }
+
+    #[inline]
+    fn get_max_deposit_internal(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxDeposit)
+            .unwrap_or(DEFAULT_MAX_DEPOSIT)
+    }
+
+    #[inline]
+    fn get_approval_ttl_internal(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ApprovalTtl)
+            .or_else(|| env.storage().instance().get(&DataKey::BlendApprovalTtl))
+            .unwrap_or(DEFAULT_APPROVAL_TTL)
+    }
+
+    /// Announces the approval window that the just-persisted TTL creates
+    /// (Issue #847).
+    ///
+    /// The payload mirrors the arithmetic used by the Blend and DEX approve
+    /// paths (`ledger().sequence() + ttl`), so `expiry_ledger` always equals the
+    /// ledger the next approval will expire at. `lead_time` is capped at the
+    /// configured window: a TTL shorter than
+    /// [`APPROVAL_RENEWAL_LEAD_LEDGERS`] reports the full window as lead time
+    /// and a `renewal_deadline_ledger` equal to the current ledger, which tells
+    /// consumers to renew immediately.
+    ///
+    /// This function only publishes an event - it never extends or renews an
+    /// approval.
+    fn emit_approval_ttl_schedule(env: &Env, protocol: Symbol, ttl: u32) {
+        let current_ledger = env.ledger().sequence();
+        let expiry_ledger = current_ledger.saturating_add(ttl);
+        let lead_time = APPROVAL_RENEWAL_LEAD_LEDGERS.min(ttl);
+
+        env.events().publish(
+            (TOPIC_APPROVAL_TTL_SCHEDULED,),
+            ProtocolApprovalScheduledEvent {
+                protocol,
+                current_ledger,
+                approval_ttl: ttl,
+                expiry_ledger,
+                available_window: expiry_ledger.saturating_sub(current_ledger),
+                lead_time,
+                renewal_deadline_ledger: expiry_ledger.saturating_sub(lead_time),
+            },
+        );
+    }
+
+    /// Validates that a deposit is within the user's cap.
+    ///
+    /// The cap is enforced against the user's current **asset value** (shares ×
+    /// share price, which includes accrued yield), not just deposited principal.
+    /// This makes the per-user cap a true exposure limit: once yield pushes a
+    /// user's position to or above the cap, further deposits are rejected.
+    ///
+    /// # Panics
+    /// - If user's new asset value (current assets + deposit amount) would exceed the cap
+    #[inline]
+    fn require_within_deposit_cap(env: &Env, user: &Address, amount: i128) {
+        let cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128);
+        if cap > 0 {
+            let user_shares = Self::read_shares(env, user);
+            let user_usdc = Self::convert_to_assets_internal(env, user_shares);
+            let new_user_usdc = user_usdc
+                .checked_add(amount)
+                .expect("vault: total available overflow");
+            if new_user_usdc > cap {
+                panic_with_error!(env, VaultError::ExceedsUserDepositCap);
+            }
+        }
+    }
+
+    /// Validates that a deposit is within the TVL cap.
+    ///
+    /// Uses `TotalAssets` (principal + yield) so the cap reflects actual vault TVL
+    /// rather than just principal. After yield accrual, `TotalAssets` can exceed
+    /// `TotalDeposits`, and the cap check correctly accounts for that.
+    ///
+    /// # Panics
+    /// - If total assets plus the new deposit would exceed the TVL cap
+    #[inline]
+    fn require_within_tvl_cap(env: &Env, amount: i128) {
+        let cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128);
+        if cap > 0 {
+            let total = Self::get_total_assets_internal(env);
+            let new_total = total
+                .checked_add(amount)
+                .expect("vault: total available overflow");
+            if new_total > cap {
+                panic_with_error!(env, VaultError::ExceedsTvlCap);
+            }
+        }
+    }
+
+    /// Returns the current total shares in circulation.
+    #[inline]
+    fn get_total_shares_internal(env: &Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0_i128)
+    }
+
+    /// Returns the current total managed assets (principal + yield).
+    ///
+    /// If `TotalAssets` has not been explicitly set yet (e.g., right after
+    /// upgrade from a principal-only model), this falls back to `TotalDeposits`
+    /// to preserve continuity.
+    #[inline]
+    fn get_total_assets_internal(env: &Env) -> i128 {
+        match env.storage().instance().get(&DataKey::TotalAssets) {
+            Some(v) => v,
+            None => env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0_i128),
+        }
+    }
+
+    /// Internal helper: convert assets (USDC) to shares using current totals.
+    /// Uses floor division - safe for deposits (user gets fewer shares, vault benefits).
+    ///
+    /// # Inflation-attack note
+    /// Pricing reads the stored `TotalAssets` (see [`get_total_assets_internal`](crate::NeuroWealthVault::get_total_assets_internal)),
+    /// NOT the vault's live token balance. Direct "donations" (token transfers to
+    /// the vault that bypass `deposit`) therefore do not move the share price, so
+    /// the classic first-depositor/donation inflation attack does not apply here.
+    /// Virtual-share / dead-share offsets (common mitigations for balance-based
+    /// vaults) are unnecessary as a result. The `deposit` entrypoint additionally
+    /// rejects zero-share mints and enforces a minimum deposit; see [`deposit`](crate::NeuroWealthVault::deposit)
+    /// for the full mitigation rationale.
+    #[inline]
+    fn convert_to_shares_internal(env: &Env, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+
+        if total_shares == 0 || total_assets == 0 {
+            // Bootstrap: 1:1 mapping between assets and shares
+            // SECURITY: Reject when total_shares > 0 but total_assets == 0 (#973)
+            // This prevents dilution attack where new depositors get 1:1 shares
+            // while existing holders' shares are worthless.
+            if total_shares > 0 && total_assets == 0 {
+                panic_with_error!(env, VaultError::DepositRejectedZeroAssetsWithShares);
+            }
+            assets
+        } else {
+            assets
+                .checked_mul(total_shares)
+                .expect("vault: share conversion overflow")
+                .checked_div(total_assets)
+                .expect("vault: conversion div error")
+        }
+    }
+
+    /// Internal helper: convert assets (USDC) to shares using current totals.
+    /// Uses ceiling division - safe for withdrawals (user burns more shares, vault benefits).
+    /// Prevents dust attacks where floor division could result in 0 shares burned.
+    #[inline]
+    fn convert_to_shares_internal_ceil(env: &Env, assets: i128) -> i128 {
+        if assets == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+
+        if total_shares == 0 || total_assets == 0 {
+            // Bootstrap: 1:1 mapping between assets and shares
+            // Ceiling of assets is just assets (assets >= 1)
+            assets
+        } else {
+            // Ceiling division: (a + b - 1) / b
+            // shares = ceil(assets * total_shares / total_assets)
+            let product = assets
+                .checked_mul(total_shares)
+                .expect("vault: conversion mul overflow");
+            // total_assets >= 1 in this branch, so the subtraction cannot underflow;
+            // use checked ops throughout for a consistent, explicit failure mode.
+            let numerator = product
+                .checked_add(
+                    total_assets
+                        .checked_sub(1)
+                        .expect("vault: conversion sub underflow"),
+                )
+                .expect("vault: conversion add overflow");
+            numerator
+                .checked_div(total_assets)
+                .expect("vault: conversion div error")
+        }
+    }
+
+    /// Internal helper: convert shares to assets (USDC) using current totals.
+    #[inline]
+    fn convert_to_assets_internal(env: &Env, shares: i128) -> i128 {
+        if shares == 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+
+        if total_shares == 0 || total_assets == 0 {
+            0
+        } else {
+            shares
+                .checked_mul(total_assets)
+                .expect("vault: share to asset conversion overflow")
+                .checked_div(total_shares)
+                .expect("vault: conversion div error")
+        }
+    }
+
+    /// Enforces the flash-loan protection window (`MinHoldingPeriod`): panics
+    /// if `user` deposited too recently relative to the configured minimum
+    /// holding period (#659, #990). A no-op if no minimum is configured or
+    /// `user` has no recorded deposit ledger.
+    fn require_min_holding_period_elapsed(env: &Env, user: &Address) {
+        let min_holding: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinHoldingPeriod)
+            .unwrap_or(0_u32);
+        if min_holding == 0 {
+            return;
+        }
+        if let Some(last_deposit_ledger) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u32>(&DataKey::LastDepositLedger(user.clone()))
+        {
+            let current_ledger = env.ledger().sequence();
+            let elapsed = current_ledger.saturating_sub(last_deposit_ledger);
+            if elapsed < min_holding {
+                env.events().publish(
+                    (symbol_short!("fl_block"), user.clone()),
+                    FlashLoanProtectionTriggeredEvent {
+                        user: user.clone(),
+                        last_deposit_ledger,
+                        current_ledger,
+                        min_holding_period: min_holding,
+                    },
+                );
+                panic_with_error!(env, VaultError::HoldingPeriodNotElapsed);
+            }
+        }
+    }
+
+    /// Reads a user's total pending-withdrawal-request amount (#990).
+    #[inline]
+    fn read_reserved_withdrawal_amount(env: &Env, user: &Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ReservedWithdrawalAmount(user.clone()))
+            .unwrap_or(0_i128)
+    }
+
+    /// Adjusts a user's reserved-withdrawal total by `delta` (#990). `delta`
+    /// is negative to release a reservation (on cancel or fulfillment) and
+    /// positive to add one (on a new `queue_withdrawal` call). Floors at 0
+    /// rather than underflowing, since a defensive floor is safer than a
+    /// panic in bookkeeping that only ever gates a `require` check, not
+    /// actual fund movement.
+    fn adjust_reserved_withdrawal_amount(env: &Env, user: &Address, delta: i128) {
+        let current = Self::read_reserved_withdrawal_amount(env, user);
+        let updated = current.saturating_add(delta).max(0);
+        if updated == 0 {
+            env.storage()
+                .instance()
+                .remove(&DataKeyExt::ReservedWithdrawalAmount(user.clone()));
+        } else {
+            env.storage().instance().set(
+                &DataKeyExt::ReservedWithdrawalAmount(user.clone()),
+                &updated,
+            );
+        }
+    }
+
+    fn burn_and_pay(
+        env: &Env,
+        user: &Address,
+        assets_requested: i128,
+        mode: BurnAndPayMode,
+    ) -> (i128, i128) {
+        let user_shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Shares(user.clone()))
+            .unwrap_or(0_i128);
+        let no_shares_error = if mode == BurnAndPayMode::All {
+            VaultError::NoSharesToWithdraw
+        } else {
+            VaultError::InsufficientShares
+        };
+        Self::require(env, user_shares > 0, no_shares_error);
+
+        let (locked_shares, lock_expiry) = Self::read_lock_state(env, user);
+        let shares_for_redemption = if mode == BurnAndPayMode::All && locked_shares > 0 {
+            let unlocked_shares = user_shares
+                .checked_sub(locked_shares)
+                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
+            Self::require(env, unlocked_shares > 0, VaultError::InsufficientShares);
+            unlocked_shares
+        } else {
+            user_shares
+        };
+
+        if mode != BurnAndPayMode::Emergency {
+            Self::require_min_holding_period_elapsed(env, user);
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+        Self::require(
+            env,
+            total_shares > 0 && total_assets > 0,
+            VaultError::NoAssetsToWithdraw,
+        );
+
+        let requested = if mode == BurnAndPayMode::All {
+            Self::convert_to_assets_internal(env, shares_for_redemption)
+        } else {
+            assets_requested
+        };
+
+        // Dust shares (#993): a holder whose entire redeemable balance is
+        // worth less than 1 stroop would otherwise panic forever (`requested
+        // == 0` fails the liquidity/`NoAssetsToReturn` checks below with no
+        // way to recover) and stay stuck in `UserSharesIndex`, needing TTL
+        // extension indefinitely. `withdraw_all` is the only mode that can
+        // legitimately redeem a user's full position with a zero payout, so
+        // burn the dust here and prune the index, skipping the
+        // liquidity/transfer path entirely.
+        if mode == BurnAndPayMode::All && shares_for_redemption > 0 && requested == 0 {
+            let new_user_shares = user_shares
+                .checked_sub(shares_for_redemption)
+                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+            env.storage()
+                .persistent()
+                .set(&DataKey::Shares(user.clone()), &new_user_shares);
+            if new_user_shares == 0 {
+                Self::prune_user_from_index(env, user);
+            }
+            let new_total_shares = total_shares
+                .checked_sub(shares_for_redemption)
+                .expect("vault: withdrawal underflow");
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalShares, &new_total_shares);
+            return (0, shares_for_redemption);
+        }
+
+        if mode == BurnAndPayMode::Requested && locked_shares > 0 {
+            let unlocked_shares = user_shares
+                .checked_sub(locked_shares)
+                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
+            let max_withdrawable = Self::convert_to_assets_internal(env, unlocked_shares);
+            Self::require(
+                env,
+                requested <= max_withdrawable,
+                VaultError::InsufficientShares,
+            );
+        }
+
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let token_client = token::Client::new(env, &usdc_token);
+        let vault_address = env.current_contract_address();
+        let vault_balance = token_client.balance(&vault_address);
+        let mut assets_to_pay = requested;
+
+        if vault_balance < requested {
+            let active_protocol = current_protocol == symbol_short!("blend")
+                || current_protocol == symbol_short!("dex")
+                || current_protocol == symbol_short!("multi");
+            if active_protocol {
+                let needed = requested
+                    .checked_sub(vault_balance)
+                    .expect("vault: withdrawal underflow");
+                Self::withdraw_amount_from_protocol(env, &current_protocol, needed, 0);
+                let available = token_client.balance(&vault_address);
+                assets_to_pay = min(requested, available);
+            } else if mode == BurnAndPayMode::Emergency {
+                assets_to_pay = vault_balance;
+            }
+        }
+
+        match mode {
+            BurnAndPayMode::Requested => {
+                Self::require(env, assets_to_pay > 0, VaultError::InsufficientLiquidity);
+            }
+            BurnAndPayMode::All => {
+                Self::require(env, assets_to_pay > 0, VaultError::NoLiquidityAvailable);
+            }
+            BurnAndPayMode::Emergency => {
+                Self::require(env, assets_to_pay > 0, VaultError::InsufficientLiquidity);
+            }
+        }
+
+        let shares_to_burn = if mode == BurnAndPayMode::All && assets_to_pay == requested {
+            shares_for_redemption
+        } else {
+            Self::convert_to_shares_internal_ceil(env, assets_to_pay)
+        };
+        Self::require(
+            env,
+            shares_to_burn > 0,
+            VaultError::SharesToBurnMustBePositive,
+        );
+        Self::require(
+            env,
+            user_shares >= shares_to_burn,
+            VaultError::InsufficientSharesForAmount,
+        );
+
+        // Locked shares (from `lock_shares`) must never be burned before
+        // their lock expires, regardless of withdrawal mode. `All` mode
+        // already excludes locked shares from `shares_for_redemption` above;
+        // `Requested` and `Emergency` both burn against the user's raw share
+        // balance, so both need this explicit floor. Without it here,
+        // `emergency_withdraw` could silently drain a user's locked
+        // position during a pause, leaving `LockedShares(user) >
+        // Shares(user)` afterward.
+        if (mode == BurnAndPayMode::Requested || mode == BurnAndPayMode::Emergency)
+            && locked_shares > 0
+        {
+            let remaining_shares = user_shares
+                .checked_sub(shares_to_burn)
+                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+            Self::require(
+                env,
+                remaining_shares >= locked_shares,
+                VaultError::InsufficientShares,
+            );
+        }
+
+        // Ceil-burning shares followed by floor-converting them can produce
+        // more assets than requested when the share price is above one. Cap
+        // the transfer at the amount actually available/requested.
+        let paid = min(
+            Self::convert_to_assets_internal(env, shares_to_burn),
+            assets_to_pay,
+        );
+        Self::require(env, paid > 0, VaultError::NoAssetsToReturn);
+
+        let new_user_shares = user_shares
+            .checked_sub(shares_to_burn)
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shares(user.clone()), &new_user_shares);
+        if new_user_shares > 0 {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Shares(user.clone()),
+                USER_SHARES_TTL_THRESHOLD,
+                USER_SHARES_TTL_EXTEND_TO,
+            );
+        }
+        if new_user_shares == 0 {
+            Self::prune_user_from_index(env, user);
+        }
+
+        // Defensive backstop: LockedShares must never exceed the user's
+        // remaining Shares after any burn, in any mode. The guard above
+        // already prevents this for Requested/Emergency, and All mode's
+        // `shares_for_redemption` exclusion prevents it there too, but this
+        // clamp keeps the invariant true even if a future mode or code path
+        // forgets to apply the same protection.
+        if locked_shares > new_user_shares {
+            env.storage().persistent().set(
+                &DataKey::LockState(user.clone()),
+                &(new_user_shares, lock_expiry),
+            );
+            if new_user_shares > 0 {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::LockState(user.clone()),
+                    USER_SHARES_TTL_THRESHOLD,
+                    USER_SHARES_TTL_EXTEND_TO,
+                );
+            }
+        }
+
+        let new_total_shares = total_shares
+            .checked_sub(shares_to_burn)
+            .expect("vault: withdrawal underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &new_total_shares);
+
+        let new_total_assets = total_assets
+            .checked_sub(paid)
+            .expect("vault: withdrawal underflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalAssets, &new_total_assets);
+        Self::reduce_total_deposits_on_withdraw(env, paid);
+        token_client.transfer(&vault_address, user, &paid);
+
+        (paid, shares_to_burn)
+    }
+
+    /// Enforces the configured interval since the last rebalance-like operation.
+    fn require_rebalance_cooldown_elapsed(env: &Env) {
+        if let Some(min_interval) = env
+            .storage()
+            .instance()
+            .get::<DataKey, u32>(&DataKey::MinRebalanceInterval)
+        {
+            if min_interval > 0 {
+                if let Some(last_rebalance) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, u32>(&DataKey::LastRebalanceLedger)
+                {
+                    let elapsed = env.ledger().sequence().saturating_sub(last_rebalance);
+                    if elapsed < min_interval {
+                        panic_with_error!(env, VaultError::RebalanceCooldownActive);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Updates [`DataKey::CurrentProtocol`] and emits [`ProtocolChangedEvent`] on change.
+    fn set_current_protocol(env: &Env, new_protocol: Symbol) {
+        let old_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        if old_protocol == new_protocol {
+            return;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentProtocol, &new_protocol);
+
+        env.events().publish(
+            (TOPIC_PROTOCOL_CHANGED,),
+            ProtocolChangedEvent {
+                old_protocol,
+                new_protocol,
+            },
+        );
+    }
+
+    /// Panics when `min_out > 0` and fewer assets were received than required.
+    fn require_min_out(env: &Env, actual: i128, min_out: i128) {
+        if min_out > 0 && actual < min_out {
+            panic_with_error!(env, VaultError::MinOutNotMet);
+        }
+    }
+
+    /// Converts the public slippage tolerance into a minimum for one leg.
+    /// Legacy values above the bps denominator remain absolute minimums.
+    ///
+    /// `slippage_bps == 0` means "no minimum-output check" throughout the
+    /// public API (see `rebalance`'s and `harvest`'s doc comments: "If a leg
+    /// moves fewer assets than `min_out` when `min_out > 0`"), so it must
+    /// return `0` here rather than `expected` — otherwise every zero-slippage
+    /// call would demand the *exact* full expected amount with no tolerance
+    /// at all, turning graceful partial-fill/incomplete-exit handling (e.g.
+    /// `rebalance`'s abort-and-emit-`RebalanceFailedEvent` path, `harvest`'s
+    /// circuit-breaker accounting) into an unconditional panic instead.
+    fn minimum_out_for_leg(expected: i128, slippage_bps: i128) -> i128 {
+        if slippage_bps == 0 {
+            return 0;
+        }
+        let denom = i128::from(Self::BPS_DENOMINATOR);
+        if slippage_bps > denom {
+            return slippage_bps;
+        }
+        let factor = denom.saturating_sub(slippage_bps);
+        expected
+            .saturating_mul(factor)
+            .checked_div(denom)
+            .unwrap_or(0)
+    }
+
+    /// Revokes any allowance `spender` still holds over `from`'s tokens.
+    ///
+    /// Called after a supply leg pulls less than the vault approved for it
+    /// (#985). Checking `allowance()` first (a free read, no authorization
+    /// needed) avoids an unnecessary approve(..., 0, ...) write, and its own
+    /// authorization, when the pool already consumed the full amount via its
+    /// `transfer_from` and nothing is left outstanding.
+    fn revoke_allowance_if_outstanding(
+        env: &Env,
+        token_address: &Address,
+        from: &Address,
+        spender: &Address,
+    ) {
+        let token_client = token::Client::new(env, token_address);
+        if token_client.allowance(from, spender) == 0 {
+            return;
+        }
+
+        let revoke_args: Vec<Val> = vec![
+            env,
+            from.clone().into_val(env),
+            spender.clone().into_val(env),
+            0_i128.into_val(env),
+            0_u32.into_val(env),
+        ];
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: token_address.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: revoke_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token_client.approve(from, spender, &0_i128, &0_u32);
+    }
+
+    /// Internal helper: Supplies USDC to the Blend pool.
+    ///
+    /// This function handles the cross-contract call to Blend's supply function.
+    /// It also approves the Blend pool to spend USDC from the vault before supplying.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `amount` - Amount of USDC to supply
+    /// * `min_out` - Minimum amount that must be supplied (0 = no check)
+    ///
+    /// # Returns
+    /// The amount actually supplied (may be less than requested)
+    ///
+    /// # Error Handling
+    /// - Returns 0 if amount <= 0
+    /// - Panics if Blend pool address is not configured
+    /// - Emits BlendSupplyEvent with success status
+    /// - Uses the shared approval TTL configuration from instance storage to set the approval expiry
+    fn supply_to_blend(
+        env: &Env,
+        amount: i128,
+        min_out: i128,
+        update_current_protocol: bool,
+    ) -> i128 {
+        if amount <= 0 {
+            return 0;
+        }
+
+        let pool_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BlendPool)
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
+        let vault_address = env.current_contract_address();
+        let approval_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(Self::get_approval_ttl_internal(env));
+
+        // Prepare authorization for token approval and Blend supply
+        let approval_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+            approval_ledger.into_val(env),
+        ];
+        let submit_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            vault_address.clone().into_val(env),
+            vault_address.clone().into_val(env),
+            vec![
+                env,
+                BlendRequest {
+                    request_type: BLEND_REQUEST_TYPE_SUPPLY,
+                    address: usdc_token.clone(),
+                    amount,
+                },
+            ]
+            .into_val(env),
+        ];
+        let transfer_from_args: Vec<Val> = vec![
+            env,
+            pool_address.clone().into_val(env),
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+        ];
+
+        // Approve Blend pool to spend USDC
+        let token_client = token::Client::new(env, &usdc_token);
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc_token.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: approval_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+
+        // Authorize and execute Blend supply
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: pool_address.clone(),
+                    fn_name: Symbol::new(env, "submit_with_allowance"),
+                    args: submit_args.clone(),
+                },
+                sub_invocations: vec![
+                    env,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: usdc_token.clone(),
+                            fn_name: Symbol::new(env, "transfer_from"),
+                            args: transfer_from_args,
+                        },
+                        sub_invocations: vec![env],
+                    }),
+                ],
+            }),
+        ]);
+
+        // Call Blend supply function
+        let supplied =
+            BlendPoolClient::supply(env, &pool_address, &usdc_token, amount, &vault_address);
+
+        // The pool pulled less than it was approved for: revoke the leftover
+        // allowance rather than leaving it live until approval_ledger, where
+        // a later call (or a compromised/upgraded pool) could pull more
+        // vault USDC than this supply ever authorized (#985).
+        if supplied < amount {
+            Self::revoke_allowance_if_outstanding(env, &usdc_token, &vault_address, &pool_address);
+        }
+
+        Self::require_min_out(env, supplied, Self::minimum_out_for_leg(amount, min_out));
+
+        if supplied > 0 && update_current_protocol {
+            Self::set_current_protocol(env, symbol_short!("blend"));
+        }
+
+        // Emit event for supply
+        env.events().publish(
+            (TOPIC_BLEND_SUPPLY,),
+            BlendSupplyEvent {
+                asset: usdc_token,
+                amount_actual: supplied,
+                success: supplied > 0,
+            },
+        );
+
+        supplied
+    }
+
+    /// Internal helper: Withdraws USDC from the Blend pool.
+    ///
+    /// This function handles the cross-contract call to Blend's withdraw function.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `amount` - Amount of USDC to withdraw (0 = withdraw all)
+    /// * `min_out` - Minimum amount that must be withdrawn (0 = no check)
+    ///
+    /// # Returns
+    /// The amount actually withdrawn
+    ///
+    /// # Error Handling
+    /// - Returns 0 if amount_to_withdraw <= 0
+    /// - Panics if Blend pool address is not configured
+    /// - Emits BlendWithdrawEvent with success status and actual amount received
+    fn withdraw_from_blend(env: &Env, amount: i128, min_out: i128) -> i128 {
+        let pool_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BlendPool)
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::BlendPoolNotConfigured));
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
+        let vault_address = env.current_contract_address();
+
+        // Withdraw from Blend pool
+        // If amount is 0, we attempt to withdraw the full balance
+        let amount_to_withdraw = if amount == 0 {
+            // Get the current balance in Blend
+            BlendPoolClient::get_balance(env, &pool_address, &usdc_token, &vault_address)
+        } else {
+            amount
+        };
+
+        if amount_to_withdraw <= 0 {
+            return 0;
+        }
+
+        // Call Blend withdraw function
+        let withdrawn = BlendPoolClient::withdraw(
+            env,
+            &pool_address,
+            &usdc_token,
+            amount_to_withdraw,
+            &vault_address,
+        );
+
+        Self::require_min_out(
+            env,
+            withdrawn,
+            Self::minimum_out_for_leg(amount_to_withdraw, min_out),
+        );
+
+        // Emit event for withdrawal
+        env.events().publish(
+            (TOPIC_BLEND_WITHDRAW,),
+            BlendWithdrawEvent {
+                asset: usdc_token,
+                amount_actual: withdrawn,
+                success: withdrawn > 0,
+            },
+        );
+
+        withdrawn
+    }
+
+    /// Internal helper: Supplies USDC to the DEX liquidity pool.
+    ///
+    /// Mirrors [`supply_to_blend`](crate::NeuroWealthVault::supply_to_blend): approves the pool to pull USDC, authorizes
+    /// the cross-contract `add_liquidity` call (with its `transfer_from`
+    /// sub-invocation), then supplies. The `min_out` floor is enforced both by
+    /// forwarding it to the pool and by [`require_min_out`](crate::NeuroWealthVault::require_min_out) on the realized
+    /// amount, giving slippage protection on the DEX leg.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `amount` - Amount of USDC to supply
+    /// * `min_out` - Minimum amount that must be supplied (0 = no check)
+    ///
+    /// # Returns
+    /// The amount actually supplied (may be less than requested).
+    ///
+    /// # Error Handling
+    /// - Returns 0 if amount <= 0
+    /// - Panics if the DEX pool address is not configured
+    /// - Panics with `MinOutNotMet` if the realized amount is below `min_out`
+    /// - Emits `DexSupplyEvent` with success status
+    fn supply_to_dex(
+        env: &Env,
+        amount: i128,
+        min_out: i128,
+        update_current_protocol: bool,
+    ) -> i128 {
+        if amount <= 0 {
+            return 0;
+        }
+
+        let pool_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DexPool)
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
+        let vault_address = env.current_contract_address();
+        let approval_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(Self::get_approval_ttl_internal(env));
+
+        let approval_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+            approval_ledger.into_val(env),
+        ];
+        let add_liquidity_args: Vec<Val> = vec![
+            env,
+            vault_address.clone().into_val(env),
+            usdc_token.clone().into_val(env),
+            amount.into_val(env),
+            Self::minimum_out_for_leg(amount, min_out).into_val(env),
+        ];
+        let transfer_from_args: Vec<Val> = vec![
+            env,
+            pool_address.clone().into_val(env),
+            vault_address.clone().into_val(env),
+            pool_address.clone().into_val(env),
+            amount.into_val(env),
+        ];
+
+        // Approve the DEX pool to spend USDC.
+        let token_client = token::Client::new(env, &usdc_token);
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: usdc_token.clone(),
+                    fn_name: Symbol::new(env, "approve"),
+                    args: approval_args,
+                },
+                sub_invocations: vec![env],
+            }),
+        ]);
+        token_client.approve(&vault_address, &pool_address, &amount, &approval_ledger);
+
+        // Authorize and execute the DEX add_liquidity (pulls USDC via transfer_from).
+        env.authorize_as_current_contract(vec![
+            env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: pool_address.clone(),
+                    fn_name: Symbol::new(env, "add_liquidity"),
+                    args: add_liquidity_args.clone(),
+                },
+                sub_invocations: vec![
+                    env,
+                    InvokerContractAuthEntry::Contract(SubContractInvocation {
+                        context: ContractContext {
+                            contract: usdc_token.clone(),
+                            fn_name: Symbol::new(env, "transfer_from"),
+                            args: transfer_from_args,
+                        },
+                        sub_invocations: vec![env],
+                    }),
+                ],
+            }),
+        ]);
+
+        let supplied = DexPoolClient::supply(
+            env,
+            &pool_address,
+            &usdc_token,
+            amount,
+            Self::minimum_out_for_leg(amount, min_out),
+            &vault_address,
+        );
+
+        // Same leftover-allowance revocation as supply_to_blend (#985): if
+        // the DEX pool pulled less than approved, nothing should stay
+        // outstanding until approval_ledger.
+        if supplied < amount {
+            Self::revoke_allowance_if_outstanding(env, &usdc_token, &vault_address, &pool_address);
+        }
+
+        Self::require_min_out(env, supplied, Self::minimum_out_for_leg(amount, min_out));
+
+        if supplied > 0 && update_current_protocol {
+            Self::set_current_protocol(env, symbol_short!("dex"));
+        }
+
+        env.events().publish(
+            (TOPIC_DEX_SUPPLY,),
+            DexSupplyEvent {
+                asset: usdc_token,
+                amount_actual: supplied,
+                success: supplied > 0,
+            },
+        );
+
+        supplied
+    }
+
+    /// Internal helper: Withdraws USDC from the DEX liquidity pool.
+    ///
+    /// Mirrors [`withdraw_from_blend`](crate::NeuroWealthVault::withdraw_from_blend). When `amount == 0` the full deployed
+    /// position is withdrawn.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `amount` - Amount of USDC to withdraw (0 = withdraw all)
+    /// * `min_out` - Minimum amount that must be withdrawn (0 = no check)
+    ///
+    /// # Returns
+    /// The amount actually withdrawn.
+    ///
+    /// # Error Handling
+    /// - Returns 0 if there is nothing to withdraw
+    /// - Panics if the DEX pool address is not configured
+    /// - Panics with `MinOutNotMet` if the realized amount is below `min_out`
+    /// - Emits `DexWithdrawEvent` with success status and actual amount received
+    fn withdraw_from_dex(env: &Env, amount: i128, min_out: i128) -> i128 {
+        let pool_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DexPool)
+            .unwrap_or_else(|| panic_with_error!(env, VaultError::DexPoolNotConfigured));
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        require_configured_vault_asset(env, &usdc_token);
+        let vault_address = env.current_contract_address();
+
+        // If amount is 0, withdraw the full deployed position.
+        let amount_to_withdraw = if amount == 0 {
+            DexPoolClient::get_balance(env, &pool_address, &usdc_token, &vault_address)
+        } else {
+            amount
+        };
+
+        if amount_to_withdraw <= 0 {
+            return 0;
+        }
+
+        let withdrawn = DexPoolClient::withdraw(
+            env,
+            &pool_address,
+            &usdc_token,
+            amount_to_withdraw,
+            Self::minimum_out_for_leg(amount_to_withdraw, min_out),
+            &vault_address,
+        );
+
+        Self::require_min_out(
+            env,
+            withdrawn,
+            Self::minimum_out_for_leg(amount_to_withdraw, min_out),
+        );
+
+        env.events().publish(
+            (TOPIC_DEX_WITHDRAW,),
+            DexWithdrawEvent {
+                asset: usdc_token,
+                amount_actual: withdrawn,
+                success: withdrawn > 0,
+            },
+        );
+
+        withdrawn
+    }
+
+    /// Internal helper: Withdraws from the current protocol if funds are deployed.
+    ///
+    /// This function checks the current protocol and withdraws funds if necessary.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `protocol` - The protocol symbol to withdraw from
+    ///
+    /// # Returns
+    /// The amount withdrawn, or 0 if no funds were deployed to that protocol
+    fn withdraw_from_protocol(env: &Env, protocol: &Symbol, min_out: i128) -> i128 {
+        let current_protocol: Symbol = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentProtocol)
+            .unwrap_or(symbol_short!("none"));
+
+        if current_protocol == *protocol && *protocol == symbol_short!("blend") {
+            Self::withdraw_from_blend(env, 0, min_out)
+        } else if current_protocol == *protocol && *protocol == symbol_short!("dex") {
+            Self::withdraw_from_dex(env, 0, min_out)
+        } else if current_protocol == *protocol && *protocol == symbol_short!("multi") {
+            // Multi-protocol mode: fully exit both venues.
+            let blend = Self::withdraw_from_blend(env, 0, min_out);
+            let dex = Self::withdraw_from_dex(env, 0, min_out);
+            Self::sync_deployed_split(env);
+            blend.saturating_add(dex)
+        } else {
+            0
+        }
+    }
+
+    /// Internal helper: Withdraws a specific `amount` from the active protocol.
+    ///
+    /// Used by user-facing `withdraw`/`withdraw_all` to pull only the liquidity
+    /// needed to satisfy a redemption (as opposed to [`withdraw_from_protocol`](crate::NeuroWealthVault::withdraw_from_protocol),
+    /// which exits the full position). Dispatches to the protocol-specific helper.
+    ///
+    /// # Returns
+    /// The amount actually withdrawn, or 0 if `protocol` holds no funds.
+    fn withdraw_amount_from_protocol(
+        env: &Env,
+        protocol: &Symbol,
+        amount: i128,
+        min_out: i128,
+    ) -> i128 {
+        if protocol == &symbol_short!("multi") {
+            // Multi-protocol mode: pull from both venues proportionally so a
+            // redemption does not skew the target allocation.
+            Self::withdraw_proportionally(env, amount, min_out)
+        } else if protocol == &symbol_short!("blend") {
+            Self::withdraw_from_blend(env, amount, min_out)
+        } else if protocol == &symbol_short!("dex") {
+            Self::withdraw_from_dex(env, amount, min_out)
+        } else {
+            0
+        }
+    }
+
+    /// Internal helper: Gets the balance deployed to a specific protocol.
+    ///
+    /// Used to verify complete protocol exit during rebalancing.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `protocol` - The protocol symbol to check
+    ///
+    /// # Returns
+    /// The amount deployed to the protocol, or 0 if not deployed
+    fn get_protocol_balance(env: &Env, protocol: &Symbol) -> i128 {
+        if protocol == &symbol_short!("blend") {
+            let pool_address: Option<Address> = env.storage().instance().get(&DataKey::BlendPool);
+            if let Some(pool) = pool_address {
+                let usdc_token: Address =
+                    env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+                let vault_address = env.current_contract_address();
+                BlendPoolClient::get_balance(env, &pool, &usdc_token, &vault_address)
+            } else {
+                0
+            }
+        } else if protocol == &symbol_short!("dex") {
+            let pool_address: Option<Address> = env.storage().instance().get(&DataKey::DexPool);
+            if let Some(pool) = pool_address {
+                let usdc_token: Address =
+                    env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+                let vault_address = env.current_contract_address();
+                DexPoolClient::get_balance(env, &pool, &usdc_token, &vault_address)
+            } else {
+                0
+            }
+        } else if protocol == &symbol_short!("multi") {
+            // Composite venue: the sum of both live positions.
+            Self::get_protocol_balance(env, &symbol_short!("blend"))
+                .saturating_add(Self::get_protocol_balance(env, &symbol_short!("dex")))
+        } else {
+            0
+        }
+    }
+
+    // ==========================================================================
+    // INTERNAL HELPERS — MULTI-PROTOCOL ALLOCATION (Phase 2)
+    // ==========================================================================
+
+    /// Total basis points in a full allocation.
+    const BPS_DENOMINATOR: u32 = 10_000;
+
+    /// Returns `true` when multi-protocol allocation mode is active.
+    fn multi_protocol_enabled(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiProtocolEnabled)
+            .unwrap_or(false)
+    }
+
+    /// Reads the stored `(blend_bps, dex_bps)` allocation split.
+    fn read_allocation(env: &Env) -> (u32, u32) {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllocationBps)
+            .unwrap_or((0, 0))
+    }
+
+    /// Validates that a `(blend_bps, dex_bps)` pair is a legal allocation.
+    ///
+    /// Each leg must be within `0..=10_000` and the two must not sum above
+    /// `10_000`. A sum below `10_000` is legal and means the remainder is
+    /// deliberately held idle.
+    fn require_valid_allocation(env: &Env, blend_bps: u32, dex_bps: u32) {
+        Self::require(
+            env,
+            blend_bps <= Self::BPS_DENOMINATOR
+                && dex_bps <= Self::BPS_DENOMINATOR
+                && blend_bps.saturating_add(dex_bps) <= Self::BPS_DENOMINATOR,
+            VaultError::InvalidAllocation,
+        );
+    }
+
+    /// Reads the vault's locally tracked per-venue deployment `(blend, dex)`.
+    #[allow(dead_code)]
+    fn read_deployed_split(env: &Env) -> (i128, i128) {
+        env.storage()
+            .instance()
+            .get(&DataKey::DeployedSplit)
+            .unwrap_or((0, 0))
+    }
+
+    /// Re-reads both venues live and writes the result to the local
+    /// `DeployedSplit` tracker.
+    ///
+    /// Called after every supply/withdraw leg so the cheap local getters never
+    /// drift from the pools' own accounting.
+    fn sync_deployed_split(env: &Env) -> (i128, i128) {
+        let blend = Self::get_protocol_balance(env, &symbol_short!("blend"));
+        let dex = Self::get_protocol_balance(env, &symbol_short!("dex"));
+        env.storage()
+            .instance()
+            .set(&DataKey::DeployedSplit, &(blend, dex));
+        (blend, dex)
+    }
+
+    /// Derives the legacy `CurrentProtocol` summary symbol from an allocation.
+    ///
+    /// Keeps single-protocol consumers (`get_current_protocol`, `harvest`,
+    /// `withdraw`) working unchanged while multi-protocol mode is active:
+    /// - only Blend deployed  → `"blend"`
+    /// - only DEX deployed    → `"dex"`
+    /// - both deployed        → `"multi"`
+    /// - nothing deployed     → `"none"`
+    fn derive_protocol_summary(blend: i128, dex: i128) -> Symbol {
+        if blend > 0 && dex > 0 {
+            symbol_short!("multi")
+        } else if blend > 0 {
+            symbol_short!("blend")
+        } else if dex > 0 {
+            symbol_short!("dex")
+        } else {
+            symbol_short!("none")
+        }
+    }
+
+    /// Splits `total` across the two venues by basis points, giving any
+    /// rounding remainder to Blend so the parts never exceed `total`.
+    fn split_by_bps(total: i128, blend_bps: u32, dex_bps: u32) -> (i128, i128) {
+        if total <= 0 {
+            return (0, 0);
+        }
+        let denom = i128::from(Self::BPS_DENOMINATOR);
+        let blend = total
+            .checked_mul(i128::from(blend_bps))
+            .expect("vault: allocation overflow")
+            .checked_div(denom)
+            .expect("vault: allocation division failed");
+        let dex = total
+            .checked_mul(i128::from(dex_bps))
+            .expect("vault: allocation overflow")
+            .checked_div(denom)
+            .expect("vault: allocation division failed");
+        (blend, dex)
+    }
+
+    /// Pulls `needed` USDC back from the deployed venues, taking from each in
+    /// proportion to what it currently holds.
+    ///
+    /// Used by `withdraw` / `withdraw_all` so a redemption in multi-protocol
+    /// mode does not silently drain one venue and skew the allocation. Returns
+    /// the total actually recovered.
+    fn withdraw_proportionally(env: &Env, needed: i128, min_out: i128) -> i128 {
+        if needed <= 0 {
+            return 0;
+        }
+        let blend_bal = Self::get_protocol_balance(env, &symbol_short!("blend"));
+        let dex_bal = Self::get_protocol_balance(env, &symbol_short!("dex"));
+        let total = blend_bal.saturating_add(dex_bal);
+        if total <= 0 {
+            return 0;
+        }
+
+        // Cap the ask at what is actually deployed.
+        let target = min(needed, total);
+
+        // Proportional shares; the remainder after integer division is taken
+        // from whichever venue still has room, so we never under-pull.
+        let mut from_blend = target
+            .checked_mul(blend_bal)
+            .expect("vault: proportional withdrawal overflow")
+            .checked_div(total)
+            .expect("vault: proportional withdrawal division failed");
+        let mut from_dex = target
+            .checked_sub(from_blend)
+            .expect("vault: proportional withdrawal underflow");
+
+        // Never ask a venue for more than it holds; spill the excess over.
+        if from_dex > dex_bal {
+            let spill = from_dex.saturating_sub(dex_bal);
+            from_dex = dex_bal;
+            from_blend = min(blend_bal, from_blend.saturating_add(spill));
+        }
+        if from_blend > blend_bal {
+            let spill = from_blend.saturating_sub(blend_bal);
+            from_blend = blend_bal;
+            from_dex = min(dex_bal, from_dex.saturating_add(spill));
+        }
+
+        let mut recovered = 0_i128;
+        if from_blend > 0 {
+            recovered =
+                recovered.saturating_add(Self::withdraw_from_blend(env, from_blend, min_out));
+        }
+        if from_dex > 0 {
+            recovered = recovered.saturating_add(Self::withdraw_from_dex(env, from_dex, min_out));
+        }
+
+        Self::sync_deployed_split(env);
+        recovered
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/mod.rs"]
+mod comprehensive_tests;

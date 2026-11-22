@@ -23,6 +23,14 @@ CREATE TABLE bridge_transfers (
   source_chain_tx_hash TEXT,
   bridge_tx_hash TEXT,
   destination_tx_hash TEXT,
+
+  -- Idempotency key supplied by the caller (#849). A retry after a restart
+  -- resolves to the original transfer instead of creating a second one.
+  idempotency_key TEXT,
+
+  -- Confirmation-depth bookkeeping (#851) used by the reconciliation pass.
+  current_confirmation_depth INTEGER,
+  required_confirmation_depth INTEGER,
   
   -- Timing
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -32,16 +40,31 @@ CREATE TABLE bridge_transfers (
   -- Retry logic
   retries_remaining INTEGER DEFAULT 3,
   last_retry_time TIMESTAMP WITH TIME ZONE,
-  
+
+  -- Durable workflow state (#848): the fields a restarted bridge process reads
+  -- back to resume a transfer instead of re-deriving it from process memory.
+  stage TEXT NOT NULL DEFAULT 'observed',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TIMESTAMP WITH TIME ZONE,
+  last_reconciled_at TIMESTAMP WITH TIME ZONE,
+
   -- Error tracking
   error_message TEXT,
   
   -- Indexes
   CONSTRAINT valid_status CHECK (status IN ('pending', 'confirming', 'confirmed', 'failed', 'cancelled')),
+  CONSTRAINT valid_stage CHECK (stage IN ('observed', 'submitted', 'confirmed', 'completed')),
   CONSTRAINT valid_direction CHECK (direction IN ('deposit', 'withdraw')),
   CONSTRAINT valid_source_chain CHECK (source_chain IN ('ethereum', 'stellar')),
   CONSTRAINT valid_destination_chain CHECK (destination_chain IN ('ethereum', 'stellar'))
 );
+
+-- Startup reconciliation (#850) scans everything that is not terminal. A
+-- partial index keeps that pass off the terminal rows.
+CREATE INDEX idx_bridge_transfers_non_terminal
+  ON bridge_transfers (created_at)
+  WHERE status NOT IN ('confirmed', 'cancelled');
 
 -- Indexes for performance
 CREATE INDEX idx_bridge_transfers_user ON bridge_transfers(user_address);
@@ -49,6 +72,9 @@ CREATE INDEX idx_bridge_transfers_status ON bridge_transfers(status);
 CREATE INDEX idx_bridge_transfers_created_at ON bridge_transfers(created_at);
 CREATE INDEX idx_bridge_transfers_source_chain_tx ON bridge_transfers(source_chain_tx_hash);
 CREATE INDEX idx_bridge_transfers_bridge_tx ON bridge_transfers(bridge_tx_hash);
+CREATE UNIQUE INDEX idx_bridge_transfers_idempotency
+  ON bridge_transfers(idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 
 -- Audit log table
 CREATE TABLE bridge_audit_log (
@@ -67,7 +93,8 @@ CREATE TABLE bridge_audit_log (
     'retry_attempted',
     'transfer_confirmed',
     'transfer_failed',
-    'transfer_cancelled'
+    'transfer_cancelled',
+    'transfer_reconciled'
   ))
 );
 

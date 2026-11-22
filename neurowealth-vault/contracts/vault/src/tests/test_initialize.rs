@@ -419,3 +419,100 @@ fn test_initialize_rejects_zero_usdc_token() {
 
     client.initialize(&deployer, &owner, &agent, &usdc_token, &salt);
 }
+
+// ============================================================================
+// ISSUE #574 — DOUBLE-INITIALIZATION GUARD AND SAME-LEDGER RACE
+// ============================================================================
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_same_ledger_double_initialize_race_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let deployer = Address::generate(&env);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let contract_id = env
+        .deployer()
+        .with_address(deployer.clone(), salt.clone())
+        .deployed_address();
+    env.register_contract(&contract_id, NeuroWealthVault);
+
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let agent = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let usdc_token = Address::generate(&env);
+
+    client.initialize(&deployer, &owner, &agent, &usdc_token, &salt);
+
+    // Advance to simulate another ledger position but within the same sequence.
+    // On Soroban/Stellar, multiple transactions can occur in the same ledger.
+    // This test verifies that even a simultaneous init attempt in the same ledger
+    // is rejected without corrupting owner/agent/token state.
+    // Re-initialize with potentially different params — must still panic.
+    let different_agent = Address::generate(&env);
+    let different_owner = Address::generate(&env);
+    client.initialize(
+        &deployer,
+        &different_owner,
+        &different_agent,
+        &usdc_token,
+        &salt,
+    );
+}
+
+#[test]
+fn test_after_failed_double_initialize_state_is_uncorrupted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let deployer = Address::generate(&env);
+    let salt = BytesN::from_array(&env, &[0u8; 32]);
+    let contract_id = env
+        .deployer()
+        .with_address(deployer.clone(), salt.clone())
+        .deployed_address();
+    env.register_contract(&contract_id, NeuroWealthVault);
+
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let agent = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let usdc_token = Address::generate(&env);
+
+    client.initialize(&deployer, &owner, &agent, &usdc_token, &salt);
+
+    let initial_agent = client.get_agent();
+    let initial_owner = client.get_owner();
+    let initial_token = client.get_usdc_token();
+
+    let different_agent = Address::generate(&env);
+    let different_owner = Address::generate(&env);
+    let different_token = Address::generate(&env);
+
+    // Attempt to re-initialize with different params — this must fail.
+    let result = client.try_initialize(
+        &deployer,
+        &different_owner,
+        &different_agent,
+        &different_token,
+        &salt,
+    );
+    assert!(result.is_err(), "double-initialize must be rejected");
+
+    // Verify state was not corrupted by the failed attempt.
+    assert_eq!(
+        client.get_agent(),
+        initial_agent,
+        "agent must not be modified on failed re-initialize"
+    );
+    assert_eq!(
+        client.get_owner(),
+        initial_owner,
+        "owner must not be modified on failed re-initialize"
+    );
+    assert_eq!(
+        client.get_usdc_token(),
+        initial_token,
+        "token must not be modified on failed re-initialize"
+    );
+}

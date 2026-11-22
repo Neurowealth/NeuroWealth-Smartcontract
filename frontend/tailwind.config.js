@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: 'class',
   content: [
     "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -14,12 +15,22 @@ module.exports = {
           600: '#059669',
           900: '#064e3b',
         },
-        dark: {
-          bg: '#0a0d14',
-          card: '#121824',
-          border: '#1e293b',
-          muted: '#64748b'
-        }
+        surface: {
+          DEFAULT: '#ffffff',
+          dark: '#080b11',
+        },
+        card: {
+          DEFAULT: '#f8fafc',
+          dark: '#121824',
+        },
+        border: {
+          DEFAULT: '#e2e8f0',
+          dark: '#1e293b',
+        },
+        muted: {
+          DEFAULT: '#64748b',
+          dark: '#94a3b8',
+        },
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',

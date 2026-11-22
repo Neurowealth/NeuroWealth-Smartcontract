@@ -1,0 +1,27 @@
+# Standalone cargo-fuzz project for the pure share-math crate (#777).
+#
+# Kept out of the parent workspace (own [workspace] table) so it builds
+# without the Soroban contract crate. Run from neurowealth-vault/:
+#   cargo +nightly fuzz run --fuzz-dir share-math/fuzz withdrawal_queue_invariants
+[package]
+name = "share-math-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+share-math = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "withdrawal_queue_invariants"
+path = "fuzz_targets/withdrawal_queue_invariants.rs"
+test = false
+doc = false

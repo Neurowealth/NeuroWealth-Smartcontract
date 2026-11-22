@@ -206,6 +206,105 @@ soroban contract invoke --id "$DEX_POOL" --network testnet -- balance \
    own USDC balance, not the pool's return value, so a misreporting pool cannot
    inflate accounting.
 
+## MEV and Sandwich Risk
+
+### Sandwich Attack Scenario
+
+An observer watching the mempool can identify a pending `rebalance()` call before
+it lands on-chain. The attacker may then:
+
+1. **Front-run**: Submit a transaction that increases the pool price before the
+   vault's DEX swap leg executes.
+2. **Execute the vault rebalance**: The vault supplies USDC at the inflated price,
+   receiving fewer LP shares or less collateral per unit.
+3. **Back-run**: Reverse the attacker's initial trade, profiting from the price
+   difference while the vault absorbs the slippage.
+
+### Attack Example (with concrete numbers)
+
+Assume a DEX pool has a USDC-BLND pair with a spot rate of 100 USDC : 10 BLND.
+
+- Attacker observes a pending `rebalance()` that will supply 1,000,000 USDC.
+- Attacker front-runs with a large buy of BLND (1M USDC), pushing the rate to
+  100 USDC : 8 BLND (20% slippage).
+- Vault's `rebalance()` executes: supplies 1,000,000 USDC but receives only
+  80,000 BLND instead of the expected 100,000 (loss of 20,000 BLND ≈ 200k USDC).
+- Attacker back-runs: sells the BLND bought in step 1, pocketing roughly 180k USDC
+  profit (after reverting the price and deducting attacker's gas).
+
+### Mitigations
+
+#### 1. Off-Chain `min_out` Computation
+
+The agent backend **must** compute `min_out` off-chain before submitting the
+`rebalance()` call to Soroban. The recommended approach:
+
+1. Query the pool's current state (exchange rate, liquidity depth).
+2. Simulate the desired supply/withdraw size to estimate the output.
+3. Apply a conservative slippage tolerance (e.g., 0.5% - 2%, depending on pool depth).
+4. Set `min_out = simulated_output * (1 - tolerance)`.
+5. **Include a freshness check**: only proceed if the pool state has not aged more
+   than 1-2 blocks; re-query if stale.
+
+#### 2. `min_out` Enforcement in the Vault
+
+The vault enforces `min_out` on **both** supply and withdraw legs:
+
+- If realized amount `< min_out`, the transaction reverts with
+  `VaultError::MinOutNotMet` (#42).
+- This acts as a **hard floor**: any sandwich that causes slippage exceeding the
+  tolerance will reject the entire rebalance.
+
+#### 3. Agent Backend Guidance
+
+**Before calling `rebalance(protocol, expected_apy, min_out)`:**
+
+- **Do not hardcode `min_out = 0`** in production. A zero floor allows unlimited
+  slippage and makes sandwich attacks profitable (attacker is guaranteed a fill).
+- **Compute `min_out` dynamically** based on recent pool state. If the pool is
+  thinly capitalized, increase the slippage tolerance or defer the rebalance.
+- **Avoid scheduled rebalances** at fixed times (every hour, at midnight, etc.).
+  Predictability enables sandwich attacks. Use randomized intervals or
+  event-driven triggers.
+- **Monitor large rebalances** on testnet before production. Test with realistic
+  slippage figures to identify pools that are too thin.
+- **Consider multi-step rebalances** for very large deployments:
+  - Instead of deploying 100M USDC in one `rebalance()`, break it into 5x 20M
+    over multiple minutes.
+  - This reduces the profit surface for a single sandwich attack.
+
+#### 4. Cost-Benefit of the Attack
+
+For a sandwich to be profitable, the attacker's profit must exceed:
+
+- **Slippage cost**: the price movement the attacker induces.
+- **Gas fees**: Soroban transaction costs for front-run + back-run (typically
+  1-5 stroops per operation, significant for repeated sandwiches).
+- **Liquidity risk**: if the pool is deep and the attacker lacks sufficient
+  capital, the back-run may not fully recover the front-run's profit.
+
+**Thin pools are high-risk**: A pool with <5M USDC liquidity is vulnerable. A
+pool with >50M USDC is typically resistant (a 20% sandwich requires 50M+ in
+attacker capital and bears significant slippage risk).
+
+### Limitations
+
+1. **Soroban's single-slot finality** may reduce MEV surface compared to consensus-layered chains:
+   - Transactions in the same ledger cannot be reordered.
+   - Observing a pending rebalance in the mempool and sandwiching it requires
+     network timing coordination across Soroban + Stellar consensus.
+   - In practice, Soroban's 5-second ledger close provides a narrow window, but
+     not zero opportunity.
+
+2. **No oracle to frontrun on Soroban yet**: if the vault's off-chain agent uses
+   a centralized price feed (e.g., Binance API) to compute `min_out`, a
+   sophisticated attacker might manipulate that feed. Using Soroban oracle
+   contracts (when available) or decentralized price sources reduces this risk.
+
+3. **Backend private keys**: if the agent backend's private key is compromised,
+   the attacker can submit arbitrary `min_out` values (including 0). Secure key
+   management is critical.
+
 ## Status
 
 1. ✅ Research DEX interface (this document)

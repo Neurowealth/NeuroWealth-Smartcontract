@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/neurowealth
+      - SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+      - OPENAI_API_KEYS=sk-key1,sk-key2
+      - RATE_LIMIT_WINDOW_MS=60000
+      - RATE_LIMIT_MAX_REQUESTS=30
+      - USER_RATE_LIMIT_MAX_REQUESTS=20
+      - MAX_DB_POOL_SIZE=10
+      - MIN_DB_POOL_SIZE=2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

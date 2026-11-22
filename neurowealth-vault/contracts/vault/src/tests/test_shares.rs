@@ -466,3 +466,34 @@ fn test_full_withdrawal_burns_all_shares() {
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(client.get_balance(&user), 0);
 }
+
+/// Verify that `preview_deposit_to_shares()` returns 0 when called with 0 assets.
+///
+/// Before any deposits (total_shares == 0, total_assets == 0) and after deposits
+/// with yield accrual (positive share price), zero input must always produce zero
+/// shares. (Issue #541)
+#[test]
+fn test_preview_deposit_to_shares_zero_assets_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Case 1: Empty vault (total_shares == 0, total_assets == 0)
+    let (contract_id, _agent, _owner, _usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.preview_deposit_to_shares(&0_i128),
+        0_i128,
+        "Zero assets must return zero shares on empty vault"
+    );
+
+    // Case 2: After deposits (positive share price)
+    let user = Address::generate(&env);
+    mint_and_deposit(&env, &client, &_usdc_token, &user, 10_000_000_i128);
+
+    assert_eq!(
+        client.preview_deposit_to_shares(&0_i128),
+        0_i128,
+        "Zero assets must return zero shares after deposits exist"
+    );
+}

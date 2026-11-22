@@ -33,7 +33,7 @@ fn test_blend_partial_supply_low_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
 
@@ -47,7 +47,7 @@ fn test_blend_partial_supply_low_liquidity() {
     blend_client.set_max_supply_limit(&(deposit / 2));
 
     // Rebalance — succeeds with partial fill (no min_out enforced).
-    client.rebalance(&symbol_short!("blend"), &600_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &600_i128, &0_i128);
 
     let half = deposit / 2;
     // Half is in Blend, half remains idle in the vault.
@@ -81,7 +81,7 @@ fn test_blend_partial_withdrawal_low_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
 
@@ -92,14 +92,14 @@ fn test_blend_partial_withdrawal_low_liquidity() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
 
     // Move all funds to Blend.
-    client.rebalance(&symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(vault_usdc_balance(&env, &usdc_token, &vault_id), 0);
 
     // Now cap withdrawals to half the supplied amount.
     blend_client.set_max_withdraw_limit(&(deposit / 2));
 
     // Switch back to none — pool only returns half.
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     let half = deposit / 2;
     assert_eq!(
@@ -127,7 +127,7 @@ fn test_dex_partial_supply_low_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
+    let (vault_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
 
@@ -141,7 +141,7 @@ fn test_dex_partial_supply_low_liquidity() {
     let cap = deposit / 4;
     dex_client.set_max_supply_limit(&cap);
 
-    client.rebalance(&Symbol::new(&env, "dex"), &900_i128, &0_i128);
+    client.rebalance(&agent, &Symbol::new(&env, "dex"), &900_i128, &0_i128);
 
     assert_eq!(
         TestTokenClient::new(&env, &usdc_token).balance(&dex_pool),
@@ -171,7 +171,7 @@ fn test_multiple_strategy_switches_thin_blend_liquidity() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
 
@@ -188,19 +188,19 @@ fn test_multiple_strategy_switches_thin_blend_liquidity() {
     blend_client.set_max_withdraw_limit(&withdraw_cap);
 
     // Switch 1: none → blend (partial fill)
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
     assert_eq!(client.get_total_assets(), deposit, "Round 1 assets");
 
     // Switch 2: blend → none (partial withdrawal)
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
     assert_eq!(client.get_total_assets(), deposit, "Round 2 assets");
 
     // Switch 3: none → blend again
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
     assert_eq!(client.get_total_assets(), deposit, "Round 3 assets");
 
     // Switch 4: blend → none
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
     assert_eq!(client.get_total_assets(), deposit, "Round 4 assets");
 
     // Protocol ends on "none" — consistent with the last rebalance.
@@ -219,7 +219,7 @@ fn test_user_withdraw_blend_low_liquidity_sufficient_idle() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
+    let (vault_id, agent, owner, usdc_token, blend_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend_client = MockBlendPoolClient::new(&env, &blend_pool);
 
@@ -234,7 +234,7 @@ fn test_user_withdraw_blend_low_liquidity_sufficient_idle() {
 
     // Supply only half to Blend, leaving the other half idle.
     blend_client.set_max_supply_limit(&half);
-    client.rebalance(&symbol_short!("blend"), &600_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &600_i128, &0_i128);
 
     // Blend holds `half`; vault holds the other `half` idle.
     assert_eq!(vault_usdc_balance(&env, &usdc_token, &vault_id), half);
@@ -260,14 +260,16 @@ fn test_user_withdraw_blend_low_liquidity_sufficient_idle() {
 // ============================================================================
 
 /// Switching from Blend to DEX when Blend can only release partial funds:
-/// the vault moves whatever Blend releases, then supplies that to the DEX.
-/// Total assets are preserved throughout.
+/// `rebalance` aborts the whole switch gracefully (Issue #145) rather than
+/// half-migrating — the partially withdrawn funds stay idle, the rest stays
+/// in Blend, and `CurrentProtocol` does not advance to DEX. Total assets are
+/// preserved throughout.
 #[test]
 fn test_blend_to_dex_switch_thin_blend_withdrawal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (vault_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
     let blend_pool = env.register_contract(None, MockBlendPool);
     let dex_pool = env.register_contract(None, MockDexPool);
@@ -281,23 +283,53 @@ fn test_blend_to_dex_switch_thin_blend_withdrawal() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
 
     // Move all funds to Blend.
-    client.rebalance(&symbol_short!("blend"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
     assert_eq!(vault_usdc_balance(&env, &usdc_token, &vault_id), 0);
 
     // Constrain Blend withdrawal — only 20 USDC can come out per call.
     blend_client.set_max_withdraw_limit(&20_000_000_i128);
 
-    // Switch blend → dex; vault pulls whatever Blend allows, then supplies DEX.
-    client.rebalance(&symbol_short!("dex"), &900_i128, &0_i128);
+    // Switch blend → dex: the exit leg can only pull 20 of the 60 USDC
+    // deployed, so per the documented incomplete-exit safety guard (Issue
+    // #145) `rebalance` aborts gracefully before touching DEX at all, rather
+    // than silently stranding the remaining 40 USDC split across both
+    // venues. `try_rebalance` is used since the call does not panic — it
+    // returns normally after publishing `RebalanceFailedEvent`.
+    client
+        .try_rebalance(&agent, &symbol_short!("dex"), &900_i128, &0_i128)
+        .unwrap()
+        .unwrap();
 
-    // The vault's total tracked assets must equal the original deposit regardless
-    // of how many funds each pool currently holds.
+    // Total tracked assets are untouched by the aborted rotation.
     assert_eq!(
         client.get_total_assets(),
         deposit,
-        "Total assets must equal original deposit after thin-liquidity blend→dex switch"
+        "Total assets must equal original deposit after an aborted thin-liquidity blend→dex switch"
     );
 
-    // Protocol should now be "dex".
-    assert_eq!(client.get_current_protocol(), symbol_short!("dex"));
+    // The protocol must remain "blend": an incomplete exit leg aborts before
+    // any DEX supply is attempted, so the vault never partially switches.
+    assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
+
+    // What Blend did release (20 USDC) stays idle in the vault; it is not
+    // forwarded to DEX, since the whole rebalance call returned early.
+    assert_eq!(
+        vault_usdc_balance(&env, &usdc_token, &vault_id),
+        20_000_000_i128,
+        "the partially withdrawn funds must sit idle, not be forwarded to DEX"
+    );
+
+    // The rest (40 USDC) remains deployed in Blend.
+    assert_eq!(
+        client.get_deployed_assets(),
+        40_000_000_i128,
+        "the undrained remainder must stay in Blend"
+    );
+
+    // RebalanceFailedEvent must be emitted for the aborted exit.
+    let failed_events = find_events_by_topic(env.events().all(), &env, symbol_short!("reb_fail"));
+    assert!(
+        !failed_events.is_empty(),
+        "RebalanceFailedEvent must be emitted on incomplete exit"
+    );
 }

@@ -86,6 +86,64 @@
       "security": "Protects against inflation attacks with minimum deposit and non-zero mint guard"
     },
     {
+      "name": "receive_migration",
+      "category": "management",
+      "access": "public",
+      "description": "Function receive_migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
+      "name": "batch_deposit",
+      "category": "liquidity",
+      "access": "public",
+      "description": "Deposit multiple USDC entries atomically and receive vault shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "entries",
+          "type": "Vec<(Address, i128)>"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "constraints": [
+        "entry count must be <= max batch size (0 = unlimited)",
+        "all entries must use the configured USDC token",
+        "batch consumes both deposit and batch-deposit rate-limit buckets"
+      ],
+      "events": [
+        "DepositEvent"
+      ]
+    },
+    {
       "name": "withdraw",
       "category": "liquidity",
       "access": "public",
@@ -140,6 +198,209 @@
       ]
     },
     {
+      "name": "deposit_asset",
+      "category": "management",
+      "access": "public",
+      "description": "Function deposit_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "withdraw_asset",
+      "category": "management",
+      "access": "public",
+      "description": "Function withdraw_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_balance_asset",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_balance_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_total_assets_by_asset",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_total_assets_by_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "migrate_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function migrate_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "lock_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function lock_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "shares",
+          "type": "i128"
+        },
+        {
+          "name": "lock_duration_days",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "unlock_shares",
+      "category": "management",
+      "access": "public",
+      "description": "Function unlock_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_locked_shares",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_locked_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": "(i128, u32)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "emergency_withdraw",
+      "category": "management",
+      "access": "public",
+      "description": "Function emergency_withdraw",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
       "name": "rebalance",
       "category": "management",
       "access": "agent-only",
@@ -148,6 +409,10 @@
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "protocol",
@@ -177,6 +442,322 @@
       "notes": [
         "Performs slippage check against min_out parameter"
       ]
+    },
+    {
+      "name": "enable_multi_protocol",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function enable_multi_protocol",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "is_multi_protocol_enabled",
+      "category": "management",
+      "access": "public",
+      "description": "Function is_multi_protocol_enabled",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_allocation",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_allocation",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "(u32, u32)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_deployed_to_blend",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_deployed_to_blend",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_deployed_to_dex",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_deployed_to_dex",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_protocol_breakdown",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_breakdown",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "(i128, i128)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_protocol_adapter",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_protocol_adapter",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "adapter",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_protocol_adapter",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_adapter",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "Option<Address>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_protocol_whitelisted",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_protocol_whitelisted",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_protocol_whitelisted",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_whitelisted",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_protocol_whitelist",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_whitelist",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Vec<Symbol>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_protocol_apy",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function set_protocol_apy",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "apy_bps",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_protocol_apy",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_protocol_apy",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_composite_apy",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_composite_apy",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "rebalance_multi",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function rebalance_multi",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "blend_bps",
+          "type": "u32"
+        },
+        {
+          "name": "dex_bps",
+          "type": "u32"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "harvest",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function harvest",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
     },
     {
       "name": "pause",
@@ -243,6 +824,139 @@
       "events": [
         "EmergencyPausedEvent"
       ]
+    },
+    {
+      "name": "reset_circuit_breaker",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function reset_circuit_breaker",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "emergency_harvest",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function emergency_harvest",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "min_out",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "schedule_migration_target",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function schedule_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        },
+        {
+          "name": "target",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "execute_migration_target",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function execute_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "cancel_migration_target",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function cancel_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "owner",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_pending_migration_target",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_pending_migration_target",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Option<(Address, u32)>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_migration_paused",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_migration_paused",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
     },
     {
       "name": "set_tvl_cap",
@@ -407,6 +1121,406 @@
       "query_only": true
     },
     {
+      "name": "set_rate_limit",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Configure a fixed-window call rate limit for a supported function category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        },
+        {
+          "name": "max_calls",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "constraints": [
+        "max_calls == 0 disables the category",
+        "enabled categories require a non-zero window",
+        "unknown categories are rejected"
+      ],
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
+    },
+    {
+      "name": "set_rate_limit_config",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Alias for set_rate_limit",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        },
+        {
+          "name": "max_calls",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "RateLimitConfigUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_rate_limit",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the configured rate-limit allowance for a category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitConfig",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_rate_limit_config",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the configured rate-limit allowance for a category",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitConfig",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_global_rate_limit_state",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the current global rate-limit usage bucket",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitState",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "get_user_rate_limit_state",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the current per-user rate-limit usage bucket",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "category",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "RateLimitState",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_max_batch_size",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Set the maximum number of entries accepted by batch_deposit",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_entries",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_max_batch_size",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the maximum batch_deposit entry count",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_batch_size_limit",
+      "category": "administration",
+      "access": "owner-only",
+      "description": "Alias for set_max_batch_size",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_entries",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true,
+      "events": [
+        "BatchSizeLimitUpdatedEvent"
+      ]
+    },
+    {
+      "name": "get_batch_size_limit",
+      "category": "queries",
+      "access": "public",
+      "description": "Get the maximum batch_deposit entry count",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false,
+      "query_only": true
+    },
+    {
+      "name": "set_min_holding_period",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_min_holding_period",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "ledgers",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_min_holding_period",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_min_holding_period",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_max_decrease_bps",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_max_decrease_bps",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "bps",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_decrease_bps",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_max_decrease_bps",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "submit_mev_report",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function submit_mev_report",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        },
+        {
+          "name": "estimated_loss_stroops",
+          "type": "i128"
+        },
+        {
+          "name": "min_out_used",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_mev_stats",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_mev_stats",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "(i128, u32)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "set_max_acceptable_mev_loss",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_max_acceptable_mev_loss",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_loss_stroops",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "submit_apy_prediction",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function submit_apy_prediction",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "prediction",
+          "type": "ApyPrediction"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_apy_prediction",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_apy_prediction",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "Option<ApyPrediction>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "get_last_rebalance_ledger",
       "category": "queries",
       "access": "public",
@@ -422,6 +1536,55 @@
       "state_changing": false,
       "storage_type": "instance",
       "query_only": true
+    },
+    {
+      "name": "set_max_consecutive_failures",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_max_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_consecutive_failures",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_max_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_consecutive_failures",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_consecutive_failures",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
     },
     {
       "name": "set_approval_ttl",
@@ -649,6 +1812,235 @@
       "query_only": true
     },
     {
+      "name": "get_standby_agent",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_standby_agent",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Option<Address>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "update_standby_agent",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function update_standby_agent",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "new_standby",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "switch_to_standby_agent",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function switch_to_standby_agent",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "add_supported_asset",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function add_supported_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        },
+        {
+          "name": "token_address",
+          "type": "Address"
+        },
+        {
+          "name": "min_deposit",
+          "type": "i128"
+        },
+        {
+          "name": "deposit_limit",
+          "type": "i128"
+        },
+        {
+          "name": "tvl_cap",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "update_asset_limits",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function update_asset_limits",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        },
+        {
+          "name": "min_deposit",
+          "type": "i128"
+        },
+        {
+          "name": "deposit_limit",
+          "type": "i128"
+        },
+        {
+          "name": "tvl_cap",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "remove_supported_asset",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function remove_supported_asset",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_supported_assets",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_supported_assets",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Vec<Symbol>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_asset_config",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_asset_config",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "Option<AssetConfig>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_asset_tvl_cap",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_asset_tvl_cap",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_asset_totals",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_asset_totals",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "AssetTotals",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "get_asset_balance",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_asset_balance",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "AssetBalance",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "set_blend_pool",
       "category": "administration",
       "access": "owner-only",
@@ -807,6 +2199,21 @@
       "query_only": true
     },
     {
+      "name": "get_pending_ownership",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_pending_ownership",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "Option<PendingOwnershipInfo>",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "update_total_assets",
       "category": "management",
       "access": "agent-only",
@@ -829,7 +2236,7 @@
           "type": "bool"
         },
         {
-          "name": "max_decrease_bps",
+          "name": "_max_decrease_bps",
           "type": "u32"
         }
       ],
@@ -1026,10 +2433,33 @@
       "query_only": true
     },
     {
-      "name": "touch_user_ttl",
+      "name": "get_users_with_shares",
       "category": "queries",
       "access": "public",
-      "description": "Extend persistent TTL for user shares entry",
+      "description": "Function get_users_with_shares",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "start",
+          "type": "u32"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": "(Vec<(Address, i128)>, Option<u32>)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "touch_user_ttl",
+      "category": "maintenance",
+      "access": "user",
+      "description": "Extend persistent TTL for user shares entry with a per-user rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1041,10 +2471,10 @@
         }
       ],
       "returns": "bool",
-      "requires_auth": false,
-      "state_changing": false,
-      "storage_type": "persistent",
-      "query_only": true
+      "requires_auth": true,
+      "state_changing": true,
+      "storage_type": "mixed",
+      "query_only": false
     },
     {
       "name": "get_user_info",
@@ -1071,7 +2501,7 @@
       "name": "preview_deposit_to_shares",
       "category": "queries",
       "access": "public",
-      "description": "Preview shares minted for asset amount (floor)",
+      "description": "Preview shares minted for asset amount (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1091,7 +2521,7 @@
       "name": "preview_shares_to_assets",
       "category": "queries",
       "access": "public",
-      "description": "Preview assets returned for share amount (floor)",
+      "description": "Preview assets returned for share amount (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1111,7 +2541,7 @@
       "name": "preview_withdraw",
       "category": "queries",
       "access": "public",
-      "description": "Preview shares burned for withdrawal amount (ceil)",
+      "description": "Preview shares burned for withdrawal amount (ceil), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1131,7 +2561,7 @@
       "name": "convert_to_shares",
       "category": "queries",
       "access": "public",
-      "description": "Convert asset amount to shares (floor)",
+      "description": "Convert asset amount to shares (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1151,7 +2581,7 @@
       "name": "convert_to_assets",
       "category": "queries",
       "access": "public",
-      "description": "Convert share amount to assets (floor)",
+      "description": "Convert share amount to assets (floor), subject to the global preview rate limit",
       "parameters": [
         {
           "name": "env",
@@ -1166,6 +2596,25 @@
       "requires_auth": false,
       "state_changing": false,
       "query_only": true
+    },
+    {
+      "name": "get_user_apy",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_user_apy",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": "i128",
+      "requires_auth": false,
+      "state_changing": false
     },
     {
       "name": "get_agent",
@@ -1217,6 +2666,21 @@
       "state_changing": false,
       "storage_type": "instance",
       "query_only": true
+    },
+    {
+      "name": "get_vault_health_snapshot",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_vault_health_snapshot",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "VaultHealthSnapshot",
+      "requires_auth": false,
+      "state_changing": false
     },
     {
       "name": "get_version",
@@ -1387,6 +2851,151 @@
       "state_changing": false,
       "storage_type": "instance",
       "query_only": true
+    },
+    {
+      "name": "set_queue_config",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_queue_config",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "max_size",
+          "type": "u32"
+        },
+        {
+          "name": "ttl",
+          "type": "u64"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_queue_config",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_queue_config",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "(u32, u64)",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "queue_withdrawal",
+      "category": "management",
+      "access": "public",
+      "description": "Function queue_withdrawal",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_withdrawal_request",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_withdrawal_request",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "request_id",
+          "type": "u32"
+        }
+      ],
+      "returns": "WithdrawalRequest",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "cancel_withdrawal_request",
+      "category": "management",
+      "access": "public",
+      "description": "Function cancel_withdrawal_request",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "request_id",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_withdrawal_eligibility",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_withdrawal_eligibility",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        }
+      ],
+      "returns": "WithdrawalEligibility",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
+      "name": "process_withdrawal_queue",
+      "category": "management",
+      "access": "agent-only",
+      "description": "Function process_withdrawal_queue",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
+          "name": "batch_size",
+          "type": "u32"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": true,
+      "state_changing": true
     }
   ],
   "events": [
@@ -1477,6 +3086,40 @@
       ]
     },
     {
+      "name": "HarvestEvent",
+      "topic": "harvest",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol harvested from (\"blend\", \"dex\", or \"multi\")"
+        },
+        {
+          "name": "amount_cycled",
+          "type": "i128",
+          "description": "Amount actually resupplied; this is a compounding-cycle amount, not yield."
+        }
+      ]
+    },
+    {
+      "name": "EmergencyHarvestEvent",
+      "topic": "em_harv",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol harvested from (e.g., \"blend\", \"dex\")"
+        },
+        {
+          "name": "amount_harvested",
+          "type": "i128",
+          "description": "Amount withdrawn and re-deposited"
+        }
+      ]
+    },
+    {
       "name": "ProtocolChangedEvent",
       "topic": "proto_chg",
       "description": "Emitted by the contract.",
@@ -1490,6 +3133,82 @@
           "name": "new_protocol",
           "type": "Symbol",
           "description": "Protocol the vault is deployed to after the change (`\"blend\"`, `\"dex\"`, or `\"none\"`)"
+        }
+      ]
+    },
+    {
+      "name": "ProtocolAllocationChangedEvent",
+      "topic": "alloc_chg",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_blend_bps",
+          "type": "u32",
+          "description": "Blend allocation before the change, in basis points."
+        },
+        {
+          "name": "old_dex_bps",
+          "type": "u32",
+          "description": "DEX allocation before the change, in basis points."
+        },
+        {
+          "name": "new_blend_bps",
+          "type": "u32",
+          "description": "Blend allocation after the change, in basis points."
+        },
+        {
+          "name": "new_dex_bps",
+          "type": "u32",
+          "description": "DEX allocation after the change, in basis points."
+        },
+        {
+          "name": "deployed_to_blend",
+          "type": "i128",
+          "description": "USDC principal deployed to Blend after the change, in raw units."
+        },
+        {
+          "name": "deployed_to_dex",
+          "type": "i128",
+          "description": "USDC principal deployed to the DEX after the change, in raw units."
+        }
+      ]
+    },
+    {
+      "name": "MultiProtocolModeChangedEvent",
+      "topic": "multi_md",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "enabled",
+          "type": "bool",
+          "description": "`true` when multi-protocol allocation is now active."
+        },
+        {
+          "name": "blend_bps",
+          "type": "u32",
+          "description": "Blend allocation seeded by the migration, in basis points."
+        },
+        {
+          "name": "dex_bps",
+          "type": "u32",
+          "description": "DEX allocation seeded by the migration, in basis points."
+        }
+      ]
+    },
+    {
+      "name": "ProtocolApyUpdatedEvent",
+      "topic": "apy_upd",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "Protocol the APY applies to (`\"blend\"` or `\"dex\"`)."
+        },
+        {
+          "name": "apy_bps",
+          "type": "u32",
+          "description": "Reported APY in basis points."
         }
       ]
     },
@@ -1591,6 +3310,35 @@
       ]
     },
     {
+      "name": "CircuitBreakerTriggeredEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "reason",
+          "type": "String",
+          "description": "Field reason"
+        },
+        {
+          "name": "threshold_value",
+          "type": "i128",
+          "description": "Field threshold_value"
+        }
+      ]
+    },
+    {
+      "name": "CircuitBreakerResetEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Field owner"
+        }
+      ]
+    },
+    {
       "name": "TvlCapUpdatedEvent",
       "topic": "tvl_cap",
       "description": "Emitted by the contract.",
@@ -1604,6 +3352,11 @@
           "name": "new_cap",
           "type": "i128",
           "description": "TVL cap after the change, in USDC raw units (7 decimals)"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp when the cap was changed"
         }
       ]
     },
@@ -1621,6 +3374,11 @@
           "name": "new_cap",
           "type": "i128",
           "description": "Per-user deposit cap after the change, in USDC raw units (7 decimals)"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp when the cap was changed"
         }
       ]
     },
@@ -1736,6 +3494,65 @@
           "name": "new_ttl",
           "type": "u32",
           "description": "Approval TTL in ledgers after the change"
+        }
+      ]
+    },
+    {
+      "name": "ProtocolApprovalScheduledEvent",
+      "topic": "ttl_sch",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "Protocol whose approval window is described: `SymbolShort(\"blend\")` for the legacy Blend-only setter, `SymbolShort(\"dex\")` for a DEX-only window, or `SymbolShort(\"both\")` when the shared TTL covers every protocol approval the vault can issue."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Ledger in which the emitting call was executed"
+        },
+        {
+          "name": "approval_ttl",
+          "type": "u32",
+          "description": "Persisted approval TTL in ledgers, equal to `get_approval_ttl()`"
+        },
+        {
+          "name": "expiry_ledger",
+          "type": "u32",
+          "description": "Ledger at which the approval granted with this TTL expires"
+        },
+        {
+          "name": "available_window",
+          "type": "u32",
+          "description": "Ledgers of usable window between now and expiry (`expiry_ledger - current_ledger`)"
+        },
+        {
+          "name": "lead_time",
+          "type": "u32",
+          "description": "Ledgers of lead time reserved for the renewal transaction"
+        },
+        {
+          "name": "renewal_deadline_ledger",
+          "type": "u32",
+          "description": "Ledger by which a renewal should be submitted so the approval never lapses (`expiry_ledger - lead_time`)"
+        }
+      ]
+    },
+    {
+      "name": "MaxConsecutiveFailuresUpdatedEvent",
+      "topic": "maxf_upd",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_threshold",
+          "type": "u32",
+          "description": "Effective threshold before the change (the default if never configured)"
+        },
+        {
+          "name": "new_threshold",
+          "type": "u32",
+          "description": "Threshold after the change"
         }
       ]
     },
@@ -2059,6 +3876,281 @@
       ]
     },
     {
+      "name": "ProtocolAdapterUpdatedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol symbol the adapter serves (e.g. `\"phoenix\"`)."
+        },
+        {
+          "name": "old_address",
+          "type": "Option<Address>",
+          "description": "Previous adapter address, or None if it was not configured."
+        },
+        {
+          "name": "new_address",
+          "type": "Address",
+          "description": "Newly configured adapter contract address."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the configuration change."
+        }
+      ]
+    },
+    {
+      "name": "ProtocolWhitelistUpdatedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol symbol whose whitelist state changed."
+        },
+        {
+          "name": "enabled",
+          "type": "bool",
+          "description": "Whether the protocol is now whitelisted."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the whitelist change."
+        }
+      ]
+    },
+    {
+      "name": "ProtocolSupplyEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "asset",
+          "type": "Address",
+          "description": "The asset address (USDC)."
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol symbol the funds were supplied to."
+        },
+        {
+          "name": "amount_actual",
+          "type": "i128",
+          "description": "Actual amount transferred (may be less than requested due to venue limits)."
+        },
+        {
+          "name": "success",
+          "type": "bool",
+          "description": "Whether the supply was successful."
+        }
+      ]
+    },
+    {
+      "name": "ProtocolWithdrawEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "asset",
+          "type": "Address",
+          "description": "The asset address (USDC)."
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol symbol the funds were withdrawn from."
+        },
+        {
+          "name": "amount_actual",
+          "type": "i128",
+          "description": "Actual amount received (may be less than requested due to venue liquidity)."
+        },
+        {
+          "name": "success",
+          "type": "bool",
+          "description": "Whether the withdrawal was successful."
+        }
+      ]
+    },
+    {
+      "name": "AgentKeyRotatedEvent",
+      "topic": "key_rot",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_primary",
+          "type": "Address",
+          "description": "Primary agent address before the switchover."
+        },
+        {
+          "name": "new_primary",
+          "type": "Address",
+          "description": "Primary agent address after the switchover (the former standby)."
+        },
+        {
+          "name": "new_standby",
+          "type": "Address",
+          "description": "Standby agent address after the switchover (the former primary, or a new address supplied by the owner)."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the switchover."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp of the switchover."
+        }
+      ]
+    },
+    {
+      "name": "StandbyAgentUpdatedEvent",
+      "topic": "stby_ag",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_standby",
+          "type": "Option<Address>",
+          "description": "Standby agent address before the change, or None if not configured."
+        },
+        {
+          "name": "new_standby",
+          "type": "Address",
+          "description": "Standby agent address after the change."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the change."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp of the change."
+        }
+      ]
+    },
+    {
+      "name": "YieldAttributedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose yield is being attributed."
+        },
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The protocol where the yield was earned (e.g. `\"blend\"`, `\"dex\"`)."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of yield attributed, in the asset's native units."
+        },
+        {
+          "name": "period",
+          "type": "Symbol",
+          "description": "Time period label: `\"daily\"`, `\"weekly\"`, `\"monthly\"`, or `\"since_dep\"`."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp of the attribution."
+        }
+      ]
+    },
+    {
+      "name": "AssetDepositEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who made the deposit."
+        },
+        {
+          "name": "asset",
+          "type": "Symbol",
+          "description": "The asset deposited (e.g. `\"XLM\"`, `\"USDT\"`, `\"EURC\"`, `\"USDC\"`)."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of the asset deposited (native units)."
+        },
+        {
+          "name": "shares",
+          "type": "i128",
+          "description": "Number of shares minted in the asset's per-asset share pool."
+        }
+      ]
+    },
+    {
+      "name": "AssetWithdrawEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who made the withdrawal."
+        },
+        {
+          "name": "asset",
+          "type": "Symbol",
+          "description": "The asset withdrawn (e.g. `\"XLM\"`, `\"USDT\"`, `\"EURC\"`, `\"USDC\"`)."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of the asset returned (native units, after liquidity shortfall)."
+        },
+        {
+          "name": "shares",
+          "type": "i128",
+          "description": "Number of shares burned in the asset's per-asset share pool."
+        }
+      ]
+    },
+    {
+      "name": "SupportedAssetsUpdatedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "asset",
+          "type": "Symbol",
+          "description": "The asset symbol whose support state changed."
+        },
+        {
+          "name": "added",
+          "type": "bool",
+          "description": "`true` when the asset was added, `false` when it was removed."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the change."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Ledger timestamp of the change."
+        }
+      ]
+    },
+    {
       "name": "RebalanceFailedEvent",
       "topic": "reb_fail",
       "description": "Emitted by the contract.",
@@ -2096,21 +4188,502 @@
           "description": "New strategy symbol"
         }
       ]
+    },
+    {
+      "name": "SharesMigratedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who migrated their shares"
+        },
+        {
+          "name": "old_vault",
+          "type": "Address",
+          "description": "Old vault contract address"
+        },
+        {
+          "name": "new_vault",
+          "type": "Address",
+          "description": "New vault contract address"
+        },
+        {
+          "name": "shares_burned",
+          "type": "i128",
+          "description": "Number of shares burned from old vault"
+        },
+        {
+          "name": "assets_transferred",
+          "type": "i128",
+          "description": "Amount of assets (USDC) transferred to new vault"
+        }
+      ]
+    },
+    {
+      "name": "MigrationReceivedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose position was credited"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address",
+          "description": "The vault that sent the migrated funds"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of assets (USDC) credited"
+        },
+        {
+          "name": "shares_minted",
+          "type": "i128",
+          "description": "Shares minted for the credited amount"
+        }
+      ]
+    },
+    {
+      "name": "MigrationTargetUpdatedEvent",
+      "topic": "mig_tgt",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_target",
+          "type": "Option<Address>",
+          "description": "Previous migration target address, or None if not set"
+        },
+        {
+          "name": "new_target",
+          "type": "Address",
+          "description": "New migration target address"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the change"
+        }
+      ]
+    },
+    {
+      "name": "MigrationTargetScheduledEvent",
+      "topic": "mig_sched",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "new_target",
+          "type": "Address",
+          "description": "Address that will become the migration target once executed"
+        },
+        {
+          "name": "effective_ledger",
+          "type": "u32",
+          "description": "Ledger at which `execute_migration_target()` becomes callable"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who scheduled the change"
+        }
+      ]
+    },
+    {
+      "name": "MigrationTargetCancelledEvent",
+      "topic": "mig_cncl",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "cancelled_target",
+          "type": "Address",
+          "description": "Address whose pending change was cancelled"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who cancelled the change"
+        }
+      ]
+    },
+    {
+      "name": "MigrationPausedEvent",
+      "topic": "mig_pse",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "paused",
+          "type": "bool",
+          "description": "`true` if migration is now paused, `false` if unpaused"
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who triggered the pause/unpause"
+        }
+      ]
+    },
+    {
+      "name": "SharesLockedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who locked their shares"
+        },
+        {
+          "name": "shares_locked",
+          "type": "i128",
+          "description": "Number of shares locked"
+        },
+        {
+          "name": "lock_duration_days",
+          "type": "u32",
+          "description": "Lock duration in days"
+        },
+        {
+          "name": "expiry_ledger",
+          "type": "u32",
+          "description": "Ledger when lock expires"
+        }
+      ]
+    },
+    {
+      "name": "SharesUnlockedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who unlocked their shares"
+        },
+        {
+          "name": "shares_unlocked",
+          "type": "i128",
+          "description": "Number of shares unlocked"
+        }
+      ]
+    },
+    {
+      "name": "EmergencyWithdrawalEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user who performed the emergency withdrawal"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of USDC withdrawn (7 decimal places)"
+        },
+        {
+          "name": "shares",
+          "type": "i128",
+          "description": "Number of shares burned"
+        },
+        {
+          "name": "from_idle",
+          "type": "bool",
+          "description": "Whether funds were taken from idle balance (true) or protocol (false)"
+        }
+      ]
+    },
+    {
+      "name": "ApyPredictionSubmittedEvent",
+      "topic": "apy_pred",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "Protocol this prediction applies to (`\"blend\"` or `\"dex\"`)."
+        },
+        {
+          "name": "predicted_apy_bps",
+          "type": "i128",
+          "description": "Predicted APY in basis points."
+        },
+        {
+          "name": "apy_1h_bps",
+          "type": "i128",
+          "description": "1-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "apy_6h_bps",
+          "type": "i128",
+          "description": "6-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "apy_24h_bps",
+          "type": "i128",
+          "description": "24-hour-ahead APY forecast in basis points."
+        },
+        {
+          "name": "confidence_bps",
+          "type": "u32",
+          "description": "Model confidence in basis points."
+        },
+        {
+          "name": "submitted_at_ledger",
+          "type": "u32",
+          "description": "Ledger at which this prediction was submitted."
+        }
+      ]
+    },
+    {
+      "name": "MevExtractionSuspectedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "protocol",
+          "type": "Symbol",
+          "description": "The rebalance protocol where MEV was suspected (e.g., \"blend\", \"dex\")."
+        },
+        {
+          "name": "estimated_loss_stroops",
+          "type": "i128",
+          "description": "Agent-estimated amount lost to MEV in this transaction (stroops)."
+        },
+        {
+          "name": "min_out_used",
+          "type": "i128",
+          "description": "The `min_out` value that was set for the rebalance that triggered the report."
+        },
+        {
+          "name": "cumulative_loss_stroops",
+          "type": "i128",
+          "description": "Running total of suspected MEV losses since vault inception."
+        },
+        {
+          "name": "incident_count",
+          "type": "u32",
+          "description": "Number of MEV incidents recorded so far."
+        }
+      ]
+    },
+    {
+      "name": "FlashLoanProtectionTriggeredEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose withdrawal was rejected."
+        },
+        {
+          "name": "last_deposit_ledger",
+          "type": "u32",
+          "description": "Ledger at which the user last deposited."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Current ledger at the time of the rejected withdrawal."
+        },
+        {
+          "name": "min_holding_period",
+          "type": "u32",
+          "description": "Configured minimum holding period (in ledgers)."
+        }
+      ]
+    },
+    {
+      "name": "RateLimitConfigUpdatedEvent",
+      "topic": "rate_cfg",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "category",
+          "type": "Symbol",
+          "description": "Category whose allowance changed."
+        },
+        {
+          "name": "old_max_calls",
+          "type": "u32",
+          "description": "Previous maximum accepted calls per window."
+        },
+        {
+          "name": "old_window_ledgers",
+          "type": "u32",
+          "description": "Previous window length in ledgers."
+        },
+        {
+          "name": "new_max_calls",
+          "type": "u32",
+          "description": "New maximum accepted calls per window."
+        },
+        {
+          "name": "new_window_ledgers",
+          "type": "u32",
+          "description": "New window length in ledgers."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner that made the change."
+        }
+      ]
+    },
+    {
+      "name": "BatchSizeLimitUpdatedEvent",
+      "topic": "batch_lim",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "old_max_entries",
+          "type": "u32",
+          "description": "Previous maximum number of entries; zero means unlimited."
+        },
+        {
+          "name": "new_max_entries",
+          "type": "u32",
+          "description": "New maximum number of entries; zero means unlimited."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner that made the change."
+        }
+      ]
+    },
+    {
+      "name": "RateLimitExceededEvent",
+      "topic": "rate_hit",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "category",
+          "type": "Symbol",
+          "description": "Category whose allowance was exhausted."
+        },
+        {
+          "name": "user",
+          "type": "Option<Address>",
+          "description": "User bucket that was exhausted, or `None` for a global bucket."
+        },
+        {
+          "name": "current_ledger",
+          "type": "u32",
+          "description": "Ledger at which the bucket was exhausted or the rejected call was attempted."
+        },
+        {
+          "name": "window_start",
+          "type": "u32",
+          "description": "Start ledger of the exhausted window."
+        },
+        {
+          "name": "max_calls",
+          "type": "u32",
+          "description": "Configured maximum calls for the window."
+        },
+        {
+          "name": "calls",
+          "type": "u32",
+          "description": "Number of accepted calls already recorded in the window."
+        }
+      ]
+    },
+    {
+      "name": "WithdrawalQueuedEvent",
+      "topic": "wq_add",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "request_id",
+          "type": "u32",
+          "description": "Auto-incrementing request ID."
+        },
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "User who queued the withdrawal."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount requested (base units)."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "description": "Unix timestamp of creation."
+        }
+      ]
+    },
+    {
+      "name": "WithdrawalCancelledEvent",
+      "topic": "wq_cancel",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "request_id",
+          "type": "u32",
+          "description": "The cancelled request ID."
+        },
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "User who cancelled."
+        }
+      ]
+    },
+    {
+      "name": "WithdrawalFulfilledEvent",
+      "topic": "wq_done",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "request_id",
+          "type": "u32",
+          "description": "The fulfilled request ID."
+        },
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "User whose request was fulfilled."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount actually withdrawn (base units)."
+        }
+      ]
+    },
+    {
+      "name": "QueueConfigUpdatedEvent",
+      "topic": "wq_cfg",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "new_max_size",
+          "type": "u32",
+          "description": "New max queue size."
+        },
+        {
+          "name": "new_ttl",
+          "type": "u64",
+          "description": "New TTL in seconds."
+        },
+        {
+          "name": "owner",
+          "type": "Address",
+          "description": "Owner who made the change."
+        }
+      ]
     }
   ],
   "errors": {
-    "VaultError::NegativeMin": {
-      "code": 1,
-      "description": "Supplied min limit is negative."
-    },
-    "VaultError::NegativeMax": {
-      "code": 2,
-      "description": "Supplied max limit is negative."
-    },
-    "VaultError::MaxLessThanMin": {
-      "code": 3,
-      "description": "max must be greater than or equal to min."
-    },
     "VaultError::AlreadyInitialized": {
       "code": 4,
       "description": "Vault has already been initialized."
@@ -2198,14 +4771,6 @@
     "VaultError::TvlCapBelowUserDepositCap": {
       "code": 25,
       "description": "TVL cap must be greater than or equal to user deposit cap."
-    },
-    "VaultError::MinimumDepositTooLow": {
-      "code": 26,
-      "description": "Minimum deposit is below the allowed floor."
-    },
-    "VaultError::MaximumDepositBelowMinimum": {
-      "code": 27,
-      "description": "Maximum deposit is below the minimum."
     },
     "VaultError::OnlyOwnerCanConfigurePool": {
       "code": 28,
@@ -2299,50 +4864,6 @@
       "code": 50,
       "description": "The timelock delay has not yet elapsed."
     },
-    "VaultError::ShareConversionOverflow": {
-      "code": 51,
-      "description": "Share conversion intermediate product overflow (assets * total_shares)."
-    },
-    "VaultError::TotalDepositsOverflow": {
-      "code": 52,
-      "description": "Total deposits arithmetic overflow."
-    },
-    "VaultError::SharesOverflow": {
-      "code": 53,
-      "description": "User shares arithmetic overflow."
-    },
-    "VaultError::TotalSharesOverflow": {
-      "code": 54,
-      "description": "Total shares arithmetic overflow."
-    },
-    "VaultError::TotalAssetsOverflow": {
-      "code": 55,
-      "description": "Total assets arithmetic overflow."
-    },
-    "VaultError::ShareToAssetConversionOverflow": {
-      "code": 56,
-      "description": "Share conversion intermediate product overflow (shares * total_assets)."
-    },
-    "VaultError::ExchangeRateOverflow": {
-      "code": 57,
-      "description": "Exchange rate intermediate product overflow (total_assets * scalar)."
-    },
-    "VaultError::WithdrawalUnderflow": {
-      "code": 58,
-      "description": "Arithmetic underflow in withdrawal."
-    },
-    "VaultError::MaxDecreaseOverflow": {
-      "code": 59,
-      "description": "Maximum decrease calculation overflow."
-    },
-    "VaultError::TotalAvailableOverflow": {
-      "code": 60,
-      "description": "Total available balance overflow."
-    },
-    "VaultError::VersionOverflow": {
-      "code": 61,
-      "description": "Version counter overflow."
-    },
     "VaultError::DeployerCannotBeZeroAddress": {
       "code": 62,
       "description": "Deployer address supplied to `initialize` is the zero address."
@@ -2362,6 +4883,114 @@
     "VaultError::MaximumDepositExceedsCeiling": {
       "code": 66,
       "description": "Maximum per-transaction deposit exceeds the absolute configured ceiling."
+    },
+    "VaultError::MigrationPaused": {
+      "code": 67,
+      "description": "Migration is paused by the owner."
+    },
+    "VaultError::InvalidMigrationTarget": {
+      "code": 68,
+      "description": "Migration target vault address is not set by owner."
+    },
+    "VaultError::NoSharesToMigrate": {
+      "code": 69,
+      "description": "User has no shares to migrate."
+    },
+    "VaultError::SharesAlreadyLocked": {
+      "code": 70,
+      "description": "Shares are already locked."
+    },
+    "VaultError::LockPeriodNotEnded": {
+      "code": 71,
+      "description": "Lock period has not ended."
+    },
+    "VaultError::InvalidLockDuration": {
+      "code": 72,
+      "description": "Lock duration is not supported."
+    },
+    "VaultError::InsufficientUnlockedShares": {
+      "code": 73,
+      "description": "Insufficient unlocked shares to lock."
+    },
+    "VaultError::EmergencyWithdrawalNotAllowed": {
+      "code": 74,
+      "description": "Emergency withdrawal not allowed (vault not paused)."
+    },
+    "VaultError::HoldingPeriodNotElapsed": {
+      "code": 75,
+      "description": "Withdrawal rejected: minimum holding period since last deposit has not elapsed (#659)."
+    },
+    "VaultError::InvalidHoldingPeriod": {
+      "code": 76,
+      "description": "Holding period configuration is invalid (must be non-negative) (#659)."
+    },
+    "VaultError::InvalidAllocation": {
+      "code": 77,
+      "description": "Multi-protocol allocation is invalid: a leg is out of the 0..=10_000 basis-point range, or the legs sum to more than 10_000."
+    },
+    "VaultError::MultiProtocolNotEnabled": {
+      "code": 78,
+      "description": "The call requires multi-protocol allocation mode, which is not enabled."
+    },
+    "VaultError::MultiProtocolEnabledError": {
+      "code": 79,
+      "description": "The call requires single-protocol mode, but multi-protocol mode is active."
+    },
+    "VaultError::BatchSizeExceeded": {
+      "code": 80,
+      "description": "A batch contains more entries than the configured maximum."
+    },
+    "VaultError::ProtocolAdapterNotConfigured": {
+      "code": 81,
+      "description": "No adapter contract is configured for the requested protocol (#656)."
+    },
+    "VaultError::ProtocolNotWhitelisted": {
+      "code": 82,
+      "description": "The requested protocol is not on the owner-managed whitelist (#656)."
+    },
+    "VaultError::UnsupportedAsset": {
+      "code": 83,
+      "description": "The token is not configured for the requested vault asset operation."
+    },
+    "VaultError::RateLimitExceeded": {
+      "code": 84,
+      "description": "The configured call rate for an operation has been exhausted."
+    },
+    "VaultError::InvalidRateLimitCategory": {
+      "code": 85,
+      "description": "The owner supplied an unsupported rate-limit category."
+    },
+    "VaultError::InvalidRateLimitConfig": {
+      "code": 86,
+      "description": "A rate-limit window must be non-zero when a limit is enabled."
+    },
+    "VaultError::WithdrawalRequestAlreadyFulfilled": {
+      "code": 87,
+      "description": "The withdrawal request has already been fulfilled."
+    },
+    "VaultError::WithdrawalRequestAlreadyCancelled": {
+      "code": 88,
+      "description": "The withdrawal request has already been cancelled."
+    },
+    "VaultError::NotRequestOwner": {
+      "code": 89,
+      "description": "The caller is not the address that created this withdrawal request."
+    },
+    "VaultError::UnauthorizedAgentError": {
+      "code": 90,
+      "description": "The caller is neither the primary agent nor the standby agent (#653)."
+    },
+    "VaultError::AlreadyPaused": {
+      "code": 91,
+      "description": "`pause()` was called while the vault is already paused (#988)."
+    },
+    "VaultError::StandbyMatchesPrimaryAgent": {
+      "code": 92,
+      "description": "`update_standby_agent` was called with the primary agent's own address. Neither `NotInitialized` nor `InvalidStrategy` (the two variants this call site used interchangeably before) describes this case; both are unrelated error conditions reused by mistake."
+    },
+    "VaultError::DepositRejectedZeroAssetsWithShares": {
+      "code": 93,
+      "description": "The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead."
     },
     "ValidationError": {
       "code": 100,
@@ -2401,6 +5030,36 @@
     }
   },
   "types": {
+    "RateLimitConfig": {
+      "description": "Owner-configured fixed-window call allowance",
+      "fields": [
+        {
+          "name": "max_calls",
+          "type": "u32",
+          "description": "Maximum accepted calls per window"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32",
+          "description": "Window length in ledgers"
+        }
+      ]
+    },
+    "RateLimitState": {
+      "description": "Current usage of a fixed-window rate-limit bucket",
+      "fields": [
+        {
+          "name": "window_start",
+          "type": "u32",
+          "description": "Window start ledger"
+        },
+        {
+          "name": "calls",
+          "type": "u32",
+          "description": "Accepted calls in the current window"
+        }
+      ]
+    },
     "UserInfo": {
       "description": "Complete user information snapshot",
       "fields": [

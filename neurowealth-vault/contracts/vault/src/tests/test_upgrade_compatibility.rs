@@ -21,11 +21,7 @@
 #![cfg(test)]
 
 use super::utils::*;
-use soroban_sdk::{
-    symbol_short,
-    testutils::Address as _,
-    Address, Env,
-};
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
 // ============================================================================
 // 1. Core accounting keys survive a simulated upgrade
@@ -54,9 +50,18 @@ fn test_core_accounting_keys_survive_upgrade() {
 
     // A future upgrade must not break these reads.  Assert they remain
     // non-zero and consistent so a XDR type change would surface here.
-    assert!(total_deposits > 0, "TotalDeposits should be non-zero after deposit");
-    assert!(total_shares > 0, "TotalShares should be non-zero after deposit");
-    assert!(total_assets > 0, "TotalAssets should be non-zero after deposit");
+    assert!(
+        total_deposits > 0,
+        "TotalDeposits should be non-zero after deposit"
+    );
+    assert!(
+        total_shares > 0,
+        "TotalShares should be non-zero after deposit"
+    );
+    assert!(
+        total_assets > 0,
+        "TotalAssets should be non-zero after deposit"
+    );
     assert_eq!(
         total_deposits, deposit,
         "TotalDeposits must equal the deposited principal"
@@ -93,7 +98,10 @@ fn test_user_shares_key_survives_upgrade() {
     assert!(shares_a > 0, "user_a must have positive shares");
     assert!(shares_b > 0, "user_b must have positive shares");
     // The two users deposited different amounts — shares must differ.
-    assert_ne!(shares_a, shares_b, "different deposits must yield different shares");
+    assert_ne!(
+        shares_a, shares_b,
+        "different deposits must yield different shares"
+    );
     // Total shares must equal the sum of individual shares.
     assert_eq!(
         client.get_total_shares(),
@@ -117,7 +125,10 @@ fn test_version_key_readable_after_init() {
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     let version = client.get_version();
-    assert!(version >= 1, "version must be at least 1 after initialization");
+    assert!(
+        version >= 1,
+        "version must be at least 1 after initialization"
+    );
 }
 
 // ============================================================================
@@ -142,7 +153,10 @@ fn test_config_keys_survive_deposit_withdraw_cycle() {
     let max_dep_before = client.get_max_deposit();
 
     assert!(tvl_cap_before > 0, "TVL cap must be set after init");
-    assert!(user_cap_before > 0, "user deposit cap must be set after init");
+    assert!(
+        user_cap_before > 0,
+        "user deposit cap must be set after init"
+    );
 
     // Perform deposit + withdraw.
     let user = Address::generate(&env);
@@ -151,10 +165,26 @@ fn test_config_keys_survive_deposit_withdraw_cycle() {
     client.withdraw_all(&user);
 
     // Configuration must be unchanged.
-    assert_eq!(client.get_tvl_cap(), tvl_cap_before, "TVL cap must not change during deposit/withdraw");
-    assert_eq!(client.get_user_deposit_cap(), user_cap_before, "user deposit cap must not change");
-    assert_eq!(client.get_min_deposit(), min_dep_before, "min deposit must not change");
-    assert_eq!(client.get_max_deposit(), max_dep_before, "max deposit must not change");
+    assert_eq!(
+        client.get_tvl_cap(),
+        tvl_cap_before,
+        "TVL cap must not change during deposit/withdraw"
+    );
+    assert_eq!(
+        client.get_user_deposit_cap(),
+        user_cap_before,
+        "user deposit cap must not change"
+    );
+    assert_eq!(
+        client.get_min_deposit(),
+        min_dep_before,
+        "min deposit must not change"
+    );
+    assert_eq!(
+        client.get_max_deposit(),
+        max_dep_before,
+        "max deposit must not change"
+    );
 
     // Verify owner can still update caps after the cycle (key write path intact).
     client.set_caps(&(user_cap_before * 2), &(tvl_cap_before * 2));
@@ -174,19 +204,23 @@ fn test_current_protocol_key_survives_rebalance_transitions() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (vault_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &vault_id);
 
     // Initial state: no rebalance yet — protocol is "none".
     let initial = client.get_current_protocol();
-    assert_eq!(initial, symbol_short!("none"), "initial protocol must be none");
+    assert_eq!(
+        initial,
+        symbol_short!("none"),
+        "initial protocol must be none"
+    );
 
     // Deposit so there are funds to rebalance.
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000_i128);
 
     // Rebalance to "none" (idempotent).
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
     assert_eq!(
         client.get_current_protocol(),
         symbol_short!("none"),

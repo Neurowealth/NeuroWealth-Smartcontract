@@ -4,9 +4,7 @@ use super::utils::*;
 use crate::{UserStrategyUpdatedEvent, TOPIC_USER_STRATEGY_UPDATED};
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Symbol, TryFromVal};
 
-fn setup(
-    env: &Env,
-) -> (Address, NeuroWealthVaultClient<'_>, Address, Address) {
+fn setup(env: &Env) -> (Address, NeuroWealthVaultClient<'_>, Address, Address) {
     env.mock_all_auths();
     let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(env);
     let client = NeuroWealthVaultClient::new(env, &contract_id);
@@ -177,12 +175,13 @@ fn test_set_strategy_emits_event() {
 
     client.set_user_strategy(&user, &Symbol::new(&env, "conservative"));
 
-    let strategy_events = find_events_by_topic(
-        env.events().all(),
-        &env,
-        TOPIC_USER_STRATEGY_UPDATED,
+    let strategy_events =
+        find_events_by_topic(env.events().all(), &env, TOPIC_USER_STRATEGY_UPDATED);
+    assert_eq!(
+        strategy_events.len(),
+        1,
+        "Exactly one usr_strat event should be emitted"
     );
-    assert_eq!(strategy_events.len(), 1, "Exactly one usr_strat event should be emitted");
 
     let (_, _, data) = &strategy_events[0];
     let event = UserStrategyUpdatedEvent::try_from_val(&env, data)

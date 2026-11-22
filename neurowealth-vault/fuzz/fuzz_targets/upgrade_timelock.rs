@@ -146,11 +146,7 @@ fuzz_target!(|data: &[u8]| {
                             i
                         );
                         let (actual_hash, actual_expiry) = actual_pending.unwrap();
-                        assert_eq!(
-                            actual_hash, hash,
-                            "pending hash mismatch at step {}",
-                            i
-                        );
+                        assert_eq!(actual_hash, hash, "pending hash mismatch at step {}", i);
                         assert_eq!(
                             actual_expiry, expiry,
                             "pending expiry mismatch at step {}",

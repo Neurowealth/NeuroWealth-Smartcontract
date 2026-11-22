@@ -51,7 +51,8 @@ fn test_rebalance_before_init_panics() {
     let env = Env::default();
     env.mock_all_auths();
     let (_contract_id, client) = setup_uninitialized(&env);
-    client.rebalance(&Symbol::new(&env, "none"), &0, &0);
+    let agent = Address::generate(&env);
+    client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0);
 }
 
 #[test]

@@ -11,31 +11,56 @@
 
 body {
   font-family: var(--font-outfit);
-  background-color: #080b11;
-  color: #f8fafc;
   min-height: 100vh;
   overflow-x: hidden;
 }
 
+body {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+.dark body,
+html.dark body {
+  background-color: #080b11;
+  color: #f8fafc;
+}
+
 .glass-panel {
-  background: rgba(18, 24, 36, 0.7);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+.dark .glass-panel,
+html.dark .glass-panel {
+  background: rgba(18, 24, 36, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
 }
 
 .glass-panel-interactive {
-  background: rgba(18, 24, 36, 0.7);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
   transition: all 0.25s ease-in-out;
 }
 
+.dark .glass-panel-interactive,
+html.dark .glass-panel-interactive {
+  background: rgba(18, 24, 36, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
 .glass-panel-interactive:hover {
-  border-color: rgba(16, 185, 129, 0.3);
+  border-color: rgba(16, 185, 129, 0.4);
   transform: translateY(-2px);
-  box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.15);
+  box-shadow: 0 10px 30px -10px rgba(16, 185, 129, 0.2);
 }
 
 /* Custom scrollbar */
@@ -43,12 +68,18 @@ body {
   width: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #080b11;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #cbd5e1;
   border-radius: 3px;
 }
+.dark ::-webkit-scrollbar-thumb {
+  background: #1e293b;
+}
 ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }

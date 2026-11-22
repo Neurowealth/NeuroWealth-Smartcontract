@@ -42,7 +42,7 @@ fn setup_all_in_dex(
     mint_and_deposit(env, &client, &usdc_token, &user, amount);
 
     // Rebalance: vault idle → DEX
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     // Sanity: all USDC is now in the pool
     assert_eq!(token_client.balance(&contract_id), 0);
@@ -92,8 +92,7 @@ fn test_update_total_assets_dex_yield_succeeds() {
     let deposit = 20_000_000_i128;
     let yield_amount = 2_000_000_i128; // 10% yield
 
-    let (_, agent, usdc_token, dex_pool, client, token_client) =
-        setup_all_in_dex(&env, deposit);
+    let (_, agent, usdc_token, dex_pool, client, token_client) = setup_all_in_dex(&env, deposit);
 
     // Simulate DEX accruing yield by minting directly to pool
     token_client.mint(&dex_pool, &yield_amount);
@@ -117,8 +116,7 @@ fn test_update_total_assets_partial_dex_deployment_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token, dex_pool) =
-        setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -134,7 +132,7 @@ fn test_update_total_assets_partial_dex_deployment_succeeds() {
     let dex_limit = 20_000_000_i128;
     dex_client.set_max_supply_limit(&dex_limit);
 
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     let idle = token_client.balance(&contract_id);
     let deployed = token_client.balance(&dex_pool);
@@ -163,8 +161,7 @@ fn test_update_total_assets_partial_dex_plus_yield_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token, dex_pool) =
-        setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -176,7 +173,7 @@ fn test_update_total_assets_partial_dex_plus_yield_succeeds() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_total);
 
     dex_client.set_max_supply_limit(&20_000_000_i128);
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     // Yield: 1 USDC minted to DEX pool
     let yield_amount = 1_000_000_i128;
@@ -216,8 +213,7 @@ fn test_update_total_assets_rejects_inflation_beyond_partial_dex_deployment() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token, dex_pool) =
-        setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, dex_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let dex_client = MockDexPoolClient::new(&env, &dex_pool);
@@ -229,7 +225,7 @@ fn test_update_total_assets_rejects_inflation_beyond_partial_dex_deployment() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_total);
 
     dex_client.set_max_supply_limit(&20_000_000_i128);
-    client.rebalance(&symbol_short!("dex"), &700_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &700_i128, &0_i128);
 
     // Available = 10 + 20 = 30; reporting 31 must fail
     let over_total = deposit_total + 1_i128;
@@ -301,7 +297,7 @@ fn test_update_total_assets_after_rebalance_to_none_uses_idle_dex_context() {
         setup_all_in_dex(&env, deposit);
 
     // Rebalance back to none (all funds return to vault)
-    client.rebalance(&symbol_short!("none"), &0_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
 
     assert_eq!(token_client.balance(&contract_id), deposit);
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));

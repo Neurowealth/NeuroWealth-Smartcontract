@@ -17,11 +17,19 @@ Exit codes:
     1: Drift detected — spec must be updated
 """
 
+import io
 import json
 import re
 from pathlib import Path
 from typing import Dict, List, Set
 import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 class ContractValidator:
@@ -55,12 +63,127 @@ class ContractValidator:
         print("=" * 70)
 
         self._validate_functions()
+        self._validate_access_control()
         self._validate_events()
         self._validate_event_fields()
         self._validate_error_codes()
         self._validate_spec_structure()
 
         return self._report_results()
+
+    def _validate_access_control(self):
+        """
+        Verify that function access levels in the spec match the authentication
+        enforced in the contract source code (#919).
+        """
+        print("\n🔒 Validating Access Control...")
+        # Derive access map from contract source using check-auth-matrix rules
+        parts = self.source.split("pub fn ")[1:]
+        access_map = {}
+
+        for part in parts:
+            match = re.match(r"^([a-zA-Z0-9_]+)\s*\(", part)
+            if not match:
+                continue
+            func_name = match.group(1)
+
+            if func_name == "initialize" or func_name.startswith(("get_", "preview_", "convert_")) or func_name == "is_paused":
+                continue
+
+            brace_count = 0
+            in_body = False
+            body_end = 0
+            for i, char in enumerate(part):
+                if char == '{':
+                    in_body = True
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if in_body and brace_count == 0:
+                        body_end = i
+                        break
+
+            body = part[:body_end + 1] if body_end > 0 else part
+            access = "anyone"
+
+            auth_match = re.search(r"([a-zA-Z0-9_]+)\.require_auth\(\)", body)
+            if auth_match:
+                var = auth_match.group(1)
+                if var == "owner":
+                    access = "owner"
+                elif var == "agent":
+                    access = "agent"
+                elif var == "user":
+                    access = "user"
+                elif var in ("new_owner", "pending_owner"):
+                    access = "pending-owner"
+            elif "require_auth" in body:
+                if "owner" in body.lower():
+                    access = "owner"
+                elif "user" in body.lower():
+                    access = "user"
+                elif "agent" in body.lower():
+                    access = "agent"
+            else:
+                if (
+                    "Self::require_is_owner" in body
+                    or "OnlyOwner" in body
+                    or "VaultError::CallerIsNotOwner" in body
+                    or "Self::set_rate_limit(" in body
+                    or "Self::set_max_batch_size(" in body
+                ):
+                    access = "owner"
+                elif (
+                    "Self::require_is_agent" in body
+                    or "OnlyAgent" in body
+                    or "VaultError::OnlyAgentCanUpdateTotalAssets" in body
+                    or "VaultError::UnauthorizedAgent" in body
+                    or "Self::rebalance(" in body
+                    or "Self::harvest(" in body
+                ):
+                    access = "agent"
+                elif "Self::require_is_pending_owner" in body or "CallerIsNotPendingOwner" in body:
+                    access = "pending-owner"
+                elif "emergency_harvest" in func_name and "owner" in body.lower():
+                    access = "owner"
+
+            access_map[func_name] = access
+
+        spec_funcs = {f["name"]: f for f in self.spec.get("functions", [])}
+        mismatches = 0
+
+        for fn_name, expected_access in access_map.items():
+            spec_fn = spec_funcs.get(fn_name)
+            if not spec_fn:
+                continue
+
+            raw_access = spec_fn.get("access", "public")
+            requires_auth = spec_fn.get("requires_auth", False)
+
+            if raw_access in ("owner-only", "owner"):
+                actual = "owner"
+            elif raw_access in ("agent-only", "agent"):
+                actual = "agent"
+            elif raw_access in ("pending-owner-only", "pending-owner"):
+                actual = "pending-owner"
+            elif raw_access in ("user-only", "user"):
+                actual = "user"
+            elif raw_access == "public":
+                actual = "user" if requires_auth else "anyone"
+            elif raw_access in ("anyone", "permissionless"):
+                actual = "anyone"
+            else:
+                actual = raw_access
+
+            if actual != expected_access:
+                self.errors.append(
+                    f"Function '{fn_name}': spec access is '{raw_access}' (auth={requires_auth}) "
+                    f"but source code requires '{expected_access}'"
+                )
+                mismatches += 1
+
+        if mismatches == 0:
+            self.info.append("✓ All function access levels in spec match contract source code")
 
     # ------------------------------------------------------------------
     # Function validation

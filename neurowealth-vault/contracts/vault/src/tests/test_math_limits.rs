@@ -15,7 +15,7 @@ fn test_deposit_overflow_guard_exists() {
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
     // Disable per-user cap so we are only limited by token supply
-    client.set_limits(&0, &0);
+    client.set_caps(&0, &0);
 
     let user = Address::generate(&env);
     let amount = 1_000_000_i128; // 1 USDC — tiny, just confirms the path works

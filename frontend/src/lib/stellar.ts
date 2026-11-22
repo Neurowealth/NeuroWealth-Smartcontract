@@ -1,57 +1,220 @@
-import { Server, Contract, Address, nativeToScVal, scValToNative } from '@stellar/stellar-sdk';
+import {
+  Account,
+  Address,
+  Contract,
+  nativeToScVal,
+  rpc,
+  scValToNative,
+  TransactionBuilder,
+  xdr,
+} from "@stellar/stellar-sdk";
+import { getBrowserTestHarness } from "./browserTestHarness";
+import { signWithFreighter, classifyWalletError } from "./freighter";
+import {
+  EMPTY_VAULT_STATE,
+  deriveVaultState,
+  shortenAddress as shortenSharedAddress,
+  type VaultState,
+} from "../../../packages/vault-client/src/stellar";
 
-const RPC_URL = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
-const NETWORK_PASSPHRASE = process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
-const VAULT_CONTRACT_ID = process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID || 'CDLZFC3SYJYD7M6LJEFAPCHRLHAFKP6WYTHRF3EGO5CYD3EP4GZGM37T';
+export type { VaultState };
+export { EMPTY_VAULT_STATE };
 
-export const server = new Server(RPC_URL);
+export type VaultStateResult =
+  | { ok: true; state: VaultState }
+  | { ok: false; error: string };
 
-export interface VaultState {
-  balance: number;
-  strategy: 'Conservative' | 'Balanced' | 'Growth';
-  exchangeRate: number;
-  apy: number;
+function requirePublicEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `${name} must be set; refusing to use an unsafe vault contract default`,
+    );
+  }
+  return value;
 }
 
-/**
- * Fetches user vault balance, strategy preference, and current exchange rate from Soroban smart contract.
- * Uses fallback/mock cache if contract is loading or RPC is unreachable.
- */
-export async function fetchVaultState(userAddress?: string): Promise<VaultState> {
+const RPC_URL = requirePublicEnv("NEXT_PUBLIC_SOROBAN_RPC_URL");
+const NETWORK_PASSPHRASE = requirePublicEnv(
+  "NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE",
+);
+const VAULT_CONTRACT_ID = requirePublicEnv("NEXT_PUBLIC_VAULT_CONTRACT_ID");
+
+export const server = new rpc.Server(RPC_URL, {
+  allowHttp: process.env.NEXT_PUBLIC_E2E_TESTS === "true",
+});
+export const networkPassphrase = NETWORK_PASSPHRASE;
+
+export function getExplorerNetworkSegment(passphrase: string): string {
+  if (passphrase.includes("Public Global Stellar Network")) {
+    return "public";
+  }
+  return "testnet";
+}
+
+export async function simulateContractCall(
+  method: string,
+  args: xdr.ScVal[] = [],
+  callerAddress: string,
+): Promise<unknown> {
+  const testHarness = getBrowserTestHarness();
+  if (testHarness) return testHarness.simulateContractCall(method);
+
+  const account = new Account(callerAddress, "0");
+  const contract = new Contract(VAULT_CONTRACT_ID);
+  const tx = new TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call(method, ...args))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+    throw new Error(
+      `Simulation failed for ${method}: ${"error" in sim ? sim.error : "No retval"}`,
+    );
+  }
+  return scValToNative(sim.result.retval);
+}
+
+export async function fetchVaultState(
+  userAddress?: string,
+): Promise<VaultStateResult> {
   if (!userAddress) {
-    return {
-      balance: 0,
-      strategy: 'Balanced',
-      exchangeRate: 1.0,
-      apy: 8.4
-    };
+    return { ok: true, state: { ...EMPTY_VAULT_STATE } };
   }
 
   try {
-    // Attempt contract query via Soroban RPC simulation
-    // Vault getters: get_balance(user), get_user_strategy(user), get_exchange_rate()
-    // Returns on-chain state safely
+    const userScVal = new Address(userAddress).toScVal();
+
+    const [
+      balanceRes,
+      strategyRes,
+      exchangeRateRes,
+      totalAssetsRes,
+      totalSharesRes,
+    ] = await Promise.allSettled([
+      simulateContractCall("get_balance", [userScVal], userAddress),
+      simulateContractCall("get_user_strategy", [userScVal], userAddress),
+      simulateContractCall("get_exchange_rate", [], userAddress),
+      simulateContractCall("get_total_assets", [], userAddress),
+      simulateContractCall("get_total_shares", [], userAddress),
+    ]);
+
+    const failedCall = [
+      balanceRes,
+      strategyRes,
+      exchangeRateRes,
+      totalAssetsRes,
+      totalSharesRes,
+    ].find((result) => result.status === "rejected");
+    if (failedCall?.status === "rejected") {
+      throw failedCall.reason;
+    }
+
     return {
-      balance: 1450.85,
-      strategy: 'Balanced',
-      exchangeRate: 1.042,
-      apy: 8.4
+      ok: true,
+      state: deriveVaultState({
+        balance:
+          balanceRes.status === "fulfilled"
+            ? Number(balanceRes.value) / 1e7
+            : 0,
+        rawStrategy:
+          strategyRes.status === "fulfilled" ? String(strategyRes.value) : "",
+        exchangeRateRaw:
+          exchangeRateRes.status === "fulfilled"
+            ? Number(exchangeRateRes.value) / 1e7
+            : 0,
+        totalAssets:
+          totalAssetsRes.status === "fulfilled"
+            ? Number(totalAssetsRes.value) / 1e7
+            : 0,
+        totalShares:
+          totalSharesRes.status === "fulfilled"
+            ? Number(totalSharesRes.value) / 1e7
+            : 0,
+      }),
     };
   } catch (err) {
-    console.warn('Falling back to default vault state:', err);
+    console.warn("Failed to fetch vault state from Soroban RPC:", err);
     return {
-      balance: 1000.00,
-      strategy: 'Balanced',
-      exchangeRate: 1.0,
-      apy: 8.4
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : "Unable to fetch vault state from Soroban RPC.",
     };
   }
 }
 
-/**
- * Helper to format Stellar addresses (e.g., GABC...XYZ9)
- */
 export function shortenAddress(address: string, chars = 4): string {
-  if (!address) return '';
-  return `${address.substring(0, chars + 2)}...${address.substring(address.length - chars)}`;
+  return shortenSharedAddress(address, chars);
+}
+
+export async function setUserStrategy(
+  userAddress: string,
+  strategy: "Conservative" | "Balanced" | "Growth",
+): Promise<{ ok: boolean; hash?: string; error?: string }> {
+  const testHarness = getBrowserTestHarness();
+  const rawStrategy = strategy.toLowerCase();
+
+  try {
+    if (testHarness) {
+      return { ok: true, hash: "test-strategy-hash" };
+    }
+
+    const account = await server.getAccount(userAddress);
+    const contract = new Contract(VAULT_CONTRACT_ID);
+    const tx = new TransactionBuilder(account, {
+      fee: "100",
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        contract.call(
+          "set_user_strategy",
+          new Address(userAddress).toScVal(),
+          nativeToScVal(rawStrategy, { type: "symbol" }),
+        ),
+      )
+      .setTimeout(300)
+      .build();
+
+    const prepared = await server.prepareTransaction(tx);
+    const signedXdr = await signWithFreighter(
+      prepared.toXDR(),
+      NETWORK_PASSPHRASE,
+    );
+    const sendResult = await server.sendTransaction(
+      TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE),
+    );
+
+    if (
+      sendResult.status === "ERROR" ||
+      sendResult.status === "TRY_AGAIN_LATER"
+    ) {
+      return {
+        ok: false,
+        error: "Transaction failed to submit to the Stellar network.",
+      };
+    }
+
+    const confirmation = await server.pollTransaction(sendResult.hash, {
+      attempts: 10,
+    });
+    if (confirmation.status === "SUCCESS") {
+      return { ok: true, hash: sendResult.hash };
+    }
+    return { ok: false, error: "Transaction execution failed on-chain." };
+  } catch (err) {
+    const kind = classifyWalletError(err);
+    if (kind === "user_rejected") {
+      return { ok: false, error: "Transaction signature was rejected." };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to update strategy.",
+    };
+  }
 }

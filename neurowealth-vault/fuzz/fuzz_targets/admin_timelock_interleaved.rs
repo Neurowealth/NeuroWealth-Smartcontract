@@ -223,7 +223,10 @@ fuzz_target!(|data: &[u8]| {
 
                     // Agent timelock
                     3 => {
-                        let expected_expiry = env.ledger().sequence().saturating_add(AGENT_TIMELOCK_LEDGERS);
+                        let expected_expiry = env
+                            .ledger()
+                            .sequence()
+                            .saturating_add(AGENT_TIMELOCK_LEDGERS);
                         expected_pending_agent = Some((proposal_agent.clone(), expected_expiry));
                     }
                     4 => {
@@ -268,8 +271,14 @@ fuzz_target!(|data: &[u8]| {
                 let actual_pending_agent = client.get_pending_agent_update();
                 match (&actual_pending_agent, &expected_pending_agent) {
                     (Some((addr, expiry)), Some((expected_addr, expected_expiry))) => {
-                        assert_eq!(addr, expected_addr, "agent: pending address mismatch at step {step_idx}");
-                        assert_eq!(*expiry, *expected_expiry, "agent: pending expiry mismatch at step {step_idx}");
+                        assert_eq!(
+                            addr, expected_addr,
+                            "agent: pending address mismatch at step {step_idx}"
+                        );
+                        assert_eq!(
+                            *expiry, *expected_expiry,
+                            "agent: pending expiry mismatch at step {step_idx}"
+                        );
                     }
                     (None, None) => {}
                     (Some(_), None) => {
@@ -286,7 +295,10 @@ fuzz_target!(|data: &[u8]| {
                     .copied()
                     .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
                     .unwrap_or("unknown panic");
-                assert!(is_allowed_panic(msg), "unexpected panic at step {step_idx}: {msg}");
+                assert!(
+                    is_allowed_panic(msg),
+                    "unexpected panic at step {step_idx}: {msg}"
+                );
             }
         }
     }

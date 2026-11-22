@@ -67,6 +67,7 @@ DRY-RUN PHASE (Test configuration without submitting transactions)
       * WASM hash verification ✓
       * Simulated deployment steps (no real transactions)
     - If ANY check fails: STOP, fix configuration, rerun dry-run
+    - Note: This script validates configuration only. Real deployment is manual.
 
 [ ] 4. Verify All Safety Checks Pass
     - Review output for:
@@ -76,6 +77,7 @@ DRY-RUN PHASE (Test configuration without submitting transactions)
       ✓ Owner ≠ Agent
       ✓ RPC connectivity OK
     - Document screenshot/log for audit trail
+    - Configuration is validated and ready for production deployment
 
 [ ] 5. Team Final Review
     - Have 2 team members review dry-run output
@@ -83,8 +85,12 @@ DRY-RUN PHASE (Test configuration without submitting transactions)
     - Sign off before proceeding to production deployment
 
 ================================================================================
-PRODUCTION DEPLOYMENT PHASE
+PRODUCTION DEPLOYMENT PHASE (Manual Procedures)
 ================================================================================
+
+NOTE: The deploy-mainnet.sh script provides configuration validation only via
+--dry-run. Actual mainnet deployment requires manual Stellar CLI commands.
+This design prioritizes safety by requiring explicit, verifiable steps.
 
 [ ] 1. Final Pre-Deployment Checks
     - Confirm deployer account has XLM balance
@@ -92,29 +98,27 @@ PRODUCTION DEPLOYMENT PHASE
     - Confirm no production incidents or market instability
     - Check Stellar network status: https://status.stellar.org/
 
-[ ] 2. Production Deployment (MAINNET)
-    - Command: ./scripts/deploy-mainnet.sh
-    - You will be prompted:
-      "Type 'DEPLOY TO MAINNET' to confirm:"
-    - Type exactly: DEPLOY TO MAINNET
-    - This action CANNOT be undone
+[ ] 2. Prepare Deployment Commands
+    - Generate deployment salt: openssl rand -hex 32
+    - Store in MAINNET_SALT environment variable
+    - Commands to execute (in order):
+      a. Deploy contract (soroban/stellar contract deploy)
+      b. Initialize vault with owner, agent, USDC token
+      c. Configure caps (TVL, user deposit, min/max)
+      d. Configure pools (Blend, DEX if applicable)
+      e. Configure operational settings (cooldowns, approval TTL)
 
-[ ] 3. Monitor Deployment
-    - Watch output for each step:
-      1. Deploy contract (30-60 seconds)
-      2. Initialize vault
-      3. Set capabilities
-      4. Configure pools
-      5. Configure operational settings
-    - Each step shows transaction hash
-    - Save transaction hashes for audit trail
-    - Deployment log saved to: scripts/mainnet-deployment.log
+[ ] 3. Manual Deployment Execution
+    - Work with your Stellar CLI expert or use a deployment framework
+    - Each step should save transaction hash for audit trail
+    - Deployment commands are NOT in this script (requires signed transactions)
+    - Create separate deployment script tailored to your key management setup
 
-[ ] 4. Verify Deployment Success
-    - Check for "Deployment process complete" message
-    - Verify deployment artifacts: scripts/mainnet-deployment-artifacts.json
-    - Save artifacts file to secure location (audit trail)
-    - Document vault contract ID (CABC...)
+[ ] 4. Record Deployment
+    - Save all transaction hashes
+    - Document vault contract ID (C...)
+    - Document timestamp of deployment
+    - Save to: scripts/mainnet-deployment-artifacts.json (manually)
 
 ================================================================================
 POST-DEPLOYMENT VERIFICATION PHASE

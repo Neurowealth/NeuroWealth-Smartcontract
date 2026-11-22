@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Git pre-commit hook wiring for NeuroWealth (#906)
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec bash "$ROOT/scripts/pre-commit-gitleaks.sh"

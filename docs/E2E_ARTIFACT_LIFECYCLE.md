@@ -38,6 +38,9 @@ All file outputs land in `scripts/e2e-artifacts/`:
 | `user_address.txt` | Test user public key | ✅ Yes |
 | `tx_<scenario>.txt` | Raw CLI output for each scenario | ✅ Yes |
 | `events.txt` | Contract events fetched after all scenarios | ✅ Yes |
+| `storage_layout_diff.txt` | DataKey storage layout compatibility comparison report | ✅ Yes |
+| `pre_upgrade_snapshot.json` | Pre-upgrade getter state snapshot for smoke verification | ✅ Yes |
+| `post_upgrade_smoke.txt` | Post-upgrade read-only getter sweep verification report | ✅ Yes |
 | `summary.txt` | Pass/fail summary | ✅ Yes |
 | `full_output.log` | Complete stdout (written by CI only) | ✅ Yes |
 | `.gitkeep` | Keeps the directory tracked in git | ❌ No |

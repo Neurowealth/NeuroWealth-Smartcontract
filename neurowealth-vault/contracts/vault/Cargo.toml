@@ -16,6 +16,7 @@ dex-devnet = []
 
 [dependencies]
 soroban-sdk = { workspace = true }
+share-math = { path = "../../share-math" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

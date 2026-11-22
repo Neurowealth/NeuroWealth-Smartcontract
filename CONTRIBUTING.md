@@ -56,10 +56,6 @@ The feature request template will guide you to provide:
 - Architecture alignment
 - Related issues or pull requests
 
-### Security Issues
-
-**For security-related issues**, please follow the [Security Policy](SECURITY.md) and report via GitHub's security advisory system instead of creating a public issue. Do not disclose security vulnerabilities publicly.
-
 ### Issue Labels
 
 We use the following labels to categorize issues:
@@ -85,7 +81,26 @@ To contribute to the smart contracts, you'll need the following installed:
   cargo install --locked stellar-cli --version "$STELLAR_VERSION" --features opt
   ```
   Using a different version than the pin is the most common cause of CI failures locally.
-- **Node.js & npm**: For agent and frontend development (LTS version recommended).
+- **Node.js & npm**: For package workspace, agent, frontend, and WhatsApp development (LTS version recommended).
+
+### Pre-Commit Secret Scanning Hook
+
+To catch committed secrets (Stellar secret seeds, `.env` contents, API keys) locally before pushing, wire up our pre-commit hook (`scripts/pre-commit-gitleaks.sh`):
+
+1. **Install gitleaks** (`brew install gitleaks` or download from [Gitleaks Releases](https://github.com/gitleaks/gitleaks/releases)).
+2. **Wire the git hook** using either method:
+   - Configure git hooks directory:
+     ```bash
+     git config core.hooksPath .githooks
+     ```
+   - Or symlink directly into `.git/hooks`:
+     ```bash
+     ln -sf ../../scripts/pre-commit-gitleaks.sh .git/hooks/pre-commit
+     ```
+   - Or if you use `pre-commit`:
+     ```bash
+     pre-commit install
+     ```
 
 ### Building the Contract
 
@@ -107,8 +122,22 @@ cargo test
 
 For frontend or agent changes, run:
 ```bash
+cd <package-directory>
+npm ci
 npm test
 ```
+
+For the npm package workspaces (`packages/*`), run from the repository root:
+
+```bash
+npm ci
+npm test
+```
+
+This runs every package workspace test script. The admin panel currently has
+no tests; its test command prints an explicit no-tests-yet gate. The
+`agent/`, `frontend/`, and `whatsapp/` projects are not root npm workspaces, so
+run their tests from their own directories.
 
 > **Touching share accounting?** If your change lands anywhere under
 > `neurowealth-vault/contracts/vault/src/`, CI also runs the deposit/withdraw
@@ -274,6 +303,49 @@ Our CI pipeline (defined in `.github/workflows/ci.yml`) runs on every push and p
 4. **Build WASM**: Successful build of the contract WASM.
 5. **Dependency Audit**: `cargo-deny check` runs against the policy in [`deny.toml`](deny.toml), blocking dependencies with disallowed licenses or known security advisories.
 6. **Fuzz Tests** *(conditional)*: PRs that modify files under `neurowealth-vault/contracts/vault/src/` automatically trigger the `deposit_withdraw_sequence` fuzz target with short bounds (`-runs=1000 -max_total_time=120`). The same target runs with extended bounds on the weekly schedule. See [Running Fuzz Tests](#running-fuzz-tests) for local reproduction steps.
+7. **Kani proofs**: `cargo kani -p share-math` must pass. See [`docs/FORMAL_VERIFICATION.md`](docs/FORMAL_VERIFICATION.md) and `./scripts/run-kani-proofs.sh`.
+8. **Vault UI tests**: `packages/vault-ui` `npm test` (axe-core WCAG 2.1 AA + notification unit tests).
+
+### Public Function Auth Gate
+
+The `pub-fn-auth-gate` CI job (`scripts/check-pub-fn-auth.sh`) runs on every push and pull request. It cross-references every **state-changing** public function listed in `contract-spec.json` against the Access Control Summary table in `SECURITY.md`. The build fails if any state-changing function is missing a row in that table.
+
+This gate specifically catches new functions that were added to the contract but not yet classified — `check-access-control.sh` verifies that existing rows are *accurate*; this gate ensures no new function *slips through* without a documented access-control decision.
+
+#### Adding a new state-changing function
+
+When you add a new `pub fn` to the vault contract that modifies state, you must do **both** of the following before the PR can merge:
+
+1. **Add a row to the Access Control Summary table in `SECURITY.md`** with the correct Owner / Agent / User / Anyone columns filled in.
+2. **Update `contract-spec.json`** — add or update the function's entry with:
+   - `"state_changing": true`
+   - The correct `"access"` value (`"owner-only"`, `"agent-only"`, `"public"`, or `"pending-owner-only"`)
+   - `"requires_auth": true/false` as appropriate
+
+Both files must be updated in the **same PR** as the contract change so the gate and the accuracy check both pass together.
+
+#### N/A escape hatch — genuinely non-auth functions
+
+Occasionally a state-changing function is intentionally permissionless (for example, a storage-maintenance helper that anyone may call). In that case, mark it as N/A using **one** of these two methods:
+
+- **In `contract-spec.json`**: add `"auth_gate_na": true` to the function's entry.
+- **Via environment variable**: set `AUTH_GATE_NA_FUNCTIONS=fn_name` (colon-separated for multiple names) when invoking the script locally or in a custom workflow step.
+
+Both methods cause the gate to skip that function. Reserve this escape hatch for functions that genuinely have no meaningful access-control boundary — all owner-only, agent-only, and user-scoped functions must have a SECURITY.md row.
+
+### Soroban Pitfall Lints
+
+`scripts/check-soroban-lints.py` (run in the **Security Documentation Audit** CI job) parses the production vault sources and fails on three Soroban pitfalls:
+
+| Rule | Flags |
+|------|-------|
+| `unwrap-storage-get` | `env.storage().<tier>().get(..).unwrap()` / `.expect(..)` — a missing key aborts with an opaque host panic instead of a typed `VaultError`. Use `.unwrap_or(..)` or `.unwrap_or_else(\|\| panic_with_error!(..))`. |
+| `missing-require-initialized` | A `#[contractimpl]` `pub fn` that never reaches `require_initialized` (directly or through helpers like `require_is_owner`). |
+| `missing-require-auth` | A `#[contractimpl]` `pub fn` that writes storage or moves tokens (directly or through helpers) without reaching `require_auth` / `require_auth_for_args`. |
+
+Run it locally with `python3 scripts/check-soroban-lints.py`. To suppress a finding, either add `// soroban-lint: allow(<rule>) <reason>` on the offending line (or directly above the `pub fn`), or add the function with a justification to [`scripts/soroban-lints-allow.json`](scripts/soroban-lints-allow.json).
+
+Pre-existing storage unwraps are tracked as a per-function ratchet baseline in the same file: adding a new one fails CI, and removing one asks you to lower the count via `python3 scripts/check-soroban-lints.py --update-baseline`. Never raise a baseline count to make CI pass.
 
 ### Dependency Audit & Advisory Exceptions
 
@@ -295,9 +367,11 @@ License exceptions follow the same PR-based process but additionally require leg
 ## Coding Standards
 
 - **Error Messages**: All error messages must follow the [Error Message Style Guide](ERROR_STYLE_GUIDE.md).
+- **Linting & Code Style**: Follow the [Shared Linting Baseline](docs/LINTING.md) across all Node.js and TypeScript packages (`frontend`, `agent`, `whatsapp`, `packages/vault-ui`).
 - **Architecture**: Ensure changes align with the project [Architecture Documentation](ARCHITECTURE.md).
 - **Events**: Every state change should emit a corresponding event as defined in [EVENTS.md](EVENTS.md).
 - **Safety**: Always use `checked_*` arithmetic operations for financial calculations.
+
 
 ## Submitting a Pull Request
 

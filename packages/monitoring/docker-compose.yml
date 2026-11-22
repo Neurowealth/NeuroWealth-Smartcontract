@@ -1,6 +1,17 @@
 version: "3.8"
 
 services:
+  # No healthcheck here: this image's Dockerfile HEALTHCHECK targets
+  # http://localhost:3000/health, but `npm start` runs dist/index.js, which
+  # only re-exports VaultMonitor/MetricsCollector/etc. for external
+  # consumers - it never constructs a VaultMonitor or calls its start()
+  # method, so nothing ever listens on port 3000. A docker-compose
+  # healthcheck that reused that same assumption would always report
+  # unhealthy and loop-restart a process that isn't actually broken, which
+  # is worse than no healthcheck. Wiring an actual run loop (constructing
+  # and starting a VaultMonitor from this entrypoint, and giving it an HTTP
+  # health/metrics surface) is a separate, larger change than this issue's
+  # docker-compose healthchecks scope.
   neurowealth-monitor:
     build: .
     container_name: neurowealth-monitor
@@ -35,6 +46,12 @@ services:
     networks:
       - neurowealth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # Optional: Grafana for visualization
   grafana:
@@ -50,6 +67,15 @@ services:
     networks:
       - neurowealth
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      prometheus:
+        condition: service_healthy
 
 networks:
   neurowealth:

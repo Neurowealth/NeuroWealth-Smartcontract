@@ -16,7 +16,7 @@ export const NETWORKS = {
   },
   devnet: {
     network: "DEVNET",
-    networkPassphrase: StellarSdk.Networks.STANDALONE_NETWORK_PASSPHRASE,
+    networkPassphrase: StellarSdk.Networks.STANDALONE,
     rpcUrl: "http://localhost:8000/soroban/rpc",
     horizonUrl: "http://localhost:8000",
   },

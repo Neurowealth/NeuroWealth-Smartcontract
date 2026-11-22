@@ -70,6 +70,8 @@ function toTsType(sorobanType) {
     'Address':       'string',
     'BytesN<32>':    'Uint8Array',
     'UserInfo':      'UserInfo',
+    'RateLimitConfig': 'RateLimitConfig',
+    'RateLimitState':  'RateLimitState',
   };
   if (exact[t]) return exact[t];
 
@@ -225,6 +227,25 @@ function generateConstants() {
   return lines.join('\n');
 }
 
+function generateRateLimitTypes() {
+  const configs = [
+    ['RateLimitConfig', spec.types?.RateLimitConfig],
+    ['RateLimitState', spec.types?.RateLimitState],
+  ];
+  const lines = [];
+  for (const [name, def] of configs) {
+    if (!def) continue;
+    lines.push(`/** ${def.description} */`);
+    lines.push(`export interface ${name} {`);
+    for (const field of def.fields ?? []) {
+      lines.push(`  /** ${field.description ?? ''} */`);
+      lines.push(`  ${field.name}: ${toTsType(field.type)};`);
+    }
+    lines.push('}', '');
+  }
+  return lines.join('\n');
+}
+
 function generateUserInfoType() {
   const userInfoSpec = spec.types?.UserInfo;
   if (!userInfoSpec) return '';
@@ -283,11 +304,29 @@ function generateErrorEnum() {
     'export const VaultErrorCode = {',
   ];
 
+  const seenKeys = new Map();
   for (const [name, def] of Object.entries(spec.errors ?? {})) {
-    const safeName = name
+    let safeName = name
       .replace('VaultError::', '')
       .replace(/[^a-zA-Z0-9_]/g, '_');
-    lines.push(`  /** ${def.description} */`);
+
+    // Namespace legacy variant to prevent silent overwriting of error code 90 (#1126)
+    if (name === 'VaultError::UnauthorizedAgentError') {
+      safeName = 'LegacyUnauthorizedAgentError';
+    }
+
+    if (seenKeys.has(safeName)) {
+      const existingCode = seenKeys.get(safeName);
+      if (existingCode !== def.code) {
+        if (name.startsWith('VaultError::')) {
+          safeName = 'Legacy' + safeName;
+        } else {
+          safeName = safeName + '_' + def.code;
+        }
+      }
+    }
+
+    seenKeys.set(safeName, def.code);
     lines.push(`  ${safeName}: ${def.code},`);
   }
 
@@ -355,7 +394,7 @@ function generateClientClass() {
     '  /** Raw transaction hash once submitted. */',
     '  hash?: string;',
     '  /** Raw simulation response (useful for debugging). */',
-    '  simulation?: StellarSdk.SorobanRpc.Api.SimulateTransactionResponse;',
+    '  simulation?: StellarSdk.rpc.Api.SimulateTransactionResponse;',
     '}',
     '',
     '/**',
@@ -382,7 +421,7 @@ function generateClientClass() {
     ' */',
     'export class VaultClient {',
     '  private readonly contractId: string;',
-    '  private readonly server: StellarSdk.SorobanRpc.Server;',
+    '  private readonly server: StellarSdk.rpc.Server;',
     '  private readonly networkPassphrase: string;',
     '',
     '  constructor(options: {',
@@ -396,7 +435,7 @@ function generateClientClass() {
     '    this.contractId = options.contractId;',
     '    const rpcUrl = options.rpcUrl ?? \'https://soroban-testnet.stellar.org\';',
     '    this.networkPassphrase = options.networkPassphrase ?? StellarSdk.Networks.TESTNET;',
-    '    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith(\'http://\') });',
+    '    this.server = new StellarSdk.rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith(\'http://\') });',
     '  }',
     '',
     '  // ------------------------------------------------------------------',
@@ -449,10 +488,10 @@ function generateClientClass() {
     '      .build();',
     '',
     '    const sim = await this.server.simulateTransaction(tx);',
-    '    if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {',
+    '    if (StellarSdk.rpc.Api.isSimulationError(sim)) {',
     '      this.throwVaultError(method, sim.error ?? sim);',
     '    }',
-    '    const resultEntry = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result;',
+    '    const resultEntry = (sim as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse).result;',
     '    if (!resultEntry) return undefined as unknown as T;',
     '    return scValToNative(resultEntry.retval) as T;',
     '  }',
@@ -476,11 +515,11 @@ function generateClientClass() {
     '      .build();',
     '',
     '    const sim = await this.server.simulateTransaction(tx);',
-    '    if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {',
+    '    if (StellarSdk.rpc.Api.isSimulationError(sim)) {',
     '      this.throwVaultError(method, sim.error ?? sim);',
     '    }',
     '',
-    '    const prepared = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();',
+    '    const prepared = StellarSdk.rpc.assembleTransaction(tx, sim).build();',
     '    prepared.sign(signer);',
     '',
     '    const sendResp = await this.server.sendTransaction(prepared);',
@@ -491,16 +530,16 @@ function generateClientClass() {
     '    // Poll until confirmed',
     '    let getResp = await this.server.getTransaction(sendResp.hash);',
     '    const deadline = Date.now() + 30_000;',
-    '    while (getResp.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.NOT_FOUND',
+    '    while (getResp.status === StellarSdk.rpc.Api.GetTransactionStatus.NOT_FOUND',
     '        && Date.now() < deadline) {',
     '      await new Promise(r => setTimeout(r, 1000));',
     '      getResp = await this.server.getTransaction(sendResp.hash);',
     '    }',
-    '    if (getResp.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {',
+    '    if (getResp.status === StellarSdk.rpc.Api.GetTransactionStatus.FAILED) {',
     '      this.throwVaultError(method, getResp);',
     '    }',
     '',
-    '    const retval = (getResp as StellarSdk.SorobanRpc.Api.GetSuccessfulTransactionResponse).returnValue;',
+    '    const retval = (getResp as StellarSdk.rpc.Api.GetSuccessfulTransactionResponse).returnValue;',
     '    return {',
     '      hash: sendResp.hash,',
     '      result: retval ? (scValToNative(retval) as T) : undefined,',
@@ -564,6 +603,7 @@ function generate() {
     generateFileHeader(),
     generateConstants(),
     generateUserInfoType(),
+    generateRateLimitTypes(),
     generateEventInterfaces(),
     generateErrorEnum(),
     generateClientClass(),

@@ -31,7 +31,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARTIFACTS_DIR="$SCRIPT_DIR/e2e-artifacts"
-WASM_PATH="$REPO_ROOT/neurowealth-vault/target/wasm32-unknown-unknown/release/neurowealth_vault.wasm"
+DEFAULT_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/neurowealth-vault/target}"
+WASM_PATH="${WASM_PATH:-$DEFAULT_TARGET_DIR/wasm32-unknown-unknown/release/neurowealth_vault.wasm}"
 
 SOROBAN_RPC_URL="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"
 SOROBAN_NETWORK_PASSPHRASE="${SOROBAN_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"
@@ -135,8 +136,12 @@ if [[ ! -f "$WASM_PATH" ]]; then
   log "Building contract..."
   (cd "$REPO_ROOT/neurowealth-vault" && \
     RUSTFLAGS="-C target-cpu=mvp" cargo build \
+      -p neurowealth-vault \
       --target wasm32-unknown-unknown \
       --release)
+  if command -v wasm-opt &>/dev/null && [[ -f "$WASM_PATH" ]]; then
+    wasm-opt --strip-target-features "$WASM_PATH" -o "$WASM_PATH"
+  fi
 fi
 
 if [[ ! -f "$WASM_PATH" ]]; then
@@ -146,6 +151,30 @@ fi
 
 log "WASM size: $(wc -c < "$WASM_PATH") bytes"
 save_artifact "wasm_hash.txt" "$(sha256sum "$WASM_PATH" 2>/dev/null || shasum -a 256 "$WASM_PATH")"
+
+# Validate storage layout metadata
+log "Validating contract DataKey storage layout metadata..."
+BASELINE_WASM="${BASELINE_WASM_PATH:-}"
+if [ -z "$BASELINE_WASM" ] && [ -f "$SCRIPT_DIR/../target/wasm32-unknown-unknown/release/neurowealth_vault_baseline.wasm" ]; then
+  BASELINE_WASM="$SCRIPT_DIR/../target/wasm32-unknown-unknown/release/neurowealth_vault_baseline.wasm"
+fi
+
+if [ -n "$BASELINE_WASM" ] && [ -f "$BASELINE_WASM" ]; then
+  log "Comparing candidate WASM against baseline: $BASELINE_WASM"
+  python3 "$SCRIPT_DIR/check-storage-layout.py" "$BASELINE_WASM" "$WASM_PATH" \
+    --output "$ARTIFACTS_DIR/storage_layout_diff.txt" || {
+    log "ERROR: Storage layout check failed against baseline."
+    exit 1
+  }
+else
+  log "No baseline WASM provided; inspecting candidate DataKey schema..."
+  python3 "$SCRIPT_DIR/check-storage-layout.py" "$WASM_PATH" "$WASM_PATH" \
+    --allow-identical \
+    --output "$ARTIFACTS_DIR/storage_layout_diff.txt" || {
+    log "ERROR: Storage layout check failed."
+    exit 1
+  }
+fi
 
 # ---------------------------------------------------------------------------
 # Identity setup
@@ -184,9 +213,13 @@ save_artifact "user_address.txt" "$USER_ADDR"
 
 log_section "SCENARIO: CONTRACT DEPLOYMENT"
 
+DEPLOY_SALT=$(python3 -c "import os; print(os.urandom(32).hex())")
+log "Using deployment salt: $DEPLOY_SALT"
+
 DEPLOY_OUTPUT=$(run_soroban "Deploy vault contract" \
   contract deploy \
   --wasm "$WASM_PATH" \
+  --salt "$DEPLOY_SALT" \
   --source e2e-deployer \
   --network testnet) || {
   record_fail "contract_deploy" "Failed to deploy contract: $DEPLOY_OUTPUT"
@@ -246,8 +279,11 @@ INIT_OUTPUT=$(run_soroban "Initialize vault" \
   --network testnet \
   -- \
   initialize \
+  --deployer "$DEPLOYER_ADDR" \
+  --owner "$DEPLOYER_ADDR" \
   --agent "$DEPLOYER_ADDR" \
-  --usdc_token "$USDC_TOKEN_ID" 2>&1) || {
+  --usdc_token "$USDC_TOKEN_ID" \
+  --salt "$DEPLOY_SALT" 2>&1) || {
   record_fail "initialize" "Init failed: $INIT_OUTPUT"
   exit 1
 }
@@ -262,8 +298,11 @@ REINIT_OUTPUT=$(run_soroban "Verify double-init prevention" \
   --network testnet \
   -- \
   initialize \
+  --deployer "$DEPLOYER_ADDR" \
+  --owner "$DEPLOYER_ADDR" \
   --agent "$DEPLOYER_ADDR" \
-  --usdc_token "$USDC_TOKEN_ID" 2>&1) && {
+  --usdc_token "$USDC_TOKEN_ID" \
+  --salt "$DEPLOY_SALT" 2>&1) && {
   record_fail "initialize_idempotent" "Double-init should have failed but succeeded"
 } || {
   if echo "$REINIT_OUTPUT" | grep -qi "already initialized\|Already initialized\|Error\|error\|panic\|failed"; then
@@ -272,6 +311,16 @@ REINIT_OUTPUT=$(run_soroban "Verify double-init prevention" \
     record_fail "initialize_idempotent" "Unexpected output: $REINIT_OUTPUT"
   fi
 }
+
+# Disable minimum holding period for immediate E2E deposit + withdraw verification
+run_soroban "Disable minimum holding period for E2E immediate withdrawal tests" \
+  contract invoke \
+  --id "$CONTRACT_ID" \
+  --source e2e-deployer \
+  --network testnet \
+  -- \
+  set_min_holding_period \
+  --ledgers 0 >/dev/null 2>&1 || true
 
 record_pass "initialize"
 
@@ -300,7 +349,7 @@ DEPOSIT_OUTPUT=$(run_soroban "Deposit $DEPOSIT_AMOUNT into vault" \
 
 save_artifact "tx_deposit.txt" "$DEPOSIT_OUTPUT"
 
-if echo "$DEPOSIT_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$DEPOSIT_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "deposit_basic ($DEPOSIT_AMOUNT)"
 fi
 
@@ -327,7 +376,7 @@ WITHDRAW_OUTPUT=$(run_soroban "Withdraw $WITHDRAW_AMOUNT from vault" \
 
 save_artifact "tx_withdraw.txt" "$WITHDRAW_OUTPUT"
 
-if echo "$WITHDRAW_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$WITHDRAW_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "withdraw_basic ($WITHDRAW_AMOUNT)"
 fi
 
@@ -351,7 +400,7 @@ PAUSE_OUTPUT=$(run_soroban "Pause vault" \
 
 save_artifact "tx_pause.txt" "$PAUSE_OUTPUT"
 
-if echo "$PAUSE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$PAUSE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "pause"
 fi
 
@@ -390,7 +439,7 @@ UNPAUSE_OUTPUT=$(run_soroban "Unpause vault" \
 
 save_artifact "tx_unpause.txt" "$UNPAUSE_OUTPUT"
 
-if echo "$UNPAUSE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$UNPAUSE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "unpause"
 fi
 
@@ -409,7 +458,7 @@ POST_UNPAUSE_DEPOSIT=$(run_soroban "Deposit after unpause" \
 
 save_artifact "tx_deposit_after_unpause.txt" "$POST_UNPAUSE_DEPOSIT"
 
-if echo "$POST_UNPAUSE_DEPOSIT" | grep -qv "FAILED\|error\|Error"; then
+if ! echo "$POST_UNPAUSE_DEPOSIT" | grep -qiE "FAILED|error"; then
   record_pass "deposit_after_unpause"
 fi
 
@@ -427,6 +476,7 @@ REBALANCE_OUTPUT=$(run_soroban "Rebalance to 'none' protocol" \
   --network testnet \
   -- \
   rebalance \
+  --agent "$DEPLOYER_ADDR" \
   --protocol "none" \
   --expected_apy "0" \
   --min_out "0" 2>&1) || {
@@ -436,7 +486,7 @@ REBALANCE_OUTPUT=$(run_soroban "Rebalance to 'none' protocol" \
 
 save_artifact "tx_rebalance.txt" "$REBALANCE_OUTPUT"
 
-if echo "$REBALANCE_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$REBALANCE_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "rebalance_none"
 fi
 
@@ -460,7 +510,7 @@ WITHDRAW_ALL_OUTPUT=$(run_soroban "Withdraw all remaining funds" \
 
 save_artifact "tx_withdraw_all.txt" "$WITHDRAW_ALL_OUTPUT"
 
-if echo "$WITHDRAW_ALL_OUTPUT" | grep -qv "FAILED"; then
+if ! echo "$WITHDRAW_ALL_OUTPUT" | grep -qiE "FAILED|error"; then
   record_pass "withdraw_all"
 fi
 
@@ -472,6 +522,12 @@ log_section "SCENARIO 7: EVENT VERIFICATION"
 
 # Fetch recent events for our contract using the CLI
 EVENTS_OUTPUT=$(run_soroban "Fetch contract events" \
+  events \
+  --id "$CONTRACT_ID" \
+  --network testnet \
+  --start-ledger 0 \
+  --count 50 2>&1) || \
+EVENTS_OUTPUT=$(run_soroban "Fetch contract events (legacy CLI)" \
   contract events \
   --id "$CONTRACT_ID" \
   --network testnet \
@@ -536,7 +592,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
   save_artifact "tx_update_agent_propose.txt" "$UPDATE_AGENT_OUTPUT"
 
-  if echo "$UPDATE_AGENT_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+  if ! echo "$UPDATE_AGENT_OUTPUT" | grep -qiE "FAILED|error"; then
     record_pass "update_agent_propose"
 
     # Verify agent is unchanged before confirmation
@@ -577,7 +633,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
     save_artifact "tx_confirm_agent_update.txt" "$CONFIRM_OUTPUT"
 
-    if echo "$CONFIRM_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+    if ! echo "$CONFIRM_OUTPUT" | grep -qiE "FAILED|error"; then
       record_pass "confirm_agent_update"
 
       # Verify agent is now updated
@@ -611,8 +667,8 @@ fi
 if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
   log_section "SCENARIO 9: UPGRADE TIMELOCK"
 
-  # Create a fake WASM hash for testing (32 bytes)
-  FAKE_WASM_HASH="0000000000000000000000000000000000000000000000000000000000000000"
+  # Create a non-zero fake WASM hash for testing (32 bytes)
+  FAKE_WASM_HASH="0101010101010101010101010101010101010101010101010101010101010101"
 
   # Schedule upgrade (step 1 of 2)
   SCHEDULE_OUTPUT=$(run_soroban "Schedule upgrade" \
@@ -629,7 +685,7 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
   save_artifact "tx_schedule_upgrade.txt" "$SCHEDULE_OUTPUT"
 
-  if echo "$SCHEDULE_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
+  if ! echo "$SCHEDULE_OUTPUT" | grep -qiE "FAILED|error"; then
     record_pass "schedule_upgrade"
     log "Upgrade scheduled. Execution requires waiting for the 24-hour timelock."
     log "To complete the test, run this script again after the timelock expires."
@@ -638,28 +694,92 @@ if [[ "${E2E_TEST_TIMELOCK:-}" == "true" ]]; then
 
   # Check if we should attempt execution or cancellation (for re-run scenario)
   if [[ -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt" ]]; then
-    log "Found previous upgrade schedule, attempting cancellation (safer for E2E)..."
-    CANCEL_OUTPUT=$(run_soroban "Cancel upgrade" \
-      contract invoke \
-      --id "$CONTRACT_ID" \
-      --source e2e-deployer \
-      --network testnet \
-      -- \
-      cancel_upgrade \
-      --owner "$DEPLOYER_ADDR" 2>&1) || {
-      record_fail "cancel_upgrade" "Cancellation failed: $CANCEL_OUTPUT"
-    }
+    if [[ "${E2E_EXECUTE_UPGRADE:-}" == "true" ]]; then
+      log "Attempting execute_upgrade..."
 
-    save_artifact "tx_cancel_upgrade.txt" "$CANCEL_OUTPUT"
+      # Take snapshot before execute_upgrade
+      bash "$SCRIPT_DIR/post-upgrade-smoke.sh" \
+        --mode snapshot \
+        --contract-id "$CONTRACT_ID" \
+        --network testnet \
+        --source e2e-deployer \
+        --snapshot "$ARTIFACTS_DIR/pre_upgrade_snapshot.json" 2>&1 || true
 
-    if echo "$CANCEL_OUTPUT" | grep -qv "FAILED\|error\|Error"; then
-      record_pass "cancel_upgrade"
-      log "Upgrade successfully cancelled."
-      rm -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt"
+      EXEC_OUTPUT=$(run_soroban "Execute upgrade" \
+        contract invoke \
+        --id "$CONTRACT_ID" \
+        --source e2e-deployer \
+        --network testnet \
+        -- \
+        execute_upgrade \
+        --owner "$DEPLOYER_ADDR" 2>&1) || {
+        record_fail "execute_upgrade" "Upgrade execution failed: $EXEC_OUTPUT"
+      }
+
+      save_artifact "tx_execute_upgrade.txt" "$EXEC_OUTPUT"
+
+      if ! echo "$EXEC_OUTPUT" | grep -qiE "FAILED|error"; then
+        record_pass "execute_upgrade"
+        log "Upgrade successfully executed."
+        rm -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt"
+
+        # Post-upgrade getter sweep
+        log "Running post-upgrade read-only getter sweep smoke validation..."
+        if bash "$SCRIPT_DIR/post-upgrade-smoke.sh" \
+          --mode verify \
+          --contract-id "$CONTRACT_ID" \
+          --network testnet \
+          --source e2e-deployer \
+          --user "$USER_ADDR" \
+          --snapshot "$ARTIFACTS_DIR/pre_upgrade_snapshot.json" \
+          --output "$ARTIFACTS_DIR/post_upgrade_smoke.txt"; then
+          record_pass "post_upgrade_smoke_sweep"
+        else
+          record_fail "post_upgrade_smoke_sweep" "Post-upgrade getter sweep failed. See artifacts/post_upgrade_smoke.txt"
+        fi
+      fi
+    else
+      log "Found previous upgrade schedule, attempting cancellation (safer for E2E)..."
+      CANCEL_OUTPUT=$(run_soroban "Cancel upgrade" \
+        contract invoke \
+        --id "$CONTRACT_ID" \
+        --source e2e-deployer \
+        --network testnet \
+        -- \
+        cancel_upgrade \
+        --owner "$DEPLOYER_ADDR" 2>&1) || {
+        record_fail "cancel_upgrade" "Cancellation failed: $CANCEL_OUTPUT"
+      }
+
+      save_artifact "tx_cancel_upgrade.txt" "$CANCEL_OUTPUT"
+
+      if ! echo "$CANCEL_OUTPUT" | grep -qiE "FAILED|error"; then
+        record_pass "cancel_upgrade"
+        log "Upgrade successfully cancelled."
+        rm -f "$ARTIFACTS_DIR/upgrade_timelock_note.txt"
+      fi
     fi
   fi
 else
   log "Skipping upgrade timelock test (set E2E_TEST_TIMELOCK=true to enable)"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 10: Contract Getter Sweep (Smoke Validation)
+# ---------------------------------------------------------------------------
+
+log_section "SCENARIO 10: READ-ONLY GETTER SWEEP SMOKE VALIDATION"
+
+if bash "$SCRIPT_DIR/post-upgrade-smoke.sh" \
+  --mode verify \
+  --contract-id "$CONTRACT_ID" \
+  --network testnet \
+  --source e2e-deployer \
+  --user "$USER_ADDR" \
+  --output "$ARTIFACTS_DIR/post_upgrade_smoke.txt"; then
+  record_pass "getter_sweep_smoke"
+else
+  record_fail "getter_sweep_smoke" "One or more read-only getters failed or returned invalid data. See $ARTIFACTS_DIR/post_upgrade_smoke.txt"
 fi
 
 # ---------------------------------------------------------------------------

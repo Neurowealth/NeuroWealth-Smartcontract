@@ -31,7 +31,7 @@ ERRORS=0
 echo "=== Check 1: balanced code fences ==="
 fence_count=$(grep -c '^\s*```' "$README" || true)
 if (( fence_count % 2 != 0 )); then
-  echo "FAIL: odd number of ``` fences ($fence_count) — a fence is unclosed."
+  echo "FAIL: odd number of \`\`\` fences ($fence_count) — a fence is unclosed."
   ERRORS=$((ERRORS + 1))
 else
   echo "OK: $fence_count fence markers (${fence_count}/2 pairs)."
@@ -70,7 +70,7 @@ echo ""
 echo "=== Check 3: required command snippets ==="
 declare -A REQUIRED_SNIPPETS=(
   ["cargo test"]="cargo test"
-  ["cargo build / stellar contract build"]="stellar contract build\|cargo build"
+  ["cargo build / stellar contract build"]="stellar contract build|cargo build"
   ["rustup target add wasm32"]="rustup target add wasm32"
 )
 
