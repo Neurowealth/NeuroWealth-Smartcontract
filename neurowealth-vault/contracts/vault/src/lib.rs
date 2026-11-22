@@ -2689,7 +2689,14 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::TvlCapCannotBeNegative);
         }
 
-        let old_tvl_cap: i128 = env
+        let other: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserDepositCap)
+            .unwrap_or(0_i128);
+        if cap > 0 && other > 0 && cap < other {
+            panic_with_error!(&env, VaultError::TvlCapCannotBeNegative);
+        }
             .storage()
             .instance()
             .get(&DataKey::TvLCap)
@@ -2742,7 +2749,14 @@ impl NeuroWealthVault {
             panic_with_error!(&env, VaultError::UserDepositCapCannotBeNegative);
         }
 
-        let old_user_cap: i128 = env
+        let other: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TvLCap)
+            .unwrap_or(0_i128);
+        if other > 0 && cap > 0 && other < cap {
+            panic_with_error!(&env, VaultError::UserDepositCapCannotBeNegative);
+        }
             .storage()
             .instance()
             .get(&DataKey::UserDepositCap)
@@ -3070,10 +3084,13 @@ impl NeuroWealthVault {
                 .instance()
                 .remove(&DataKey::MinRebalanceInterval);
         } else {
-            env.storage()
-                .instance()
-                .set(&DataKey::MinRebalanceInterval, &interval);
-        }
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRebalanceLedger, &env.ledger().sequence());
+
+        // Circuit breaker: fold outcome into consecutive-failure counter.
+        Self::record_rebalance_outcome(&env, &symbol_short!("success"));
+    }
 
         env.events().publish(
             (TOPIC_REBALANCE_COOLDOWN_UPDATED,),
