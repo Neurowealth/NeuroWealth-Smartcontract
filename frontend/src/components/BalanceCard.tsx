@@ -48,6 +48,7 @@ export const BalanceCard: React.FC<BalanceCardProps> = ({
 
       <div className="grid grid-cols-2 gap-3 pt-2">
         <button
+          id="deposit-btn"
           onClick={onOpenDeposit}
           disabled={!isConnected}
           className="flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold py-3 px-4 rounded-xl transition-all shadow-glow-emerald disabled:opacity-40 disabled:cursor-not-allowed"

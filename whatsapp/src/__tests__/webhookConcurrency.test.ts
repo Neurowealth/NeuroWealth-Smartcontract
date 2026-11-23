@@ -72,7 +72,8 @@ require.cache[dbModulePath] = {
   exports: { query: fakeQuery }, parent: null, children: [], paths: [],
 } as any;
 
-import { test, describe } from 'node:test';
+import { test, describe, mock } from 'node:test';
+import { VaultClient } from '@neurowealth/vault-client';
 import assert from 'node:assert/strict';
 import { handleWhatsAppWebhook } from '../webhook';
 import { createCustodialWallet } from '../walletService';
@@ -115,6 +116,9 @@ async function verifiedPhone(): Promise<string> {
 
 describe('webhook concurrency (per-user command serialization)', () => {
   test('two commands from the same user apply in arrival order, not interleaved', async () => {
+    mock.method(VaultClient.prototype, 'set_user_strategy', () =>
+      Promise.resolve({ hash: 'b'.repeat(64) }),
+    );
     const phone = await verifiedPhone();
     const order: string[] = [];
 
