@@ -6,6 +6,8 @@ import { Zap, TrendingUp, ShieldCheck, Flame, Loader2 } from 'lucide-react';
 interface StrategyBadgeProps {
   strategy: 'Conservative' | 'Balanced' | 'Growth';
   apy: number;
+  /** Week-over-week change computed from portfolio history. Omitted when there is no history. */
+  weekDelta?: number | null;
   onSelectStrategy?: (strategy: 'Conservative' | 'Balanced' | 'Growth') => void;
   isUpdating?: boolean;
   error?: string | null;
@@ -14,6 +16,7 @@ interface StrategyBadgeProps {
 export const StrategyBadge: React.FC<StrategyBadgeProps> = ({
   strategy,
   apy,
+  weekDelta = null,
   onSelectStrategy,
   isUpdating = false,
   error = null,
@@ -71,9 +74,11 @@ export const StrategyBadge: React.FC<StrategyBadgeProps> = ({
             <span className="text-sm font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider">
               Net APY
             </span>
-            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1 ml-auto">
-              <TrendingUp size={12} /> +0.4% this week
-            </span>
+            {typeof weekDelta === 'number' && Number.isFinite(weekDelta) && (
+              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1 ml-auto">
+                <TrendingUp size={12} /> {weekDelta >= 0 ? '+' : ''}{weekDelta.toFixed(1)}% this week
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-400 mt-2">{meta.desc}</p>
         </div>
