@@ -86,6 +86,13 @@ function calculateEarnings(
     .reduce((sum, tx) => sum + tx.amount, 0);
 }
 
+function escapeCSVField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 function exportToCSV(transactions: TransactionRecord[]): void {
   const headers = ["Type", "Amount", "Asset", "Tx Hash", "Timestamp", "Status"];
   const rows = transactions.map((tx) => [
@@ -97,12 +104,16 @@ function exportToCSV(transactions: TransactionRecord[]): void {
     tx.status,
   ]);
 
-  const csvContent = [headers, ...rows].map((row) => row.join(",")).join("\n");
+  const csvContent = [headers, ...rows]
+    .map((row) => row.map((field) => escapeCSVField(String(field))).join(","))
+    .join("\r\n");
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
+  link.href = url;
   link.download = `neurowealth-transactions-${new Date().toISOString().split("T")[0]}.csv`;
   link.click();
+  URL.revokeObjectURL(url);
 }
 
 export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
