@@ -73,19 +73,29 @@ async function fakeQuery(sql: string, params: any[] = []) {
         retry_count: 0,
         escalated_at: null,
       });
+      return { rows: [], rowCount: 1 };
     }
-    return { rows: [] };
+    return { rows: [], rowCount: 0 };
   }
 
   if (normalized.includes('SET STATUS =')) {
-    const [messageSid, status, errorCode, errorReason] = params;
+    const [messageSid, status, errorCode, errorReason, targetRank] = params;
     const row = table.get(messageSid);
-    if (row) {
+    const ranks: Record<string, number> = {
+      queued: 0,
+      sent: 1,
+      delivered: 2,
+      failed: 2,
+      undelivered: 2,
+    };
+    const currentRank = row ? ranks[row.status] : -1;
+    if (row && currentRank < targetRank) {
       row.status = status;
       row.error_code = errorCode;
       row.error_reason = errorReason;
+      return { rows: [], rowCount: 1 };
     }
-    return { rows: [] };
+    return { rows: [], rowCount: 0 };
   }
 
   if (normalized.includes('SET RETRY_COUNT')) {
@@ -213,8 +223,33 @@ describe('applyDeliveryStatus', () => {
   test('a duplicate terminal callback is idempotent', async () => {
     const sid = nextSid();
     await applyDeliveryStatus({ messageSid: sid, status: 'delivered' });
-    await applyDeliveryStatus({ messageSid: sid, status: 'delivered' });
+    const duplicate = await applyDeliveryStatus({ messageSid: sid, status: 'delivered' });
+    assert.deepEqual(duplicate, { applied: false, reason: 'stale_status' });
     assert.equal(table.get(sid)!.status, 'delivered');
+  });
+
+  test('does not reapply repeated or alternate terminal failure callbacks', async () => {
+    const sid = nextSid();
+    await applyDeliveryStatus({ messageSid: sid, status: 'failed' });
+
+    const duplicate = await applyDeliveryStatus({ messageSid: sid, status: 'failed' });
+    const alternateFailure = await applyDeliveryStatus({ messageSid: sid, status: 'undelivered' });
+
+    assert.deepEqual(duplicate, { applied: false, reason: 'stale_status' });
+    assert.deepEqual(alternateFailure, { applied: false, reason: 'stale_status' });
+    assert.equal(table.get(sid)!.status, 'failed');
+  });
+
+  test('only one concurrent duplicate failure callback applies', async () => {
+    const sid = nextSid();
+    const results = await Promise.all([
+      applyDeliveryStatus({ messageSid: sid, status: 'failed' }),
+      applyDeliveryStatus({ messageSid: sid, status: 'failed' }),
+      applyDeliveryStatus({ messageSid: sid, status: 'failed' }),
+    ]);
+
+    assert.equal(results.filter((result) => result.applied).length, 1);
+    assert.equal(table.get(sid)!.status, 'failed');
   });
 
   test('persists a redacted failure reason', async () => {
