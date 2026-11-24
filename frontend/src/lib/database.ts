@@ -99,13 +99,13 @@ export async function getPortfolioValueHistory(
     .from("yield_snapshots")
     .select("total_assets, timestamp")
     .eq("user_id", user.id)
-    .order("timestamp", { ascending: true })
+    .order("timestamp", { ascending: false })
     .limit(30);
 
   if (!snapshots || snapshots.length === 0) return [];
 
   let prevAssets = 0;
-  return snapshots.map((s) => {
+  return [...snapshots].reverse().map((s) => {
     const assets = parseFloat(String(s.total_assets));
     const date = new Date(s.timestamp);
     const label = `${date.toLocaleString("en-US", { month: "short" })} ${date.getDate()}`;

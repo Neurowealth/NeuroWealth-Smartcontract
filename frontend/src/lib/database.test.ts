@@ -122,17 +122,18 @@ describe('getPortfolioValueHistory', () => {
   });
 
   it('maps snapshots into chart points with a computed yield delta', async () => {
-    fromMock.mockReturnValueOnce(chainable({ data: { id: 'user-1' } })).mockReturnValueOnce(
-      chainable({
-        data: [
-          { total_assets: '100', timestamp: '2026-01-01T00:00:00Z' },
-          { total_assets: '110.5', timestamp: '2026-01-02T00:00:00Z' },
-        ],
-      }),
-    );
+    const snapshotsChain = chainable({
+      data: [
+        { total_assets: '110.5', timestamp: '2026-01-02T00:00:00Z' },
+        { total_assets: '100', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    fromMock.mockReturnValueOnce(chainable({ data: { id: 'user-1' } })).mockReturnValueOnce(snapshotsChain);
 
     const result = await getPortfolioValueHistory(USER_ADDRESS);
 
+    expect(snapshotsChain.order).toHaveBeenCalledWith('timestamp', { ascending: false });
+    expect(snapshotsChain.limit).toHaveBeenCalledWith(30);
     expect(result).toEqual([
       { date: 'Jan 1', value: 100, yield: 100 },
       { date: 'Jan 2', value: 110.5, yield: 10.5 },
