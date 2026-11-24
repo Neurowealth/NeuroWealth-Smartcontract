@@ -3966,6 +3966,10 @@ impl NeuroWealthVault {
     ///   or if the expiry ledger would overflow `u32`.
     /// - [`VaultError::InsufficientUnlockedShares`] if user doesn't have enough unlocked shares.
     ///
+    /// Shares that back a pending withdrawal request (`queue_withdrawal`) are
+    /// not lockable (#1089). Locking them would strand the request: the queue
+    /// would find them locked when it tried to pay the head request out.
+    ///
     /// # Panics
     ///
     /// - If the vault is not initialized.
@@ -3988,15 +3992,21 @@ impl NeuroWealthVault {
             _ => panic_with_error!(&env, VaultError::InvalidLockDuration),
         };
 
-        // Check user has enough unlocked shares
+        // Check user has enough unlocked shares. Shares reserved by pending
+        // withdrawal requests count as locked (#1089): a queued request does
+        // not move its shares out of the user's balance, so without this
+        // subtraction the user could lock the very shares backing it and the
+        // queue would panic on the head request, stalling the whole batch.
         let total_user_shares: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
         let unlocked_shares = total_user_shares
             .checked_sub(existing_locked)
-            .unwrap_or_else(|| panic_with_error!(&env, VaultError::InsufficientUnlockedShares));
+            .and_then(|unlocked| unlocked.checked_sub(reserved_shares))
+            .unwrap_or(0);
         Self::require(
             &env,
             shares <= unlocked_shares,
@@ -9872,6 +9882,11 @@ impl NeuroWealthVault {
     /// Returns the auto-incrementing request ID. The request is fulfilled
     /// asynchronously when the agent calls `process_withdrawal_queue`.
     ///
+    /// The shares backing a queued request stay in the user's balance, but
+    /// they are reserved: `lock_shares`, `withdraw`, `withdraw_all` and
+    /// `emergency_withdraw` all refuse to touch them until the request is
+    /// fulfilled, cancelled or expired (#1089).
+    ///
     /// # Arguments
     /// * `env` - Soroban environment.
     /// * `user` - Address of the user requesting withdrawal.
@@ -10352,17 +10367,22 @@ impl NeuroWealthVault {
                 continue;
             }
 
+            // Release this request's reservation *before* paying it out
+            // (#1089): `burn_and_pay` treats reserved shares as unspendable,
+            // and this request is about to become terminal. Any failure below
+            // reverts the whole transaction, so the release can never be
+            // persisted without the payout.
+            Self::adjust_reserved_withdrawal_amount(
+                &env,
+                &request.user,
+                0_i128.saturating_sub(request.amount),
+            );
+
             let (paid, _) = Self::burn_and_pay(
                 &env,
                 &request.user,
                 request.amount,
                 BurnAndPayMode::Requested,
-            );
-
-            Self::adjust_reserved_withdrawal_amount(
-                &env,
-                &request.user,
-                0_i128.saturating_sub(request.amount),
             );
 
             // Fulfil only after payment and share accounting have succeeded.
@@ -11361,6 +11381,40 @@ impl NeuroWealthVault {
             .unwrap_or(0_i128)
     }
 
+    /// Reads the number of shares that must stay in `user`'s balance to back
+    /// their pending withdrawal requests (#1089).
+    ///
+    /// `queue_withdrawal` reserves *assets* and never moves the shares that
+    /// cover them, so every lock/spend path has to subtract this amount
+    /// itself. The conversion mirrors `queue_withdrawal`'s ceiling division
+    /// (the exact inverse of `get_balance`'s floor division) so both agree on
+    /// how many shares a reservation needs.
+    #[inline]
+    fn read_reserved_withdrawal_shares(env: &Env, user: &Address) -> i128 {
+        let reserved_assets = Self::read_reserved_withdrawal_amount(env, user);
+        if reserved_assets <= 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+        if total_shares <= 0 || total_assets <= 0 {
+            return reserved_assets;
+        }
+
+        reserved_assets
+            .checked_mul(total_shares)
+            .expect("vault: shares overflow")
+            .checked_add(
+                total_assets
+                    .checked_sub(1)
+                    .expect("vault: shares underflow"),
+            )
+            .expect("vault: shares overflow")
+            .checked_div(total_assets)
+            .expect("vault: divide by zero")
+    }
+
     /// Adjusts a user's reserved-withdrawal total by `delta` (#990). `delta`
     /// is negative to release a reservation (on cancel or fulfillment) and
     /// positive to add one (on a new `queue_withdrawal` call). Floors at 0
@@ -11401,15 +11455,20 @@ impl NeuroWealthVault {
         Self::require(env, user_shares > 0, no_shares_error);
 
         let (locked_shares, lock_expiry) = Self::read_lock_state(env, user);
-        let shares_for_redemption = if mode == BurnAndPayMode::All && locked_shares > 0 {
-            let unlocked_shares = user_shares
-                .checked_sub(locked_shares)
-                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
-            Self::require(env, unlocked_shares > 0, VaultError::InsufficientShares);
-            unlocked_shares
-        } else {
-            user_shares
-        };
+        // Shares reserved by pending withdrawal requests are spent at queue
+        // processing time, so no withdrawal may redeem them first (#1089).
+        let reserved_shares = Self::read_reserved_withdrawal_shares(env, user);
+        let shares_for_redemption =
+            if mode == BurnAndPayMode::All && (locked_shares > 0 || reserved_shares > 0) {
+                let redeemable_shares = user_shares
+                    .checked_sub(locked_shares)
+                    .and_then(|shares| shares.checked_sub(reserved_shares))
+                    .unwrap_or(0);
+                Self::require(env, redeemable_shares > 0, VaultError::InsufficientShares);
+                redeemable_shares
+            } else {
+                user_shares
+            };
 
         if mode != BurnAndPayMode::Emergency {
             Self::require_min_holding_period_elapsed(env, user);
@@ -11456,11 +11515,12 @@ impl NeuroWealthVault {
             return (0, shares_for_redemption);
         }
 
-        if mode == BurnAndPayMode::Requested && locked_shares > 0 {
-            let unlocked_shares = user_shares
+        if mode == BurnAndPayMode::Requested && (locked_shares > 0 || reserved_shares > 0) {
+            let spendable_shares = user_shares
                 .checked_sub(locked_shares)
-                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
-            let max_withdrawable = Self::convert_to_assets_internal(env, unlocked_shares);
+                .and_then(|shares| shares.checked_sub(reserved_shares))
+                .unwrap_or(0);
+            let max_withdrawable = Self::convert_to_assets_internal(env, spendable_shares);
             Self::require(
                 env,
                 requested <= max_withdrawable,
@@ -11523,23 +11583,26 @@ impl NeuroWealthVault {
             VaultError::InsufficientSharesForAmount,
         );
 
-        // Locked shares (from `lock_shares`) must never be burned before
-        // their lock expires, regardless of withdrawal mode. `All` mode
-        // already excludes locked shares from `shares_for_redemption` above;
+        // Locked shares (from `lock_shares`) and shares reserved by pending
+        // withdrawal requests must never be burned before their lock expires
+        // or the request is fulfilled, regardless of withdrawal mode. `All`
+        // mode already excludes both from `shares_for_redemption` above;
         // `Requested` and `Emergency` both burn against the user's raw share
         // balance, so both need this explicit floor. Without it here,
-        // `emergency_withdraw` could silently drain a user's locked
-        // position during a pause, leaving `LockedShares(user) >
-        // Shares(user)` afterward.
+        // `emergency_withdraw` could silently drain a user's locked position
+        // during a pause, leaving `LockedShares(user) > Shares(user)`
+        // afterward, and a direct withdrawal could spend the shares a queued
+        // request needs (#1089).
         if (mode == BurnAndPayMode::Requested || mode == BurnAndPayMode::Emergency)
-            && locked_shares > 0
+            && (locked_shares > 0 || reserved_shares > 0)
         {
             let remaining_shares = user_shares
                 .checked_sub(shares_to_burn)
                 .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+            let unavailable_shares = locked_shares.saturating_add(reserved_shares);
             Self::require(
                 env,
-                remaining_shares >= locked_shares,
+                remaining_shares >= unavailable_shares,
                 VaultError::InsufficientShares,
             );
         }
