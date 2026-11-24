@@ -1,5 +1,35 @@
 # Security Model
 
+## Reporting a Vulnerability
+
+**Please do not open public issues or pull requests for security vulnerabilities.**
+Public disclosure puts users and funds at risk and may disqualify a report from any
+bug bounty programme.
+
+Report vulnerabilities privately through GitHub Private Vulnerability Reporting:
+
+1. Open the repository's **Security** tab.
+2. Choose **Report a vulnerability**, or go directly to
+   <https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new>.
+3. Include the affected contract/function, impact, reproduction steps or a proof of
+   concept, and your preferred contact details.
+
+The legacy `security@neurowealth.io` address is **not monitored and must not be used**.
+
+If the "Report a vulnerability" button is missing or the form is unreachable, Private
+Vulnerability Reporting is not enabled on the repository. Please open an issue that says
+only "Private vulnerability reporting is unavailable" and contains **no vulnerability
+details**, and ask a maintainer to open a draft security advisory and invite you to it.
+
+### Maintainer checklist
+
+Private Vulnerability Reporting is a repository setting that cannot be enabled from a pull
+request. A repository admin must turn it on under
+**Settings → Code security → Private vulnerability reporting → Enable**, and confirm the
+"Report a vulnerability" button is visible to non-members on the Security tab.
+
+---
+
 This document describes the security architecture, trust model, and threat model for the NeuroWealth Vault contract.
 
 ---
