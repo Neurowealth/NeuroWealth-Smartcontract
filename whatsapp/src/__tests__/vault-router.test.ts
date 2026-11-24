@@ -54,9 +54,7 @@ describe('getPortfolio', () => {
   beforeEach(() => {
     mock.method(VaultClient.prototype, 'get_balance', () => Promise.resolve(1_000_0000000n));
     mock.method(VaultClient.prototype, 'get_user_strategy', () => Promise.resolve('growth'));
-    mock.method(VaultClient.prototype, 'get_exchange_rate', () => Promise.resolve(10_500_0000n));
-    mock.method(VaultClient.prototype, 'get_total_assets', () => Promise.resolve(2_000_0000000n));
-    mock.method(VaultClient.prototype, 'get_total_shares', () => Promise.resolve(1_800_0000000n));
+    mock.method(VaultClient.prototype, 'get_user_apy', () => Promise.resolve(850n));
   });
 
   test('returns portfolio with required numeric fields', async () => {
@@ -69,10 +67,12 @@ describe('getPortfolio', () => {
     assert.ok(typeof p.strategy === 'string' && p.strategy.length > 0);
   });
 
-  test('scales raw stroops by 10^7 and maps the strategy name', async () => {
+  test('scales raw stroops by 10^7, reads contract APY, and computes USD 1:1 with USDC', async () => {
     const hash = await setupWallet();
     const p = await getPortfolio(hash);
     assert.equal(p.balance, 1_000);
+    assert.equal(p.usdEquivalent, 1_000);
+    assert.equal(p.apy, 8.5);
     assert.equal(p.strategy, 'Growth');
   });
 

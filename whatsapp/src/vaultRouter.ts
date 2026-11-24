@@ -146,27 +146,19 @@ export async function getPortfolio(phoneHash: string): Promise<UserPortfolio> {
   try {
     const client = vaultClient();
     const sourcePublicKey = wallet.publicKey;
-    const [balanceRaw, rawStrategy, exchangeRateRaw, totalAssetsRaw, totalSharesRaw] = await Promise.all([
+    const [balanceRaw, rawStrategy, userApyRaw] = await Promise.all([
       client.get_balance(wallet.publicKey, sourcePublicKey),
       client.get_user_strategy(wallet.publicKey, sourcePublicKey),
-      client.get_exchange_rate(sourcePublicKey),
-      client.get_total_assets(sourcePublicKey),
-      client.get_total_shares(sourcePublicKey),
+      client.get_user_apy(wallet.publicKey, sourcePublicKey).catch(() => 0n),
     ]);
 
     const balance = fromStroops(balanceRaw);
     const strategy = STRATEGY_MAP[String(rawStrategy)] || 'Balanced';
-    const exchangeRateFromContract = fromStroops(exchangeRateRaw);
-    const totalAssets = fromStroops(totalAssetsRaw);
-    const totalShares = fromStroops(totalSharesRaw);
+    const apy = Number((Number(userApyRaw) / 100).toFixed(2));
 
-    const exchangeRate = exchangeRateFromContract || (totalShares > 0 ? totalAssets / totalShares : 1.0);
-    const apy = totalAssets > 0 && totalShares > 0
-      ? Number((((totalAssets / totalShares - 1) * 365 * 100).toFixed(2)))
-      : 0;
-
-    const usdEquivalent = balance * exchangeRate;
-    const dailyEarnings = balance > 0 ? (balance * (apy / 100)) / 365 : 0;
+    // get_balance already returns the user's USDC asset value (1 USDC = $1.00 USD).
+    const usdEquivalent = Number(balance.toFixed(2));
+    const dailyEarnings = balance > 0 && apy > 0 ? (balance * (apy / 100)) / 365 : 0;
 
     return {
       balance,
