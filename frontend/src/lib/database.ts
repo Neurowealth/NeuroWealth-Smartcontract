@@ -30,6 +30,7 @@ export async function getEarningsSummary(
 ): Promise<EarningsSummary> {
   if (getBrowserTestHarness()) return { today: 0, week: 0, month: 0 };
   if (!userAddress || !supabaseUrl()) return { today: 0, week: 0, month: 0 };
+  if (!supabase) return { today: 0, week: 0, month: 0 };
 
   const { data: user } = await supabase
     .from("users")
@@ -86,6 +87,7 @@ export async function getPortfolioValueHistory(
 ): Promise<ChartDataPoint[]> {
   if (getBrowserTestHarness()) return [];
   if (!userAddress || !supabaseUrl()) return [];
+  if (!supabase) return [];
 
   const { data: user } = await supabase
     .from("users")
@@ -121,7 +123,7 @@ export async function getRecentTransactions(
   if (!userAddress) return [];
   if (getBrowserTestHarness()) return [];
 
-  if (!supabaseUrl()) {
+  if (!supabaseUrl() || !supabase) {
     return getRecentTransactionsFromRpc(userAddress);
   }
 
