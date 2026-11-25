@@ -17,9 +17,6 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const SOROBAN_RPC_URL = requireEnv('SOROBAN_RPC_URL');
-const VAULT_CONTRACT_ID = requireEnv('VAULT_CONTRACT_ID');
-
 /** USDC has 7 decimal places on this vault; see contractLimits.ts's own USDC_DECIMALS. */
 const USDC_DECIMALS = 7;
 const STROOPS_PER_USDC = 10 ** USDC_DECIMALS;
@@ -33,7 +30,10 @@ function fromStroops(stroops: bigint): number {
 }
 
 function vaultClient(): VaultClient {
-  return new VaultClient({ contractId: VAULT_CONTRACT_ID, rpcUrl: SOROBAN_RPC_URL });
+  return new VaultClient({
+    contractId: requireEnv('VAULT_CONTRACT_ID'),
+    rpcUrl: requireEnv('SOROBAN_RPC_URL'),
+  });
 }
 
 function toStrategySymbol(strategy: string): Strategy | null {
