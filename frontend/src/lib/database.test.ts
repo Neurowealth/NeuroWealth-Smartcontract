@@ -91,6 +91,31 @@ describe('getEarningsSummary', () => {
     expect(result.month).toBe(15.75);
     expect(result.today).toBeGreaterThanOrEqual(10.5);
   });
+
+  it('counts DATE-only entries on the local calendar day (#1173)', async () => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const key = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const todayKey = key(now);
+    const yesterdayKey = key(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+
+    const earningsChain = chainable({
+      data: [
+        { daily_earnings: '12.5', date: todayKey },
+        { daily_earnings: '4', date: yesterdayKey },
+      ],
+    });
+    fromMock
+      .mockReturnValueOnce(chainable({ data: { id: 'user-1' } }))
+      .mockReturnValueOnce(earningsChain);
+
+    const result = await getEarningsSummary(USER_ADDRESS);
+
+    expect(earningsChain.gte).toHaveBeenCalledWith('date', expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
+    expect(result.today).toBe(12.5);
+    expect(result.week).toBe(16.5);
+    expect(result.month).toBe(16.5);
+  });
 });
 
 describe('getPortfolioValueHistory', () => {

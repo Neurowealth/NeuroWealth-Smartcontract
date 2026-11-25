@@ -15,6 +15,26 @@ export interface ChartDataPoint {
   yield: number;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Formats a `Date` as a local-time `YYYY-MM-DD` key. */
+function localDateKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Normalises an `earnings_history.date` value to a local-time `YYYY-MM-DD` key.
+ * DATE-only values are already local calendar dates and must not be parsed with
+ * `new Date(...)`, which treats them as UTC midnight.
+ */
+function earningsDateKey(value: string): string {
+  return value.length > 10 && value[10] === "T"
+    ? localDateKey(new Date(value))
+    : value.slice(0, 10);
+}
+
 export interface TransactionRecord {
   id: string;
   type: "deposit" | "withdrawal" | "rebalance";
@@ -40,23 +60,15 @@ export async function getEarningsSummary(
   if (!user) return { today: 0, week: 0, month: 0 };
 
   const now = new Date();
-  const todayStart = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  ).toISOString();
-  const weekStart = new Date(
-    now.getTime() - 7 * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  const thirtyDaysStart = new Date(
-    now.getTime() - 30 * 24 * 60 * 60 * 1000,
-  ).toISOString();
+  const todayKey = localDateKey(now);
+  const weekStartKey = localDateKey(new Date(now.getTime() - 7 * MS_PER_DAY));
+  const monthStartKey = localDateKey(new Date(now.getTime() - 30 * MS_PER_DAY));
 
   const { data: earnings } = await supabase
     .from("earnings_history")
     .select("daily_earnings, date")
     .eq("user_id", user.id)
-    .gte("date", thirtyDaysStart.split("T")[0])
+    .gte("date", monthStartKey)
     .order("date", { ascending: false });
 
   if (!earnings || earnings.length === 0)
@@ -68,10 +80,10 @@ export async function getEarningsSummary(
 
   for (const entry of earnings) {
     const amount = parseFloat(String(entry.daily_earnings));
-    const entryDate = new Date(entry.date);
+    const entryKey = earningsDateKey(String(entry.date));
     month += amount;
-    if (entryDate >= new Date(weekStart)) week += amount;
-    if (entryDate >= new Date(todayStart)) today += amount;
+    if (entryKey >= weekStartKey) week += amount;
+    if (entryKey === todayKey) today += amount;
   }
 
   return {
