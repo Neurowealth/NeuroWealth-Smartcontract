@@ -1027,6 +1027,8 @@ pub struct PauseEvent {
     pub caller: Address,
 }
 
+
+
 /// Emitted once when the vault is initialized via `initialize`.
 ///
 /// # Topics
