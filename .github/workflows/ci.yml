@@ -681,6 +681,24 @@ jobs:
       - name: Verify every test_*.rs file is registered in tests/mod.rs
         run: bash scripts/check-test-registration.sh
 
+  mainnet-verify-smoke:
+    name: Mainnet Verification Script Smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # Runs the script's initialization path so undefined helper functions
+      # (e.g. calling `log_section` when only `section` exists) fail CI
+      # instead of silently aborting the mainnet verification runbook.
+      - name: Smoke-test verify-mainnet-deployment.sh initialization
+        run: |
+          set -euo pipefail
+          bash -n scripts/verify-mainnet-deployment.sh
+          bash scripts/verify-mainnet-deployment.sh --help
+
   changes:
     name: Detect changes
     runs-on: ubuntu-latest

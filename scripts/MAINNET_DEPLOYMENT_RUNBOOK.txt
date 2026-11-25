@@ -138,6 +138,10 @@ POST-DEPLOYMENT VERIFICATION PHASE
       export BLEND_POOL_ADDRESS="C..."
 
     - Command: ./scripts/verify-mainnet-deployment.sh
+    - Before running, confirm the script initializes without error:
+      bash scripts/verify-mainnet-deployment.sh --help
+      (Expected: usage text and exit 0. A "command not found" error here means
+      the script is broken and NO verification has been performed.)
     - All 10 checks must PASS:
       ✓ Key separation
       ✓ Contract owner
@@ -149,6 +153,8 @@ POST-DEPLOYMENT VERIFICATION PHASE
       ✓ Blend pool
       ✓ DEX pool (optional)
       ✓ Pause/unpause drill (optional)
+    - Confirm the output contains a check-by-check results section. If no
+      checks ran, treat the verification as FAILED.
 
 [ ] 2. Test Pause Drill (if enabled)
     - Vault will be paused and unpaused on mainnet
