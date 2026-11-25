@@ -5459,8 +5459,21 @@ impl NeuroWealthVault {
                 Self::supply_to_blend(&env, withdrawn, min_out, true);
             } else if current_protocol == symbol_short!("dex") {
                 Self::supply_to_dex(&env, withdrawn, min_out, true);
-            }
-        }
+            } else if current_protocol == symbol_short!("multi") {
+                // #1091 - multi mode exits both venues, so re-supply both by the
+                // stored allocation exactly like harvest() does. Without this
+                // the whole withdrawn amount stayed idle in the vault.
+                let (blend_bps, dex_bps) = Self::read_allocation(&env);
+                let (blend_to_supply, dex_to_supply) =
+                    Self::split_by_bps(withdrawn, blend_bps, dex_bps);
+                if blend_to_supply > 0 {
+                    Self::supply_to_blend(&env, blend_to_supply, min_out, false);
+                }
+                if dex_to_supply > 0 {
+                    Self::supply_to_dex(&env, dex_to_supply, min_out, false);
+                }
+                Self::sync_deployed_split(&env);
+            }        }
 
         env.events().publish(
             (TOPIC_EMERGENCY_HARVEST,),
@@ -10043,8 +10056,11 @@ impl NeuroWealthVault {
         // on an exact division and spuriously reject a legitimate
         // full-balance withdrawal request with InsufficientSharesForAmount.
         let shares_needed = if total_shares > 0 {
-            let numerator = total_reserved_after
-                .checked_mul(total_shares)
+            // #1090 - shares exist but the vault reports zero assets (reachable
+            // after an owner-cosigned write-down). Return a defined error
+            // instead of aborting on the division below.
+            Self::require(&env, total_assets > 0, VaultError::NoAssetsToWithdraw);
+            let numerator = total_reserved_after                .checked_mul(total_shares)
                 .expect("vault: shares overflow");
             numerator
                 .checked_add(total_assets)

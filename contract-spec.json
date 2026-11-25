@@ -2477,6 +2477,29 @@
       "query_only": false
     },
     {
+      "name": "touch_user_asset_ttl",
+      "category": "management",
+      "access": "public",
+      "description": "Function touch_user_asset_ttl",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": true,
+      "state_changing": false
+    },
+    {
       "name": "get_user_info",
       "category": "queries",
       "access": "public",

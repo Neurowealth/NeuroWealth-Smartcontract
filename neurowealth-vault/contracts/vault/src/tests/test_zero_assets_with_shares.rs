@@ -117,3 +117,28 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     entries.push_back((usdc_token, deposit2));
     client.batch_deposit(&user2, &entries);
 }
+
+
+/// #1090: queue_withdrawal returns a defined error, not a raw divide-by-zero
+/// panic, when shares exist but total_assets is zero.
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_queue_withdrawal_rejected_when_shares_exist_but_assets_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+
+    let user = Address::generate(&env);
+    let deposit = 10_000_000_i128;
+    token.mint(&user, &deposit);
+    client.deposit(&user, &deposit);
+
+    // Write the vault assets down to zero while the user still holds shares.
+    let agent = Address::generate(&env);
+    client.update_total_assets(&agent, &0_i128, &true, &1000);
+
+    client.queue_withdrawal(&user, &1_000_000_i128);
+}

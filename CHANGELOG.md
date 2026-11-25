@@ -10,6 +10,14 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Fix `queue_withdrawal` divide-by-zero (Issue #1090):** when shares exist but
+  `TotalAssets` is zero (reachable after an owner-cosigned write-down),
+  `queue_withdrawal` now fails with `VaultError::NoAssetsToWithdraw` (code 9)
+  instead of aborting on a raw division by zero. No new error code.
+- **Fix `emergency_harvest` in multi-protocol mode (Issue #1091):** when
+  `CurrentProtocol` is `"multi"`, the withdrawn amount is now re-supplied to Blend
+  and the DEX by the stored allocation, mirroring `harvest`. Previously both venues
+  were fully exited and nothing was re-supplied, leaving all funds idle.
 - **Asset withdrawal event topic (Issue #1088):** `withdraw_asset` now publishes
   `AssetWithdrawEvent` as `(TOPIC_ASSET_WITHDRAW, user, asset)`, matching the
   documented indexed-topic schema and `deposit_asset`. Asset-filtering indexers
