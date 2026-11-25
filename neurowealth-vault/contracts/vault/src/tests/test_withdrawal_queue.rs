@@ -434,3 +434,44 @@ fn test_withdraw_all_keeps_shares_reserved_by_queue() {
     assert_eq!(client.get_shares(&user), 0);
     assert_eq!(token.balance(&user), deposit);
 }
+
+/// Regression test (#1156): the per-user withdrawal rate limit is charged when
+/// a request is queued, so several requests cannot be batched through the
+/// queue to bypass the configured frequency cap.
+#[test]
+fn test_queue_withdrawal_enforces_withdraw_rate_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let client = NeuroWealthVaultClient::new(&env, &contract_id);
+    let token = TestTokenClient::new(&env, &usdc_token);
+    let user = Address::generate(&env);
+    let deposit = 1_000_0000000_i128;
+    mint_and_deposit(&env, &client, &usdc_token, &user, deposit);
+    client.set_rate_limit(&crate::RATE_LIMIT_WITHDRAW, &1, &10);
+    // Clear the default 120-ledger MinHoldingPeriod so payouts can run (#975).
+    env.ledger().set_sequence_number(200u32);
+
+    let request_id = client.queue_withdrawal(&user, &600_0000000_i128);
+    assert!(
+        client.try_queue_withdrawal(&user, &100_0000000_i128).is_err(),
+        "a second queued withdrawal in the same window must be rate limited"
+    );
+    assert_eq!(
+        client
+            .get_user_rate_limit_state(&user, &crate::RATE_LIMIT_WITHDRAW)
+            .calls,
+        1
+    );
+
+    // Submission is the rate-limited event; fulfilment is not charged again.
+    assert_eq!(client.process_withdrawal_queue(&agent, &10u32), 1);
+    assert!(client.try_get_withdrawal_request(&request_id).is_err());
+    assert_eq!(
+        client
+            .get_user_rate_limit_state(&user, &crate::RATE_LIMIT_WITHDRAW)
+            .calls,
+        1
+    );
+    assert_eq!(token.balance(&user), 600_0000000_i128);
+}

@@ -926,7 +926,7 @@ These events cover the lifecycle of asynchronous withdrawal queue requests, queu
 
 **Topic:** `"wq_add"` (`TOPIC_WITHDRAWAL_QUEUED`)
 
-Emitted when a user submits an asynchronous withdrawal request via `queue_withdrawal`.
+Emitted when a user submits an asynchronous withdrawal request via `queue_withdrawal`. Submission is the event that consumes one slot from the user's `withdraw` rate-limit bucket; later fulfilment (`wq_done`) does not consume another slot.
 
 ```rust
 #[contracttype]
@@ -997,6 +997,7 @@ pub struct WithdrawalFulfilledEvent {
 **Usage:**
 - Real-time notification services notify users that their queued withdrawal is complete.
 - Off-chain accounting synchronizes processed requests.
+- This event is not a rate-limit event: withdrawal allowance is charged at `wq_add` submission time.
 
 ### `QueueConfigUpdatedEvent` (`wq_cfg`)
 
