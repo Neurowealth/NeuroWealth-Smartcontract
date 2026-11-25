@@ -3693,7 +3693,8 @@ impl NeuroWealthVault {
         let configured_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         if config.token_address == configured_token
             && (current_protocol == symbol_short!("blend")
-                || current_protocol == symbol_short!("dex"))
+                || current_protocol == symbol_short!("dex")
+                || current_protocol == symbol_short!("multi"))
         {
             let vault_balance = token_client.balance(&env.current_contract_address());
             if vault_balance < assets_to_return {
