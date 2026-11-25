@@ -351,6 +351,21 @@ pub enum VaultError {
     /// assets (#973). Minting here would value those existing holders'
     /// shares at zero, so the deposit is rejected instead.
     DepositRejectedZeroAssetsWithShares = 93,
+    /// Migration blocked: user has pending queued-withdrawal reservations (#1159).
+    ///
+    /// `migrate_shares` zeros the user's share balance, but `burn_and_pay`
+    /// explicitly refuses to settle a pending request whose reservation has
+    /// no backing shares. The migration must be blocked until all pending
+    /// reservations are cancelled or fulfilled.
+    PendingWithdrawalExists = 94,
+    /// `receive_migration` rejected: `source_vault` is not on the owner-managed
+    /// allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).
+    ///
+    /// Any caller can claim an arbitrary `source_vault` address and self-authorize
+    /// the sub-call. Without an explicit allow-list this would let an attacker
+    /// mint unbacked shares. The owner must register legitimate source vaults
+    /// via `add_allowed_migration_source` before migration can proceed.
+    UnauthorizedMigrationSource = 95,
 }
 
 impl VaultError {
@@ -659,6 +674,13 @@ pub enum DataKeyExt {
     /// request, so queuing several requests that together exceed the
     /// user's real balance is rejected instead of silently allowed.
     ReservedWithdrawalAmount(Address),
+    /// Allow-listed source vault addresses for `receive_migration` (#1086).
+    ///
+    /// Stored as a `Vec<Address>` in instance storage. Only source vaults
+    /// explicitly registered by the owner via `add_allowed_migration_source`
+    /// are permitted to call `receive_migration`. An absent key means no
+    /// source vault has been approved yet.
+    AllowedMigrationSources,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -3844,6 +3866,10 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        // Ensure user has no reserved shares from pending withdrawals before migrating
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
+        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
+
         Self::require(&env, user_shares > 0, VaultError::NoSharesToMigrate);
 
         // migrate_shares always moves the user's entire position (there is
@@ -11448,6 +11474,10 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        // Ensure user has no reserved shares from pending withdrawals before migrating
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
+        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
+
         let no_shares_error = if mode == BurnAndPayMode::All {
             VaultError::NoSharesToWithdraw
         } else {
