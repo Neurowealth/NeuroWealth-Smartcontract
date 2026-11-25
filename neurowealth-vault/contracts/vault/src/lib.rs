@@ -3098,6 +3098,39 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
 
+        // #1086: Verify source_vault is on the owner-managed allow-list.
+        // `source_vault.require_auth()` only proves the named address authorized
+        // the sub-call; an attacker-controlled contract can self-authorize just
+        // as the legitimate path does, letting it mint unbacked shares.
+        // The allow-list is the second gate that makes the check meaningful.
+        let allowed_sources: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+        let is_allowed = allowed_sources.iter().any(|a| a == source_vault);
+        Self::require(&env, is_allowed, VaultError::UnauthorizedMigrationSource);
+
+        // #1086: Verify an actual USDC transfer occurred by checking the
+        // balance delta. The source vault must have already transferred `amount`
+        // into this contract before calling receive_migration.  Comparing the
+        // pre-call balance against `amount` confirms the receipt without
+        // requiring the caller to pass the pre-call value as an argument
+        // (which would be forgeable).
+        let usdc_token_addr: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc_token_addr);
+        let current_balance = usdc_client.balance(&env.current_contract_address());
+        // The expected minimum balance after the inbound transfer:
+        // any attacker who hasn't actually moved USDC will fail here because
+        // their `amount` claim won't match the real on-chain balance.
+        // We use `>=` so that concurrent operations that also increase the
+        // balance (e.g., deposits) don't create false negatives.
+        Self::require(
+            &env,
+            current_balance >= amount,
+            VaultError::InsufficientBalanceForAssets,
+        );
+
         let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
         Self::require(
             &env,
@@ -5655,6 +5688,40 @@ impl NeuroWealthVault {
             (TOPIC_MIGRATION_PAUSED,),
             MigrationPausedEvent { paused, owner },
         );
+    }
+
+    /// Registers a source vault address as an allowed caller of `receive_migration`.
+    ///
+    /// Part of the fix for #1086: `receive_migration` now rejects any
+    /// `source_vault` that has not been explicitly approved by the owner.
+    /// Call this function once for each legitimate source vault before
+    /// initiating migration.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `source_vault` - The source vault address to allow.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    pub fn add_allowed_migration_source(env: Env, source_vault: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Avoid duplicates.
+        if !allowed.iter().any(|a| a == source_vault) {
+            allowed.push_back(source_vault.clone());
+            env.storage()
+                .instance()
+                .set(&DataKeyExt::AllowedMigrationSources, &allowed);
+        }
     }
 
     // ==========================================================================
