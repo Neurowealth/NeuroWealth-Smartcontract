@@ -10,6 +10,14 @@ This changelog is tied to the vault contract `Version` storage value. Each relea
 
 ## [Unreleased]
 <!-- Add entries below. Format: `- Short description (Issue #N).` -->
+- **Queued withdrawals now respect the per-user withdrawal rate limit (Issue #1156):**
+  `queue_withdrawal` charges `RATE_LIMIT_WITHDRAW` when a request is submitted,
+  so a user cannot queue multiple withdrawals in one window and have them all
+  settled by a single `process_withdrawal_queue` call. Fulfilment does not
+  charge a second slot, and cancellation does not refund the slot. No new
+  events or error codes; the limit is documented as attached to request
+  submission in `ARCHITECTURE.md`, `SECURITY.md`, `EVENTS.md`, and the contract
+  doc comments.
 - **Fix `queue_withdrawal` divide-by-zero (Issue #1090):** when shares exist but
   `TotalAssets` is zero (reachable after an owner-cosigned write-down),
   `queue_withdrawal` now fails with `VaultError::NoAssetsToWithdraw` (code 9)
