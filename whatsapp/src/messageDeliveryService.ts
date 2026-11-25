@@ -7,9 +7,9 @@ const logger = pino({ name: 'whatsapp-message-delivery' });
 
 /**
  * Delivery states Twilio reports for an outbound WhatsApp message, in the
- * order they can legitimately progress. `failed` and `undelivered` are both
- * terminal and share the same rank as `delivered` - once any of the three is
- * reached, the record no longer moves.
+ * order they can legitimately progress. `failed`, `undelivered`, and
+ * `delivered` are terminal and share the same rank - once any is reached,
+ * the record no longer moves.
  */
 export type MessageDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'failed' | 'undelivered';
 
@@ -91,7 +91,7 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
     const phoneHash = to ? hashPhoneNumber(to) : null;
     const encryptedTo = to ? encryptField(to) : null;
 
-    await query(
+    const inserted = await query(
       `INSERT INTO whatsapp_message_deliveries
          (message_sid, phone_hash, to_encrypted, to_iv, to_tag, status, error_code, error_reason, retry_count, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NOW(), NOW())
@@ -108,25 +108,39 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
       ]
     );
 
-    logger.info({ messageSid, status }, 'Recorded new outbound message delivery status');
-    return { applied: true, created: true };
+    if ((inserted.rowCount ?? 0) > 0) {
+      logger.info({ messageSid, status }, 'Recorded new outbound message delivery status');
+      return { applied: true, created: true };
+    }
   }
 
-  const currentStatus = existing.rows[0].status as MessageDeliveryStatus;
-  if (STATUS_RANK[status] < STATUS_RANK[currentStatus]) {
+  const currentStatus = existing.rows[0]?.status as MessageDeliveryStatus | undefined;
+  if (currentStatus !== undefined && STATUS_RANK[status] <= STATUS_RANK[currentStatus]) {
     logger.info(
       { messageSid, status, currentStatus },
-      'Ignoring out-of-order delivery status callback; current state is already more advanced'
+      'Ignoring duplicate or out-of-order delivery status callback; current state is already as advanced'
     );
     return { applied: false, reason: 'stale_status' };
   }
 
-  await query(
+  const updated = await query(
     `UPDATE whatsapp_message_deliveries
        SET status = $2, error_code = $3, error_reason = $4, updated_at = NOW()
-     WHERE message_sid = $1`,
-    [messageSid, status, errorCode ?? null, redactedError]
+     WHERE message_sid = $1
+       AND CASE status
+         WHEN 'queued' THEN 0
+         WHEN 'sent' THEN 1
+         WHEN 'delivered' THEN 2
+         WHEN 'failed' THEN 2
+         WHEN 'undelivered' THEN 2
+         ELSE -1
+       END < $5`,
+    [messageSid, status, errorCode ?? null, redactedError, STATUS_RANK[status]]
   );
+
+  if ((updated.rowCount ?? 0) === 0) {
+    return { applied: false, reason: 'stale_status' };
+  }
 
   logger.info({ messageSid, status, previousStatus: currentStatus }, 'Updated outbound message delivery status');
   return { applied: true, created: false };

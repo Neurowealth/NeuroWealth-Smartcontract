@@ -122,26 +122,28 @@ describe('getPortfolioValueHistory', () => {
   });
 
   it('maps daily snapshots to their recorded earnings, excluding balance changes', async () => {
-    fromMock.mockReturnValueOnce(chainable({ data: { id: 'user-1' } })).mockReturnValueOnce(
-      chainable({
-        data: [
-          { total_assets: '100', timestamp: '2026-01-01T00:00:00Z' },
-          { total_assets: '160', timestamp: '2026-01-02T12:00:00Z' },
-          { total_assets: '162.5', timestamp: '2026-01-02T23:00:00Z' },
-          { total_assets: '145', timestamp: '2026-01-03T00:00:00Z' },
-        ],
-      }),
-    ).mockReturnValueOnce(
-      chainable({
-        data: [
-          { daily_earnings: '2.5', date: '2026-01-02' },
-          { daily_earnings: '3.75', date: '2026-01-03' },
-        ],
-      }),
-    );
+    const snapshotsChain = chainable({
+      data: [
+        { total_assets: '145', timestamp: '2026-01-03T00:00:00Z' },
+        { total_assets: '162.5', timestamp: '2026-01-02T23:00:00Z' },
+        { total_assets: '160', timestamp: '2026-01-02T12:00:00Z' },
+        { total_assets: '100', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    fromMock.mockReturnValueOnce(chainable({ data: { id: 'user-1' } })).mockReturnValueOnce(snapshotsChain);
+    const earningsChain = chainable({
+      data: [
+        { daily_earnings: '2.5', date: '2026-01-02' },
+        { daily_earnings: '3.75', date: '2026-01-03' },
+      ],
+    });
+    fromMock.mockReturnValueOnce(earningsChain);
 
     const result = await getPortfolioValueHistory(USER_ADDRESS);
 
+    expect(snapshotsChain.order).toHaveBeenCalledWith('timestamp', { ascending: false });
+    expect(snapshotsChain.limit).toHaveBeenCalledWith(30);
+    expect(earningsChain.gte).toHaveBeenCalledWith('date', '2026-01-01');
     expect(result).toEqual([
       { date: 'Jan 1', value: 100, yield: 0 },
       { date: 'Jan 2', value: 162.5, yield: 2.5 },

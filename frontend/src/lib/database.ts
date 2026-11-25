@@ -99,14 +99,23 @@ export async function getPortfolioValueHistory(
     .from("yield_snapshots")
     .select("total_assets, timestamp")
     .eq("user_id", user.id)
-    .order("timestamp", { ascending: true })
+    .order("timestamp", { ascending: false })
     .limit(30);
 
   if (!snapshots || snapshots.length === 0) return [];
 
-  const firstSnapshotDate = new Date(snapshots[0].timestamp)
-    .toISOString()
-    .slice(0, 10);
+  const snapshotsByDate = new Map<string, (typeof snapshots)[number]>();
+  for (const snapshot of snapshots) {
+    const date = new Date(snapshot.timestamp).toISOString().slice(0, 10);
+    const existing = snapshotsByDate.get(date);
+    if (!existing || snapshot.timestamp > existing.timestamp) {
+      snapshotsByDate.set(date, snapshot);
+    }
+  }
+
+  const firstSnapshotDate = [...snapshotsByDate.keys()].sort()[0];
+  if (!firstSnapshotDate) return [];
+
   const { data: earnings } = await supabase
     .from("earnings_history")
     .select("daily_earnings, date")
@@ -121,23 +130,16 @@ export async function getPortfolioValueHistory(
       parseFloat(String(entry.daily_earnings)),
     );
   }
-  const snapshotsByDate = new Map<
-    string,
-    (typeof snapshots)[number]
-  >();
 
-  for (const snapshot of snapshots) {
-    const date = new Date(snapshot.timestamp).toISOString().slice(0, 10);
-    snapshotsByDate.set(date, snapshot);
-  }
-
-  return Array.from(snapshotsByDate, ([dateKey, snapshot]) => {
-    const assets = parseFloat(String(snapshot.total_assets));
-    const date = new Date(snapshot.timestamp);
-    const label = `${date.toLocaleString("en-US", { month: "short", timeZone: "UTC" })} ${date.getUTCDate()}`;
-    const yieldVal = Number((earningsByDate.get(dateKey) ?? 0).toFixed(2));
-    return { date: label, value: Number(assets.toFixed(2)), yield: yieldVal };
-  });
+  return Array.from(snapshotsByDate.entries())
+    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+    .map(([dateKey, snapshot]) => {
+      const assets = parseFloat(String(snapshot.total_assets));
+      const date = new Date(snapshot.timestamp);
+      const label = `${date.toLocaleString("en-US", { month: "short", timeZone: "UTC" })} ${date.getUTCDate()}`;
+      const yieldVal = Number((earningsByDate.get(dateKey) ?? 0).toFixed(2));
+      return { date: label, value: Number(assets.toFixed(2)), yield: yieldVal };
+    });
 }
 
 export async function getRecentTransactions(
