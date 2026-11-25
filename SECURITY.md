@@ -352,6 +352,8 @@ This register documents every owner-only and agent-only capability, the blast ra
 | set_user_deposit_cap | yes | - | - | - |
 | set_deposit_limits | yes | - | - | - |
 | set_limits | yes | - | - | - |
+| set_protocol_adapter | yes | - | - | - |
+| set_protocol_whitelisted | yes | - | - | - |
 | set_rebalance_cooldown | yes | - | - | - |
 | set_approval_ttl | yes | - | - | - |
 | set_blend_approval_ttl | yes | - | - | - |
@@ -367,7 +369,7 @@ This register documents every owner-only and agent-only capability, the blast ra
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
-| touch_user_ttl | - | - | - | anyone |
+| touch_user_ttl | - | - | yes | - |
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |

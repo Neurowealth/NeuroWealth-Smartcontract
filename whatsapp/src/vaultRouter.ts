@@ -2,6 +2,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { VaultClient, VaultError, VaultErrorCode } from '@neurowealth/vault-client';
 import { getWallet, getDecryptedSecretKey } from './walletService';
 import { INPUT_LIMITS, SAFE_OVERSIZE_REPLY, boundText } from './inputBounds';
+import { isValidStrategy, type Strategy } from './contractLimits';
 
 function rejectUnusableAddress(publicKey: string): string | null {
   const checked = boundText(publicKey, INPUT_LIMITS.address);
@@ -33,6 +34,32 @@ function fromStroops(stroops: bigint): number {
 
 function vaultClient(): VaultClient {
   return new VaultClient({ contractId: VAULT_CONTRACT_ID, rpcUrl: SOROBAN_RPC_URL });
+}
+
+function toStrategySymbol(strategy: string): Strategy | null {
+  const symbol = strategy.trim().toLowerCase();
+  return isValidStrategy(symbol) ? symbol : null;
+}
+
+/**
+ * Submit `set_user_strategy` and refuse to report success without the
+ * transaction hash the vault client returns (#1107).
+ */
+async function applyUserStrategy(
+  client: VaultClient,
+  signer: Keypair,
+  publicKey: string,
+  strategy: string,
+): Promise<{ ok: true; txHash: string; symbol: Strategy } | { ok: false; message: string }> {
+  const symbol = toStrategySymbol(strategy);
+  if (!symbol) {
+    return { ok: false, message: 'Invalid strategy specified on-chain transaction failed.' };
+  }
+  const result = await client.set_user_strategy(signer, publicKey, symbol);
+  if (!result.hash) {
+    throw new Error('set_user_strategy: transaction did not return a hash');
+  }
+  return { ok: true, txHash: result.hash, symbol };
 }
 
 /**
@@ -119,27 +146,19 @@ export async function getPortfolio(phoneHash: string): Promise<UserPortfolio> {
   try {
     const client = vaultClient();
     const sourcePublicKey = wallet.publicKey;
-    const [balanceRaw, rawStrategy, exchangeRateRaw, totalAssetsRaw, totalSharesRaw] = await Promise.all([
+    const [balanceRaw, rawStrategy, userApyRaw] = await Promise.all([
       client.get_balance(wallet.publicKey, sourcePublicKey),
       client.get_user_strategy(wallet.publicKey, sourcePublicKey),
-      client.get_exchange_rate(sourcePublicKey),
-      client.get_total_assets(sourcePublicKey),
-      client.get_total_shares(sourcePublicKey),
+      client.get_user_apy(wallet.publicKey, sourcePublicKey).catch(() => 0n),
     ]);
 
     const balance = fromStroops(balanceRaw);
     const strategy = STRATEGY_MAP[String(rawStrategy)] || 'Balanced';
-    const exchangeRateFromContract = fromStroops(exchangeRateRaw);
-    const totalAssets = fromStroops(totalAssetsRaw);
-    const totalShares = fromStroops(totalSharesRaw);
+    const apy = Number((Number(userApyRaw) / 100).toFixed(2));
 
-    const exchangeRate = exchangeRateFromContract || (totalShares > 0 ? totalAssets / totalShares : 1.0);
-    const apy = totalAssets > 0 && totalShares > 0
-      ? Number((((totalAssets / totalShares - 1) * 365 * 100).toFixed(2)))
-      : 0;
-
-    const usdEquivalent = balance * exchangeRate;
-    const dailyEarnings = balance > 0 ? (balance * (apy / 100)) / 365 : 0;
+    // get_balance already returns the user's USDC asset value (1 USDC = $1.00 USD).
+    const usdEquivalent = Number(balance.toFixed(2));
+    const dailyEarnings = balance > 0 && apy > 0 ? (balance * (apy / 100)) / 365 : 0;
 
     return {
       balance,
@@ -181,6 +200,14 @@ export async function handleDeposit(
 
   try {
     const client = vaultClient();
+    // The deposit invocation has no strategy argument. Persist the choice
+    // with set_user_strategy before claiming the deposit succeeded (#1107).
+    if (strategy) {
+      const applied = await applyUserStrategy(client, loaded.signer, loaded.publicKey, strategy);
+      if (!applied.ok) {
+        return { success: false, txHash: '', message: applied.message };
+      }
+    }
     const result = await client.deposit(loaded.signer, loaded.publicKey, toStroops(amount));
     if (!result.hash) {
       throw new Error('deposit: transaction did not return a hash');
@@ -237,35 +264,32 @@ export async function handleWithdraw(
 }
 
 /**
- * Updates the user's strategy on the vault contract.
- *
- * NOT part of #1001's scope (which names only handleDeposit/handleWithdraw)
- * and still fabricates txHash via Math.random() below. Flagged here
- * deliberately rather than silently fixed alongside the two above - see the
- * PR description for why this is disclosed, not changed, in this change.
+ * Updates the user's strategy on the vault contract via `set_user_strategy`.
+ * Success is reported only after the client returns a transaction hash (#1107).
  */
 export async function handleStrategyUpdate(
   phoneHash: string,
   strategy: string
 ): Promise<{ success: boolean; txHash: string; message: string }> {
-  const wallet = await getWallet(phoneHash);
-  if (!wallet) {
-    return { success: false, txHash: '', message: 'Wallet not initialized.' };
-  }
-  const addressError = rejectUnusableAddress(wallet.publicKey);
-  if (addressError) {
-    return { success: false, txHash: '', message: addressError };
+  const loaded = await loadSigner(phoneHash);
+  if ('error' in loaded) {
+    return { success: false, txHash: '', message: loaded.error };
   }
 
-  if (strategy.toUpperCase() === 'INVALID') {
-    return { success: false, txHash: '', message: 'Invalid strategy specified on-chain transaction failed.' };
+  try {
+    const client = vaultClient();
+    const applied = await applyUserStrategy(client, loaded.signer, loaded.publicKey, strategy);
+    if (!applied.ok) {
+      return { success: false, txHash: '', message: applied.message };
+    }
+
+    return {
+      success: true,
+      txHash: applied.txHash,
+      message: `Strategy updated to ${strategy.toUpperCase()}. The AI agent will rebalance your portfolio on the next scheduled run.\nTransaction Hash: ${applied.txHash.substring(0, 10)}...`
+    };
+  } catch (err) {
+    console.warn('Strategy update failed:', err);
+    return { success: false, txHash: '', message: friendlyVaultErrorMessage(err) };
   }
-
-  const txHash = `0x${Buffer.from(Math.random().toString()).toString('hex').substring(0, 64)}`;
-
-  return {
-    success: true,
-    txHash,
-    message: `Strategy updated to ${strategy.toUpperCase()}. The AI agent will rebalance your portfolio on the next scheduled run.\nTransaction Hash: ${txHash.substring(0, 10)}...`
-  };
 }

@@ -17,3 +17,9 @@ test('VaultError constructor preserves the provided code', () => {
   assert.equal(err.code, VaultErrorCode.InvalidStrategy);
   assert.equal(err.message, 'strategy is invalid');
 });
+
+test('VaultErrorCode defines distinct codes for LegacyUnauthorizedAgentError (90) and UnauthorizedAgentError (102)', () => {
+  assert.equal(VaultErrorCode.LegacyUnauthorizedAgentError, 90);
+  assert.equal(VaultErrorCode.UnauthorizedAgentError, 102);
+  assert.notEqual(VaultErrorCode.LegacyUnauthorizedAgentError, VaultErrorCode.UnauthorizedAgentError);
+});

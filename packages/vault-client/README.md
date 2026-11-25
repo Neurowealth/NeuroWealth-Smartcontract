@@ -230,6 +230,7 @@ const VaultErrorCode = {
   NegativeMin:             1,
   NegativeMax:             2,
   MaxLessThanMin:          3,
+  LegacyUnauthorizedAgentError: 90,
   ValidationError:         100,
   PausedError:             101,
   UnauthorizedAgentError:  102,

@@ -213,6 +213,33 @@ def compare_storage_layouts(
     return is_compatible, unique_incompatible, issues, report_lines
 
 
+def validate_migration_doc(doc_path: Path, incompatible_keys: List[str]) -> Tuple[bool, List[str]]:
+    """
+    Validate that the migration document genuinely documents and approves
+    the breaking storage changes for all incompatible keys.
+    """
+    if not doc_path.exists():
+        return False, [f"Migration document '{doc_path}' not found."]
+    if doc_path.stat().st_size == 0:
+        return False, [f"Migration document '{doc_path}' is empty."]
+
+    content = doc_path.read_text(encoding="utf-8", errors="replace")
+    errors = []
+
+    has_section = any(
+        h in content.lower()
+        for h in ["storage migration", "breaking storage", "datakey migration", "schema migration"]
+    )
+    if not has_section:
+        errors.append("Document missing required section: 'Storage Migration' or 'Breaking Storage Changes'.")
+
+    missing_keys = [k for k in incompatible_keys if k not in content]
+    if missing_keys:
+        errors.append(f"Document fails to mention incompatible DataKey variant(s): {', '.join(missing_keys)}")
+
+    return len(errors) == 0, errors
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Verify DataKey storage layout compatibility between two Soroban WASM binaries."
@@ -225,6 +252,11 @@ def main():
         default=os.environ.get("MIGRATION_DOC", None),
     )
     parser.add_argument(
+        "--allow-identical",
+        action="store_true",
+        help="Allow self-comparison when inspecting schema of a single WASM",
+    )
+    parser.add_argument(
         "--output",
         help="Path to write the diff report artifact (e.g. scripts/e2e-artifacts/storage_layout_diff.txt)",
         default=None,
@@ -234,6 +266,18 @@ def main():
 
     old_wasm_path = Path(args.old_wasm)
     new_wasm_path = Path(args.new_wasm)
+
+    # Guard against comparing a WASM to itself as a baseline gate
+    try:
+        is_same = old_wasm_path.resolve() == new_wasm_path.resolve()
+    except Exception:
+        is_same = str(old_wasm_path) == str(new_wasm_path)
+
+    if is_same and not args.allow_identical:
+        print("❌ ERROR: Self-comparison detected ('old_wasm' and 'new_wasm' point to the same file).", file=sys.stderr)
+        print("   To verify backward compatibility across upgrades, compare against a real baseline WASM binary.", file=sys.stderr)
+        print("   If you intended to inspect the schema of a single WASM, pass '--allow-identical'.", file=sys.stderr)
+        sys.exit(1)
 
     print("=" * 70)
     print("NeuroWealth Vault — Storage Layout Compatibility Gate")
@@ -278,12 +322,16 @@ def main():
     # Check if a valid migration doc was provided
     if args.migration_doc:
         doc_path = Path(args.migration_doc)
-        if doc_path.exists() and doc_path.stat().st_size > 0:
-            print(f"⚠️  Breaking changes permitted: Migration document verified at '{args.migration_doc}'.")
+        is_valid, doc_errors = validate_migration_doc(doc_path, incompatible_keys)
+        if is_valid:
+            print(f"⚠️  Breaking changes permitted: Validated migration document at '{args.migration_doc}'.")
+            print(f"   Documented incompatible keys: {', '.join(incompatible_keys)}")
             print("   Proceeding with upgrade under documented migration plan.")
             sys.exit(0)
         else:
-            print(f"❌ ERROR: Referenced migration document '{args.migration_doc}' was not found or is empty.")
+            print(f"❌ ERROR: Migration document '{args.migration_doc}' failed validation:")
+            for err in doc_errors:
+                print(f"   - {err}")
             sys.exit(1)
 
     print("❌ UPGRADE BLOCKED:")

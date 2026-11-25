@@ -1211,6 +1211,43 @@ pub struct FlashLoanProtectionTriggeredEvent {
 - Frontend surfaces a clear "funds are still in their holding period" message instead of a generic error when a withdrawal call reverts with `HoldingPeriodNotElapsed`.
 - Security monitoring correlates repeated `fl_block` events from the same address shortly after a deposit, a signature of an attempted flash-loan or rapid deposit-then-withdraw cycle the protection is designed to stop.
 
+## Multi-Asset Deposit and Withdraw Events (#646)
+
+### `AssetDepositEvent` (`asset_dep`)
+
+**Topics:** `0`: `"asset_dep"` (`TOPIC_ASSET_DEPOSIT`), `1`: `Address` (depositing user), `2`: `Symbol` (asset)
+
+Emitted by `deposit_asset` when a user deposits a supported asset into its per-asset share pool.
+
+```rust
+#[contracttype]
+pub struct AssetDepositEvent {
+    pub user: Address,   // The depositing user
+    pub asset: Symbol,   // Asset deposited (e.g. "XLM", "USDT", "EURC", "USDC")
+    pub amount: i128,    // Amount deposited, in the asset's native units
+    pub shares: i128,    // Shares minted in the asset's share pool
+}
+```
+
+### `AssetWithdrawEvent` (`asset_wd`)
+
+**Topics:** `0`: `"asset_wd"` (`TOPIC_ASSET_WITHDRAW`), `1`: `Address` (withdrawing user), `2`: `Symbol` (asset)
+
+Emitted by `withdraw_asset` when a user withdraws a supported asset from its per-asset share pool.
+
+```rust
+#[contracttype]
+pub struct AssetWithdrawEvent {
+    pub user: Address,   // The withdrawing user
+    pub asset: Symbol,   // Asset withdrawn (e.g. "XLM", "USDT", "EURC", "USDC")
+    pub amount: i128,    // Amount returned, in the asset's native units, after any liquidity shortfall
+    pub shares: i128,    // Shares burned in the asset's share pool
+}
+```
+
+**Usage:**
+- Indexers filter both events by the asset topic (topic 2) to build per-asset volume and TVL histories; the `user` topic (topic 1) narrows the same stream to a single account.
+
 ### `MevExtractionSuspectedEvent` (`mev_alert`)
 
 **Topic:** `"mev_alert"` (`symbol_short!("mev_alert")`)

@@ -2458,7 +2458,7 @@
     {
       "name": "touch_user_ttl",
       "category": "maintenance",
-      "access": "public",
+      "access": "user",
       "description": "Extend persistent TTL for user shares entry with a per-user rate limit",
       "parameters": [
         {
@@ -2471,7 +2471,7 @@
         }
       ],
       "returns": "bool",
-      "requires_auth": false,
+      "requires_auth": true,
       "state_changing": true,
       "storage_type": "mixed",
       "query_only": false

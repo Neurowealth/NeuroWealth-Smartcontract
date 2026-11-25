@@ -20,18 +20,28 @@ export const ipRateLimiter = rateLimit({
   },
 });
 
-// Per-User rate limiter (reads X-User-ID or user-id header, falls back to IP)
+/**
+ * Identity established by trusted auth middleware (#1119). Auth middleware must
+ * set `res.locals.authenticatedUserId` after verifying a JWT/session. Client
+ * headers such as `x-user-id` are never trusted: they are attacker-controlled
+ * and rotating them would bypass the limit.
+ */
+export function getVerifiedUserId(res: Response): string | undefined {
+  const id = res.locals?.authenticatedUserId;
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+}
+
+// Per-User rate limiter. Keys only off a verified identity; unauthenticated
+// requests fall back to the client IP (the IP limiter still applies).
 export const userRateLimiter = rateLimit({
   windowMs,
   max: userMax,
   standardHeaders: true,
   legacyHeaders: true,
-  keyGenerator: (req: Request) => {
-    const userId = req.headers['x-user-id'] || req.headers['user-id'];
-    if (typeof userId === 'string' && userId.trim()) {
-      return `user:${userId.trim()}`;
-    }
-    return req.ip || 'unknown';
+  keyGenerator: (req: Request, res: Response) => {
+    const userId = getVerifiedUserId(res);
+    if (userId) return `user:${userId}`;
+    return `ip:${req.ip || 'unknown'}`;
   },
   handler: (_req: Request, res: Response) => {
     res.setHeader('Retry-After', Math.ceil(windowMs / 1000).toString());

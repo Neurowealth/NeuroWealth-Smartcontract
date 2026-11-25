@@ -351,6 +351,21 @@ pub enum VaultError {
     /// assets (#973). Minting here would value those existing holders'
     /// shares at zero, so the deposit is rejected instead.
     DepositRejectedZeroAssetsWithShares = 93,
+    /// Migration blocked: user has pending queued-withdrawal reservations (#1159).
+    ///
+    /// `migrate_shares` zeros the user's share balance, but `burn_and_pay`
+    /// explicitly refuses to settle a pending request whose reservation has
+    /// no backing shares. The migration must be blocked until all pending
+    /// reservations are cancelled or fulfilled.
+    PendingWithdrawalExists = 94,
+    /// `receive_migration` rejected: `source_vault` is not on the owner-managed
+    /// allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).
+    ///
+    /// Any caller can claim an arbitrary `source_vault` address and self-authorize
+    /// the sub-call. Without an explicit allow-list this would let an attacker
+    /// mint unbacked shares. The owner must register legitimate source vaults
+    /// via `add_allowed_migration_source` before migration can proceed.
+    UnauthorizedMigrationSource = 95,
 }
 
 impl VaultError {
@@ -659,6 +674,13 @@ pub enum DataKeyExt {
     /// request, so queuing several requests that together exceed the
     /// user's real balance is rejected instead of silently allowed.
     ReservedWithdrawalAmount(Address),
+    /// Allow-listed source vault addresses for `receive_migration` (#1086).
+    ///
+    /// Stored as a `Vec<Address>` in instance storage. Only source vaults
+    /// explicitly registered by the owner via `add_allowed_migration_source`
+    /// are permitted to call `receive_migration`. An absent key means no
+    /// source vault has been approved yet.
+    AllowedMigrationSources,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -2364,14 +2386,13 @@ use topics::{
     TOPIC_MIGRATION_PAUSED, TOPIC_MIGRATION_RECEIVED, TOPIC_MIGRATION_TARGET_CANCELLED,
     TOPIC_MIGRATION_TARGET_SCHEDULED, TOPIC_MIGRATION_TARGET_UPDATED, TOPIC_MULTI_PROTOCOL_MODE,
     TOPIC_OWNERSHIP_CANCELLED, TOPIC_OWNERSHIP_INITIATED, TOPIC_OWNERSHIP_TRANSFERRED,
-    TOPIC_PAUSED, TOPIC_PROTOCOL_ALLOCATION_CHANGED, TOPIC_PROTOCOL_APY_UPDATED,
-    TOPIC_PROTOCOL_CHANGED, TOPIC_PROTOCOL_ADAPTER_UPDATED,
-    TOPIC_PROTOCOL_WHITELIST_UPDATED, TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED,
-    TOPIC_RATE_LIMIT_HIT, TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED,
-    TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED, TOPIC_SHARES_UNLOCKED,
-    TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED, TOPIC_TVL_CAP_UPDATED,
-    TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED, TOPIC_UPGRADE_SCHEDULED,
-    TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
+    TOPIC_PAUSED, TOPIC_PROTOCOL_ADAPTER_UPDATED, TOPIC_PROTOCOL_ALLOCATION_CHANGED,
+    TOPIC_PROTOCOL_APY_UPDATED, TOPIC_PROTOCOL_CHANGED, TOPIC_PROTOCOL_WHITELIST_UPDATED,
+    TOPIC_QUEUE_CONFIG_UPDATED, TOPIC_RATE_LIMIT_CONFIG_UPDATED, TOPIC_RATE_LIMIT_HIT,
+    TOPIC_REBALANCE, TOPIC_REBALANCE_COOLDOWN_UPDATED, TOPIC_REBALANCE_FAILED, TOPIC_SHARES_LOCKED,
+    TOPIC_SHARES_UNLOCKED, TOPIC_STANDBY_AGENT_UPDATED, TOPIC_SUPPORTED_ASSETS_UPDATED,
+    TOPIC_TVL_CAP_UPDATED, TOPIC_UNPAUSED, TOPIC_UPGRADED, TOPIC_UPGRADE_CANCELLED,
+    TOPIC_UPGRADE_SCHEDULED, TOPIC_USER_CAP_UPDATED, TOPIC_USER_STRATEGY_UPDATED, TOPIC_WITHDRAW,
     TOPIC_WITHDRAWAL_CANCELLED, TOPIC_WITHDRAWAL_FULFILLED, TOPIC_WITHDRAWAL_QUEUED,
     TOPIC_YIELD_ATTRIBUTED,
 };
@@ -3077,6 +3098,39 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
 
+        // #1086: Verify source_vault is on the owner-managed allow-list.
+        // `source_vault.require_auth()` only proves the named address authorized
+        // the sub-call; an attacker-controlled contract can self-authorize just
+        // as the legitimate path does, letting it mint unbacked shares.
+        // The allow-list is the second gate that makes the check meaningful.
+        let allowed_sources: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+        let is_allowed = allowed_sources.iter().any(|a| a == source_vault);
+        Self::require(&env, is_allowed, VaultError::UnauthorizedMigrationSource);
+
+        // #1086: Verify an actual USDC transfer occurred by checking the
+        // balance delta. The source vault must have already transferred `amount`
+        // into this contract before calling receive_migration.  Comparing the
+        // pre-call balance against `amount` confirms the receipt without
+        // requiring the caller to pass the pre-call value as an argument
+        // (which would be forgeable).
+        let usdc_token_addr: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let usdc_client = token::Client::new(&env, &usdc_token_addr);
+        let current_balance = usdc_client.balance(&env.current_contract_address());
+        // The expected minimum balance after the inbound transfer:
+        // any attacker who hasn't actually moved USDC will fail here because
+        // their `amount` claim won't match the real on-chain balance.
+        // We use `>=` so that concurrent operations that also increase the
+        // balance (e.g., deposits) don't create false negatives.
+        Self::require(
+            &env,
+            current_balance >= amount,
+            VaultError::InsufficientBalanceForAssets,
+        );
+
         let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
         Self::require(
             &env,
@@ -3379,17 +3433,19 @@ impl NeuroWealthVault {
             USER_SHARES_TTL_EXTEND_TO,
         );
 
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            env.events().publish(
-                (TOPIC_DEPOSIT, user.clone()),
-                DepositEvent {
-                    user: user.clone(),
-                    amount,
-                    shares: shares_to_mint,
-                },
-            );
-        }
+        // Emit one aggregate DepositEvent for the whole batch so that indexers
+        // summing `shares` across events get the correct total (not N × shares_to_mint).
+        // The doc comment at the top of this function already states "one event per
+        // *batch*"; the previous per-entry loop overcounted by (N-1) × shares_to_mint
+        // (#1087).
+        env.events().publish(
+            (TOPIC_DEPOSIT, user.clone()),
+            DepositEvent {
+                user: user.clone(),
+                amount: total_amount,
+                shares: shares_to_mint,
+            },
+        );
     }
 
     // ==========================================================================
@@ -3694,7 +3750,8 @@ impl NeuroWealthVault {
         let configured_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         if config.token_address == configured_token
             && (current_protocol == symbol_short!("blend")
-                || current_protocol == symbol_short!("dex"))
+                || current_protocol == symbol_short!("dex")
+                || current_protocol == symbol_short!("multi"))
         {
             let vault_balance = token_client.balance(&env.current_contract_address());
             if vault_balance < assets_to_return {
@@ -3756,7 +3813,7 @@ impl NeuroWealthVault {
         token_client.transfer(&env.current_contract_address(), &user, &actual_to_return);
 
         env.events().publish(
-            (TOPIC_ASSET_WITHDRAW, user.clone()),
+            (TOPIC_ASSET_WITHDRAW, user.clone(), asset.clone()),
             AssetWithdrawEvent {
                 user,
                 asset,
@@ -3844,6 +3901,10 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        // Ensure user has no reserved shares from pending withdrawals before migrating
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
+        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
+
         Self::require(&env, user_shares > 0, VaultError::NoSharesToMigrate);
 
         // migrate_shares always moves the user's entire position (there is
@@ -3967,6 +4028,10 @@ impl NeuroWealthVault {
     ///   or if the expiry ledger would overflow `u32`.
     /// - [`VaultError::InsufficientUnlockedShares`] if user doesn't have enough unlocked shares.
     ///
+    /// Shares that back a pending withdrawal request (`queue_withdrawal`) are
+    /// not lockable (#1089). Locking them would strand the request: the queue
+    /// would find them locked when it tried to pay the head request out.
+    ///
     /// # Panics
     ///
     /// - If the vault is not initialized.
@@ -3989,15 +4054,21 @@ impl NeuroWealthVault {
             _ => panic_with_error!(&env, VaultError::InvalidLockDuration),
         };
 
-        // Check user has enough unlocked shares
+        // Check user has enough unlocked shares. Shares reserved by pending
+        // withdrawal requests count as locked (#1089): a queued request does
+        // not move its shares out of the user's balance, so without this
+        // subtraction the user could lock the very shares backing it and the
+        // queue would panic on the head request, stalling the whole batch.
         let total_user_shares: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
         let unlocked_shares = total_user_shares
             .checked_sub(existing_locked)
-            .unwrap_or_else(|| panic_with_error!(&env, VaultError::InsufficientUnlockedShares));
+            .and_then(|unlocked| unlocked.checked_sub(reserved_shares))
+            .unwrap_or(0);
         Self::require(
             &env,
             shares <= unlocked_shares,
@@ -4622,18 +4693,30 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
         owner.require_auth();
-        let old_address: Option<Address> = env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
-        env.storage().instance().set(&DataKeyExt::ProtocolAdapter(protocol.clone()), &adapter);
+        let old_address: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolAdapter(protocol.clone()), &adapter);
         env.events().publish(
             (TOPIC_PROTOCOL_ADAPTER_UPDATED, protocol.clone()),
-            ProtocolAdapterUpdatedEvent { protocol, old_address, new_address: adapter, owner },
+            ProtocolAdapterUpdatedEvent {
+                protocol,
+                old_address,
+                new_address: adapter,
+                owner,
+            },
         );
     }
 
     /// Returns the configured adapter for a protocol, or `None`.
     pub fn get_protocol_adapter(env: Env, protocol: Symbol) -> Option<Address> {
         Self::require_initialized(&env);
-        env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol))
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol))
     }
 
     /// Adds or removes a protocol from the owner-managed whitelist (#656).
@@ -4641,31 +4724,50 @@ impl NeuroWealthVault {
         Self::require_initialized(&env);
         Self::require_is_owner(&env);
         owner.require_auth();
-        env.storage().instance().set(&DataKeyExt::ProtocolWhitelist(protocol.clone()), &enabled);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelist(protocol.clone()), &enabled);
 
-        let mut index: Vec<Symbol> = env.storage().instance().get(&DataKeyExt::ProtocolWhitelistIndex).unwrap_or_else(|| vec![&env]);
+        let mut index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
         let found = index.iter().any(|item| item == protocol);
         if enabled && !found {
             index.push_back(protocol.clone());
         }
-        env.storage().instance().set(&DataKeyExt::ProtocolWhitelistIndex, &index);
+        env.storage()
+            .instance()
+            .set(&DataKeyExt::ProtocolWhitelistIndex, &index);
 
         env.events().publish(
             (TOPIC_PROTOCOL_WHITELIST_UPDATED, protocol.clone()),
-            ProtocolWhitelistUpdatedEvent { protocol, enabled, owner },
+            ProtocolWhitelistUpdatedEvent {
+                protocol,
+                enabled,
+                owner,
+            },
         );
     }
 
     /// Returns whether a protocol is currently whitelisted.
     pub fn get_protocol_whitelisted(env: Env, protocol: Symbol) -> bool {
         Self::require_initialized(&env);
-        env.storage().instance().get(&DataKeyExt::ProtocolWhitelist(protocol)).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol))
+            .unwrap_or(false)
     }
 
     /// Returns the currently whitelisted protocol symbols.
     pub fn get_protocol_whitelist(env: Env) -> Vec<Symbol> {
         Self::require_initialized(&env);
-        let index: Vec<Symbol> = env.storage().instance().get(&DataKeyExt::ProtocolWhitelistIndex).unwrap_or_else(|| vec![&env]);
+        let index: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelistIndex)
+            .unwrap_or_else(|| vec![&env]);
         let mut result = vec![&env];
         for protocol in index.iter() {
             if Self::get_protocol_whitelisted(env.clone(), protocol.clone()) {
@@ -5599,6 +5701,40 @@ impl NeuroWealthVault {
             (TOPIC_MIGRATION_PAUSED,),
             MigrationPausedEvent { paused, owner },
         );
+    }
+
+    /// Registers a source vault address as an allowed caller of `receive_migration`.
+    ///
+    /// Part of the fix for #1086: `receive_migration` now rejects any
+    /// `source_vault` that has not been explicitly approved by the owner.
+    /// Call this function once for each legitimate source vault before
+    /// initiating migration.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `source_vault` - The source vault address to allow.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    pub fn add_allowed_migration_source(env: Env, source_vault: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Avoid duplicates.
+        if !allowed.iter().any(|a| a == source_vault) {
+            allowed.push_back(source_vault.clone());
+            env.storage()
+                .instance()
+                .set(&DataKeyExt::AllowedMigrationSources, &allowed);
+        }
     }
 
     // ==========================================================================
@@ -9855,6 +9991,11 @@ impl NeuroWealthVault {
     /// Returns the auto-incrementing request ID. The request is fulfilled
     /// asynchronously when the agent calls `process_withdrawal_queue`.
     ///
+    /// The shares backing a queued request stay in the user's balance, but
+    /// they are reserved: `lock_shares`, `withdraw`, `withdraw_all` and
+    /// `emergency_withdraw` all refuse to touch them until the request is
+    /// fulfilled, cancelled or expired (#1089).
+    ///
     /// # Arguments
     /// * `env` - Soroban environment.
     /// * `user` - Address of the user requesting withdrawal.
@@ -10338,17 +10479,22 @@ impl NeuroWealthVault {
                 continue;
             }
 
+            // Release this request's reservation *before* paying it out
+            // (#1089): `burn_and_pay` treats reserved shares as unspendable,
+            // and this request is about to become terminal. Any failure below
+            // reverts the whole transaction, so the release can never be
+            // persisted without the payout.
+            Self::adjust_reserved_withdrawal_amount(
+                &env,
+                &request.user,
+                0_i128.saturating_sub(request.amount),
+            );
+
             let (paid, _) = Self::burn_and_pay(
                 &env,
                 &request.user,
                 request.amount,
                 BurnAndPayMode::Requested,
-            );
-
-            Self::adjust_reserved_withdrawal_amount(
-                &env,
-                &request.user,
-                0_i128.saturating_sub(request.amount),
             );
 
             // Fulfil only after payment and share accounting have succeeded.
@@ -10604,6 +10750,7 @@ impl NeuroWealthVault {
     /// Called by `deposit_asset` to keep the legacy global counters in sync with
     /// per-asset accounting, so that `get_total_assets()` and TVL cap checks
     /// reflect the full multi-asset position.
+    #[allow(dead_code)]
     #[inline]
     fn add_to_global_totals_on_deposit(env: &Env, amount: i128) {
         let total_assets: i128 = env
@@ -10628,6 +10775,7 @@ impl NeuroWealthVault {
     }
 
     /// Subtracts `amount` from the global TotalAssets and TotalDeposits (#646).
+    #[allow(dead_code)]
     #[inline]
     fn reduce_global_totals_on_withdraw(env: &Env, amount: i128) {
         let total_assets: i128 = env
@@ -10886,12 +11034,24 @@ impl NeuroWealthVault {
     }
 
     /// Requires an adapter to be configured and the protocol to be whitelisted.
+    #[allow(dead_code)]
     #[inline]
     fn require_protocol_adapter_ready(env: &Env, protocol: &Symbol) {
-        let whitelisted: bool = env.storage().instance().get(&DataKeyExt::ProtocolWhitelist(protocol.clone())).unwrap_or(false);
+        let whitelisted: bool = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolWhitelist(protocol.clone()))
+            .unwrap_or(false);
         Self::require(env, whitelisted, VaultError::ProtocolNotWhitelisted);
-        let configured: Option<Address> = env.storage().instance().get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
-        Self::require(env, configured.is_some(), VaultError::ProtocolAdapterNotConfigured);
+        let configured: Option<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::ProtocolAdapter(protocol.clone()));
+        Self::require(
+            env,
+            configured.is_some(),
+            VaultError::ProtocolAdapterNotConfigured,
+        );
     }
 
     /// Enforces a per-user call allowance.
@@ -11333,6 +11493,40 @@ impl NeuroWealthVault {
             .unwrap_or(0_i128)
     }
 
+    /// Reads the number of shares that must stay in `user`'s balance to back
+    /// their pending withdrawal requests (#1089).
+    ///
+    /// `queue_withdrawal` reserves *assets* and never moves the shares that
+    /// cover them, so every lock/spend path has to subtract this amount
+    /// itself. The conversion mirrors `queue_withdrawal`'s ceiling division
+    /// (the exact inverse of `get_balance`'s floor division) so both agree on
+    /// how many shares a reservation needs.
+    #[inline]
+    fn read_reserved_withdrawal_shares(env: &Env, user: &Address) -> i128 {
+        let reserved_assets = Self::read_reserved_withdrawal_amount(env, user);
+        if reserved_assets <= 0 {
+            return 0;
+        }
+
+        let total_shares = Self::get_total_shares_internal(env);
+        let total_assets = Self::get_total_assets_internal(env);
+        if total_shares <= 0 || total_assets <= 0 {
+            return reserved_assets;
+        }
+
+        reserved_assets
+            .checked_mul(total_shares)
+            .expect("vault: shares overflow")
+            .checked_add(
+                total_assets
+                    .checked_sub(1)
+                    .expect("vault: shares underflow"),
+            )
+            .expect("vault: shares overflow")
+            .checked_div(total_assets)
+            .expect("vault: divide by zero")
+    }
+
     /// Adjusts a user's reserved-withdrawal total by `delta` (#990). `delta`
     /// is negative to release a reservation (on cancel or fulfillment) and
     /// positive to add one (on a new `queue_withdrawal` call). Floors at 0
@@ -11365,6 +11559,10 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        // Ensure user has no reserved shares from pending withdrawals before migrating
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
+        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
+
         let no_shares_error = if mode == BurnAndPayMode::All {
             VaultError::NoSharesToWithdraw
         } else {
@@ -11373,15 +11571,20 @@ impl NeuroWealthVault {
         Self::require(env, user_shares > 0, no_shares_error);
 
         let (locked_shares, lock_expiry) = Self::read_lock_state(env, user);
-        let shares_for_redemption = if mode == BurnAndPayMode::All && locked_shares > 0 {
-            let unlocked_shares = user_shares
-                .checked_sub(locked_shares)
-                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
-            Self::require(env, unlocked_shares > 0, VaultError::InsufficientShares);
-            unlocked_shares
-        } else {
-            user_shares
-        };
+        // Shares reserved by pending withdrawal requests are spent at queue
+        // processing time, so no withdrawal may redeem them first (#1089).
+        let reserved_shares = Self::read_reserved_withdrawal_shares(env, user);
+        let shares_for_redemption =
+            if mode == BurnAndPayMode::All && (locked_shares > 0 || reserved_shares > 0) {
+                let redeemable_shares = user_shares
+                    .checked_sub(locked_shares)
+                    .and_then(|shares| shares.checked_sub(reserved_shares))
+                    .unwrap_or(0);
+                Self::require(env, redeemable_shares > 0, VaultError::InsufficientShares);
+                redeemable_shares
+            } else {
+                user_shares
+            };
 
         if mode != BurnAndPayMode::Emergency {
             Self::require_min_holding_period_elapsed(env, user);
@@ -11428,11 +11631,12 @@ impl NeuroWealthVault {
             return (0, shares_for_redemption);
         }
 
-        if mode == BurnAndPayMode::Requested && locked_shares > 0 {
-            let unlocked_shares = user_shares
+        if mode == BurnAndPayMode::Requested && (locked_shares > 0 || reserved_shares > 0) {
+            let spendable_shares = user_shares
                 .checked_sub(locked_shares)
-                .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientUnlockedShares));
-            let max_withdrawable = Self::convert_to_assets_internal(env, unlocked_shares);
+                .and_then(|shares| shares.checked_sub(reserved_shares))
+                .unwrap_or(0);
+            let max_withdrawable = Self::convert_to_assets_internal(env, spendable_shares);
             Self::require(
                 env,
                 requested <= max_withdrawable,
@@ -11495,23 +11699,26 @@ impl NeuroWealthVault {
             VaultError::InsufficientSharesForAmount,
         );
 
-        // Locked shares (from `lock_shares`) must never be burned before
-        // their lock expires, regardless of withdrawal mode. `All` mode
-        // already excludes locked shares from `shares_for_redemption` above;
+        // Locked shares (from `lock_shares`) and shares reserved by pending
+        // withdrawal requests must never be burned before their lock expires
+        // or the request is fulfilled, regardless of withdrawal mode. `All`
+        // mode already excludes both from `shares_for_redemption` above;
         // `Requested` and `Emergency` both burn against the user's raw share
         // balance, so both need this explicit floor. Without it here,
-        // `emergency_withdraw` could silently drain a user's locked
-        // position during a pause, leaving `LockedShares(user) >
-        // Shares(user)` afterward.
+        // `emergency_withdraw` could silently drain a user's locked position
+        // during a pause, leaving `LockedShares(user) > Shares(user)`
+        // afterward, and a direct withdrawal could spend the shares a queued
+        // request needs (#1089).
         if (mode == BurnAndPayMode::Requested || mode == BurnAndPayMode::Emergency)
-            && locked_shares > 0
+            && (locked_shares > 0 || reserved_shares > 0)
         {
             let remaining_shares = user_shares
                 .checked_sub(shares_to_burn)
                 .unwrap_or_else(|| panic_with_error!(env, VaultError::InsufficientSharesForAmount));
+            let unavailable_shares = locked_shares.saturating_add(reserved_shares);
             Self::require(
                 env,
-                remaining_shares >= locked_shares,
+                remaining_shares >= unavailable_shares,
                 VaultError::InsufficientShares,
             );
         }
