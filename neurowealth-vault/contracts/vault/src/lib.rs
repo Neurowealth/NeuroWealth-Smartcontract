@@ -3400,17 +3400,19 @@ impl NeuroWealthVault {
             USER_SHARES_TTL_EXTEND_TO,
         );
 
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            env.events().publish(
-                (TOPIC_DEPOSIT, user.clone()),
-                DepositEvent {
-                    user: user.clone(),
-                    amount,
-                    shares: shares_to_mint,
-                },
-            );
-        }
+        // Emit one aggregate DepositEvent for the whole batch so that indexers
+        // summing `shares` across events get the correct total (not N × shares_to_mint).
+        // The doc comment at the top of this function already states "one event per
+        // *batch*"; the previous per-entry loop overcounted by (N-1) × shares_to_mint
+        // (#1087).
+        env.events().publish(
+            (TOPIC_DEPOSIT, user.clone()),
+            DepositEvent {
+                user: user.clone(),
+                amount: total_amount,
+                shares: shares_to_mint,
+            },
+        );
     }
 
     // ==========================================================================
