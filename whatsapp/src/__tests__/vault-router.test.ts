@@ -12,11 +12,7 @@
  * response.
  */
 
-process.env.ENCRYPTION_KEY = 'test-encryption-key-at-least-32-chars!!';
-process.env.PHONE_HASH_SALT = 'test-phone-salt';
-process.env.VAULT_CONTRACT_ID = 'CTEST_VAULT_CONTRACT_ID';
-process.env.SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
-
+import '../testBootstrap';
 import { test, describe, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { VaultClient, VaultError, VaultErrorCode } from '@neurowealth/vault-client';
