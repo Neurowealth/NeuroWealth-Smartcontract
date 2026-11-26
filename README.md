@@ -623,10 +623,11 @@ can configure each category with `set_rate_limit(category, max_calls,
 window_ledgers)`; `max_calls == 0` disables a category. User deposits,
 withdrawals, TTL maintenance, and batch deposits use per-user buckets. Rebalance
 and harvest operations, plus all preview/conversion functions, use global
-buckets. `batch_deposit` is also bounded by `set_max_batch_size` (default 50
-entries). See [`ARCHITECTURE.md`](ARCHITECTURE.md) and
-[`SECURITY.md`](SECURITY.md) for defaults, storage, events, and operational
-guidance.
+buckets. `queue_withdrawal` also charges the per-user withdrawal bucket when
+the request is submitted (not when it is paid out). `batch_deposit` is also
+bounded by `set_max_batch_size` (default 50 entries). See
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and [`SECURITY.md`](SECURITY.md) for
+defaults, storage, events, and operational guidance.
 
 
 --

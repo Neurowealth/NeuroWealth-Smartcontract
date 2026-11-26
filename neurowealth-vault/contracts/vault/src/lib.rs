@@ -2312,7 +2312,10 @@ const MIGRATION_TARGET_TIMELOCK_LEDGERS: u32 = UPGRADE_TIMELOCK_LEDGERS;
 /// Keep them at nine characters or fewer because Soroban short symbols have a
 /// nine-character limit.
 pub const RATE_LIMIT_DEPOSIT: Symbol = symbol_short!("deposit");
-/// Rate-limit category for `withdraw` and `withdraw_all`.
+/// Rate-limit category for `withdraw`, `withdraw_all`, `withdraw_asset`, and
+/// withdrawal requests at submission time (`queue_withdrawal`). The per-user
+/// bucket is charged when the request is queued, not when the agent later pays
+/// it out in `process_withdrawal_queue`.
 pub const RATE_LIMIT_WITHDRAW: Symbol = symbol_short!("withdraw");
 /// Rate-limit category for agent `rebalance` calls.
 pub const RATE_LIMIT_REBALANCE: Symbol = symbol_short!("rebalance");
@@ -9998,6 +10001,15 @@ impl NeuroWealthVault {
     /// `emergency_withdraw` all refuse to touch them until the request is
     /// fulfilled, cancelled or expired (#1089).
     ///
+    /// The user's `RATE_LIMIT_WITHDRAW` bucket is charged when the request is
+    /// **submitted** (the `WithdrawalQueuedEvent` event), not when the agent
+    /// pays it out. This is the same call-time event the direct `withdraw`
+    /// entrypoints use, so a user cannot queue more withdrawal requests than
+    /// the configured allowance within one ledger window and then have them
+    /// all settled by a single `process_withdrawal_queue` call. Fulfilment
+    /// does not charge a second slot, and cancelling a request does not
+    /// refund the slot consumed when it was queued.
+    ///
     /// # Arguments
     /// * `env` - Soroban environment.
     /// * `user` - Address of the user requesting withdrawal.
@@ -10007,6 +10019,7 @@ impl NeuroWealthVault {
     /// * If vault is paused.
     /// * If user has insufficient shares.
     /// * If queue is at capacity.
+    /// * If the user's withdrawal rate-limit bucket is exhausted.
     ///
     /// # Events
     /// Emits `WithdrawalQueuedEvent`.
@@ -10103,6 +10116,13 @@ impl NeuroWealthVault {
                 VaultError::BatchSizeExceeded,
             );
         }
+
+        // Charge the per-user withdrawal allowance at submission time (#1156).
+        // Doing it here rather than in `process_withdrawal_queue` keeps the
+        // agent from reverting an entire batch when a single user exhausts
+        // their bucket, and makes the throttle match the other withdrawal
+        // entrypoints, which are also gated on the call that requests the payout.
+        Self::enforce_user_rate_limit(&env, &user, RATE_LIMIT_WITHDRAW);
 
         Self::adjust_reserved_withdrawal_amount(&env, &user, amount);
 
@@ -10393,6 +10413,10 @@ impl NeuroWealthVault {
     ///
     /// Skips cancelled and expired requests. Processes up to `batch_size` requests.
     /// Returns the number of requests successfully fulfilled.
+    ///
+    /// The withdrawal rate limit is attached to request submission
+    /// (`queue_withdrawal`), so payouts here do not consume another
+    /// `RATE_LIMIT_WITHDRAW` slot.
     ///
     /// # Arguments
     /// * `env` - Soroban environment.

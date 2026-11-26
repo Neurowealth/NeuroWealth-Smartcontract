@@ -924,6 +924,13 @@ per-user deposit/batch frequency buckets. A batch is counted once in each
 frequency bucket, not once per entry. This bounds the transfer/event loop while
 preserving atomic all-or-nothing semantics.
 
+The `withdraw` bucket is charged when a withdrawal is **requested**, including
+`queue_withdrawal`, not when it is paid out. A queued request therefore consumes
+one slot at the `WithdrawalQueuedEvent` event, and `process_withdrawal_queue`
+does not charge another one; this prevents a user from queueing many requests
+in one window and settling all of them in a single keeper call. Cancellation
+and expiry do not refund the slot.
+
 ### State and monitoring
 
 Policies and counters use the appended `DataKey::RateLimitConfig`,

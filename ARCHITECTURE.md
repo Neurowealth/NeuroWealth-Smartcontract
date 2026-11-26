@@ -1826,7 +1826,7 @@ window. Supported category symbols are:
 | Category    | Scope    | Protected entrypoints                               | Default           |
 | ----------- | -------- | --------------------------------------------------- | ----------------- |
 | `deposit`   | Per user | `deposit`, and the deposit leg of `batch_deposit`   | 100 / 720 ledgers |
-| `withdraw`  | Per user | `withdraw`, `withdraw_all`                          | 100 / 720 ledgers |
+| `withdraw`  | Per user | `withdraw`, `withdraw_all`, `withdraw_asset`, `queue_withdrawal` (request submission) | 100 / 720 ledgers |
 | `rebalance` | Global   | `rebalance`, `harvest`, `emergency_harvest`         | 100 / 720 ledgers |
 | `touch_ttl` | Per user | `touch_user_ttl`                                    | 5 / 1 ledger      |
 | `preview`   | Global   | all three `preview_*` and both `convert_to_*` calls | 1,000 / 1 ledger  |
@@ -1837,6 +1837,12 @@ putting a finite ceiling on high-frequency transactions. Production operators
 should tighten them for the vault's expected workload. The rebalance bucket is
 additional to, and does not replace, `MinRebalanceInterval` and
 `LastRebalanceLedger`.
+
+For queued withdrawals, the `withdraw` bucket is attached to **request
+submission**: each `queue_withdrawal` call consumes one slot, just like a direct
+`withdraw`. `process_withdrawal_queue` does not consume a second slot, so a
+user cannot queue many requests in one window and have them all settled in a
+single keeper call. Cancelling a request does not refund its slot.
 
 `get_rate_limit`/`get_rate_limit_config` expose the configured policy;
 `get_global_rate_limit_state` and `get_user_rate_limit_state` expose the current
