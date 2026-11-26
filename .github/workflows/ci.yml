@@ -380,7 +380,7 @@ jobs:
               if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && git rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
                 BASELINE_WORKTREE="$RUNNER_TEMP/baseline-repo"
                 mkdir -p "$BASELINE_WORKTREE"
-                git archive "origin/$BASE_BRANCH" neurowealth-vault | tar -x -C "$BASELINE_WORKTREE"
+                git -C "$GITHUB_WORKSPACE" archive "origin/$BASE_BRANCH" neurowealth-vault | tar -x -C "$BASELINE_WORKTREE"
                 if [ -d "$BASELINE_WORKTREE/neurowealth-vault" ]; then
                   echo "Building baseline WASM from origin/$BASE_BRANCH..."
                   (
@@ -553,6 +553,8 @@ jobs:
           # Respect the [graph] settings in deny.toml instead of forcing
           # --all-features (the action's default).
           arguments: ""
+          # time-core 0.1.8 uses edition 2024, which needs Cargo 1.85+.
+          rust-version: "1.85.0"
 
       - name: Open or update advisory tracking issue
         # Only scheduled runs manage the tracking issue: a per-PR failure is

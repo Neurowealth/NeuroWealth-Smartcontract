@@ -8900,7 +8900,13 @@ impl NeuroWealthVault {
             }
         }
 
-        if !has_shares && !has_lock && !has_deposit && !has_snapshot && !has_strategy && !has_asset_shares {
+        if !has_shares
+            && !has_lock
+            && !has_deposit
+            && !has_snapshot
+            && !has_strategy
+            && !has_asset_shares
+        {
             return false;
         }
 
@@ -10015,10 +10021,9 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKeyExt::WithdrawalRequest(request_id), &request);
-        env.storage().instance().extend_ttl(
-            USER_SHARES_TTL_THRESHOLD,
-            USER_SHARES_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .instance()
+            .extend_ttl(USER_SHARES_TTL_THRESHOLD, USER_SHARES_TTL_EXTEND_TO);
 
         // Append to order queue
         let mut order: Vec<u32> = env

@@ -13,7 +13,7 @@ fn test_default_min_holding_period() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_default_holding_period(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -34,7 +34,7 @@ fn test_withdraw_blocked_before_holding_period_elapses() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_default_holding_period(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -54,7 +54,7 @@ fn test_withdraw_succeeds_after_holding_period_elapses() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_default_holding_period(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -78,7 +78,7 @@ fn test_owner_can_adjust_min_holding_period() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_default_holding_period(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -107,7 +107,7 @@ fn test_yield_sniping_prevented_by_holding_period() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_default_holding_period(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 

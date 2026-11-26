@@ -14,6 +14,13 @@
 //! - `Error(Contract, #50)` — TimelockNotExpired (agent)
 
 #![no_main]
+#![allow(
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::match_same_arms,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls
+)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};

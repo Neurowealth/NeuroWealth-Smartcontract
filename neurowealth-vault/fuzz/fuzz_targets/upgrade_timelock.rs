@@ -13,6 +13,12 @@
 //! - `Error(Contract, #47)` — TimelockNotElapsed
 
 #![no_main]
+#![allow(
+    clippy::cast_lossless,
+    clippy::doc_markdown,
+    clippy::redundant_closure_for_method_calls,
+    clippy::uninlined_format_args
+)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};

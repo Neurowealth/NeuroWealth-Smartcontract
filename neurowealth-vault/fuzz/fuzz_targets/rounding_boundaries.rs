@@ -1,4 +1,4 @@
-//! LibFuzzer harness: tests rounding at boundary conditions.
+//! `LibFuzzer` harness: tests rounding at boundary conditions.
 //!
 //! This target exercises edge cases in the vault's share-to-asset conversions:
 //! - Deposits/withdrawals at minimum and maximum limits
@@ -6,16 +6,16 @@
 //! - Boundary values that could cause rounding errors in integer division
 //!
 //! Allowed panics (documented vault validation):
-//! - `Error(Contract, #37)` — AmountMustBePositive
-//! - `Error(Contract, #38)` — BelowMinimumDeposit
-//! - `Error(Contract, #39)` — MaximumDepositExceeded
-//! - `Error(Contract, #40)` — ExceedsUserDepositCap
-//! - `Error(Contract, #41)` — ExceedsTvlCap
-//! - `Error(Contract, #7)`  — InsufficientLiquidity
-//! - `Error(Contract, #6)`  — SharesToMintMustBePositive
-//! - `Error(Contract, #8)`  — InsufficientShares
-//! - `Error(Contract, #10)` — SharesToBurnMustBePositive
-//! - `Error(Contract, #11)` — InsufficientSharesForRequestedAmount
+//! - `Error(Contract, #37)` — `AmountMustBePositive`
+//! - `Error(Contract, #38)` — `BelowMinimumDeposit`
+//! - `Error(Contract, #39)` — `MaximumDepositExceeded`
+//! - `Error(Contract, #40)` — `ExceedsUserDepositCap`
+//! - `Error(Contract, #41)` — `ExceedsTvlCap`
+//! - `Error(Contract, #7)`  — `InsufficientLiquidity`
+//! - `Error(Contract, #6)`  — `SharesToMintMustBePositive`
+//! - `Error(Contract, #8)`  — `InsufficientShares`
+//! - `Error(Contract, #10)` — `SharesToBurnMustBePositive`
+//! - `Error(Contract, #11)` — `InsufficientSharesForRequestedAmount`
 //! - Token transfer failures
 
 #![no_main]
@@ -36,6 +36,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -272,7 +273,7 @@ fuzz_target!(|data: &[u8]| {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
             }

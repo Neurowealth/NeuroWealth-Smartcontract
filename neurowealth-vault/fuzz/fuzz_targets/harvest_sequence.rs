@@ -33,6 +33,11 @@
 //! - `TotalAssets` does not decrease after a harvest (yield can only be non-negative)
 
 #![no_main]
+#![allow(
+    clippy::doc_markdown,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls
+)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};

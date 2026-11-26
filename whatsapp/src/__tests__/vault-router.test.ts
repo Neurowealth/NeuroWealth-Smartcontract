@@ -17,6 +17,61 @@ process.env.PHONE_HASH_SALT = 'test-phone-salt';
 process.env.VAULT_CONTRACT_ID = 'CTEST_VAULT_CONTRACT_ID';
 process.env.SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
 
+interface WalletRow {
+  phone_hash: string;
+  public_key: string;
+  encrypted_data: string;
+  iv: string;
+  tag: string;
+  created_at: Date;
+  wrapped_dek: string;
+  dek_iv: string;
+  dek_tag: string;
+  key_version: string;
+}
+
+const wallets = new Map<string, WalletRow>();
+const dbPath = require.resolve('../db');
+require.cache[dbPath] = {
+  id: dbPath,
+  filename: dbPath,
+  loaded: true,
+  exports: {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (/^\s*INSERT INTO whatsapp_wallets/i.test(sql)) {
+        const [phoneHash, publicKey, encryptedData, iv, tag, createdAt, wrappedDek, dekIv, dekTag, keyVersion] = params as [
+          string, string, string, string, string, number, string, string, string, string,
+        ];
+        if (wallets.has(phoneHash)) return { rows: [] };
+        const row: WalletRow = {
+          phone_hash: phoneHash,
+          public_key: publicKey,
+          encrypted_data: encryptedData,
+          iv,
+          tag,
+          created_at: new Date(createdAt),
+          wrapped_dek: wrappedDek,
+          dek_iv: dekIv,
+          dek_tag: dekTag,
+          key_version: keyVersion,
+        };
+        wallets.set(phoneHash, row);
+        return { rows: [{ ...row }] };
+      }
+
+      if (/^\s*SELECT \* FROM whatsapp_wallets/i.test(sql)) {
+        const row = wallets.get(params[0] as string);
+        return { rows: row ? [{ ...row }] : [] };
+      }
+
+      throw new Error(`Unexpected wallet test query: ${sql}`);
+    },
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as unknown as NodeModule;
+
 import { test, describe, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { VaultClient, VaultError, VaultErrorCode } from '@neurowealth/vault-client';
@@ -45,6 +100,8 @@ const FAKE_HASH = 'a'.repeat(64);
 afterEach(() => {
   mock.restoreAll();
 });
+
+beforeEach(() => wallets.clear());
 
 // ---------------------------------------------------------------------------
 // getPortfolio

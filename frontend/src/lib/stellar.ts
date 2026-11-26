@@ -24,8 +24,7 @@ export type VaultStateResult =
   | { ok: true; state: VaultState }
   | { ok: false; error: string };
 
-function requirePublicEnv(name: string): string {
-  const value = process.env[name];
+function requirePublicEnv(name: string, value: string | undefined): string {
   if (!value) {
     throw new Error(
       `${name} must be set; refusing to use an unsafe vault contract default`,
@@ -34,11 +33,18 @@ function requirePublicEnv(name: string): string {
   return value;
 }
 
-const RPC_URL = requirePublicEnv("NEXT_PUBLIC_SOROBAN_RPC_URL");
+const RPC_URL = requirePublicEnv(
+  "NEXT_PUBLIC_SOROBAN_RPC_URL",
+  process.env.NEXT_PUBLIC_SOROBAN_RPC_URL,
+);
 const NETWORK_PASSPHRASE = requirePublicEnv(
   "NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE",
+  process.env.NEXT_PUBLIC_SOROBAN_NETWORK_PASSPHRASE,
 );
-const VAULT_CONTRACT_ID = requirePublicEnv("NEXT_PUBLIC_VAULT_CONTRACT_ID");
+const VAULT_CONTRACT_ID = requirePublicEnv(
+  "NEXT_PUBLIC_VAULT_CONTRACT_ID",
+  process.env.NEXT_PUBLIC_VAULT_CONTRACT_ID,
+);
 
 export const server = new rpc.Server(RPC_URL, {
   allowHttp: process.env.NEXT_PUBLIC_E2E_TESTS === "true",

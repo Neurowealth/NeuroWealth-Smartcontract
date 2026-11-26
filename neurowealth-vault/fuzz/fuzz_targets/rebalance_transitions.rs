@@ -1,4 +1,4 @@
-//! LibFuzzer harness: random rebalance transitions against the vault.
+//! `LibFuzzer` harness: random rebalance transitions against the vault.
 //!
 //! Exercises protocol switching (none → blend → none → dex → none)
 //! to catch state-inconsistency bugs during rebalance transitions.
@@ -17,6 +17,7 @@
 //! - Token transfer failures
 
 #![no_main]
+#![allow(clippy::doc_markdown)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};
@@ -34,6 +35,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -194,7 +196,7 @@ fuzz_target!(|data: &[u8]| {
                 1 => {
                     // Rebalance to a target protocol
                     let protocol = protocols[protocol_idx].clone();
-                    let expected_apy = (raw as i128) % 10_000;
+                    let expected_apy = i128::from(raw) % 10_000;
                     client.rebalance(&agent, &protocol, &expected_apy, &0);
                 }
                 2 => {
@@ -219,7 +221,7 @@ fuzz_target!(|data: &[u8]| {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
             }

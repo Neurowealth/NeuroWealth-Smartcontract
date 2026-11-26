@@ -13,6 +13,14 @@ test.afterAll(async () => {
 });
 
 async function installFreighterAndRpcBoundary(page: Page, scenario: string): Promise<void> {
+  if (page.url() !== 'about:blank') {
+    await page.goto('about:blank');
+  }
+  await page.addInitScript(() => {
+    if (window.location.origin !== 'null') {
+      localStorage.setItem('neurowealth-onboarding-completed', 'true');
+    }
+  });
   await page.addInitScript(({ rpcUrl }) => {
     const scenario = () => new URL(window.location.href).searchParams.get('scenario') ?? 'journey';
     const call = async (method: string, params: Record<string, unknown> = {}) => {
@@ -43,7 +51,7 @@ async function installFreighterAndRpcBoundary(page: Page, scenario: string): Pro
 
 async function connectWallet(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Connect Wallet' }).click();
-  await expect(page.getByText('GABCDE...WXYZ')).toBeVisible();
+  await expect(page.getByText('GAAQCA...DZ7H')).toBeVisible();
   await expect(page.getByText('100.00', { exact: true })).toBeVisible();
 }
 
@@ -95,7 +103,7 @@ test('keeps unresolved confirmation visible after closing and reopening the moda
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await depositButton.click();
-  await expect(page.getByRole('status')).toContainText('local-test-tx-hash');
+  await expect(page.getByRole('status')).toContainText('local-test-t...ash-0001');
   await expect(page.getByRole('button', { name: /confirming transaction/i })).toBeDisabled();
 
   // "Check status later" affordance dismisses the pending submission and unlocks the form
@@ -106,7 +114,7 @@ test('keeps unresolved confirmation visible after closing and reopening the moda
   await expect(page.getByRole('button', { name: 'Confirm Deposit' })).toBeVisible();
 });
 
-test('handles rejected signatures, wrong networks, failed simulations, and modal cancellation', async ({ page }) => {
+test('handles rejected signatures and modal cancellation', async ({ page }) => {
   await installFreighterAndRpcBoundary(page, 'rejected');
   await connectWallet(page);
   await page.getByRole('button', { name: 'Deposit', exact: true }).click();
@@ -116,14 +124,18 @@ test('handles rejected signatures, wrong networks, failed simulations, and modal
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+});
 
+test('blocks transactions when the wallet is on the wrong network', async ({ page }) => {
   await installFreighterAndRpcBoundary(page, 'wrong-network');
   await connectWallet(page);
   await page.getByRole('button', { name: 'Deposit', exact: true }).click();
   await page.getByLabel('Amount (USDC)').fill('5');
   await page.getByRole('button', { name: 'Confirm Deposit' }).click();
   await expect(page.getByRole('alert')).toContainText('Switch Freighter to the required Stellar network');
+});
 
+test('does not send transactions after simulation failures', async ({ page }) => {
   await installFreighterAndRpcBoundary(page, 'simulation-failed');
   await connectWallet(page);
   await page.getByRole('button', { name: 'Deposit', exact: true }).click();
@@ -155,7 +167,7 @@ test('covers the full deposit -> agent rebalance -> withdrawal lifecycle (#934)'
 
   // The dashboard only re-reads vault state on reconnect, mirroring the
   // user reopening the app after the agent has rebalanced their position.
-  await page.reload();
+  await installFreighterAndRpcBoundary(page, scenario);
   await connectWallet(page);
   await expect(currentStrategyBadge).toHaveText('Growth');
 

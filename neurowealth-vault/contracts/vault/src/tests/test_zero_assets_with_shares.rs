@@ -14,7 +14,7 @@ fn test_deposit_rejected_when_shares_exist_but_assets_zero() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -25,7 +25,6 @@ fn test_deposit_rejected_when_shares_exist_but_assets_zero() {
     client.deposit(&user1, &deposit1);
 
     // Owner reports total loss (sets TotalAssets to 0)
-    let agent = Address::generate(&env);
     client.update_total_assets(&agent, &0_i128, &true, &1000);
 
     // Second user attempts to deposit - should be rejected
@@ -61,7 +60,7 @@ fn test_deposit_succeeds_when_both_shares_and_assets_positive() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -74,7 +73,6 @@ fn test_deposit_succeeds_when_both_shares_and_assets_positive() {
     // Yield accrues
     let yield_amount = 2_000_000_i128;
     token.mint(&contract_id, &yield_amount);
-    let agent = Address::generate(&env);
     client.update_total_assets(&agent, &(deposit1 + yield_amount), &false, &0);
 
     // Second user deposits - should succeed
@@ -94,7 +92,7 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -105,7 +103,6 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     client.deposit(&user1, &deposit1);
 
     // Owner reports total loss
-    let agent = Address::generate(&env);
     client.update_total_assets(&agent, &0_i128, &true, &1000);
 
     // Second user attempts batch_deposit - should be rejected

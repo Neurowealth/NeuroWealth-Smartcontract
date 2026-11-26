@@ -1,5 +1,67 @@
+process.env.ENCRYPTION_KEY = "test-encryption-key-at-least-32-chars!!";
+process.env.PHONE_HASH_SALT = "test-phone-salt-0123456789";
+process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+process.env.VAULT_CONTRACT_ID = "CTEST_VAULT";
+
+const walletRows = new Map<string, Record<string, unknown>>();
+const dbPath = require.resolve("./db");
+require.cache[dbPath] = {
+  id: dbPath,
+  filename: dbPath,
+  loaded: true,
+  exports: {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (/^\s*INSERT INTO whatsapp_wallets/i.test(sql)) {
+        const [phoneHash, publicKey, encryptedData, iv, tag, createdAt, wrappedDek, dekIv, dekTag, keyVersion] = params as [
+          string, string, string, string, string, number, string, string, string, string,
+        ];
+        if (!walletRows.has(phoneHash)) {
+          walletRows.set(phoneHash, {
+            phone_hash: phoneHash,
+            public_key: publicKey,
+            encrypted_data: encryptedData,
+            iv,
+            tag,
+            created_at: new Date(createdAt),
+            wrapped_dek: wrappedDek,
+            dek_iv: dekIv,
+            dek_tag: dekTag,
+            key_version: keyVersion,
+          });
+        }
+        return { rows: [] };
+      }
+
+      if (/^\s*SELECT \* FROM whatsapp_wallets/i.test(sql)) {
+        const row = walletRows.get(params[0] as string);
+        return { rows: row ? [{ ...row }] : [] };
+      }
+
+      throw new Error(`Unexpected webhook test query: ${sql}`);
+    },
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as any;
+
+const deliveryPath = require.resolve("./messageDeliveryService");
+require.cache[deliveryPath] = {
+  id: deliveryPath,
+  filename: deliveryPath,
+  loaded: true,
+  exports: {
+    applyDeliveryStatus: async () => ({ applied: true, created: true }),
+    retryFailedDelivery: async () => ({ retried: false, escalated: false }),
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as any;
+
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
+import { VaultClient } from "@neurowealth/vault-client";
 import { hashPhoneNumber } from "./cryptoUtils";
 import { getWallet } from "./walletService";
 import { getSession, updateState, UserState } from "./stateManager";
@@ -7,6 +69,15 @@ import { InMemoryStateStore, setStateStore } from "./stateStore";
 import { smsClient } from "./smsService";
 
 setStateStore(new InMemoryStateStore());
+
+const TEST_TX_HASH = "b".repeat(64);
+VaultClient.prototype.get_balance = async () => 1_000_0000000n;
+VaultClient.prototype.get_user_strategy = async () => "balanced";
+VaultClient.prototype.get_user_apy = async () => 850n;
+VaultClient.prototype.set_user_strategy = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.deposit = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.withdraw = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.withdraw_all = async () => ({ hash: TEST_TX_HASH, result: 0n });
 
 const { handleWhatsAppWebhook } =
   require("./webhook") as typeof import("./webhook");
@@ -145,7 +216,7 @@ describe("webhook verification flow (#691)", () => {
     await send(from, "hi");
     const captured = await send(from, "what now");
 
-    assert.match(captured.body, /6-digit verification code/);
+    assert.match(captured.body, /new verification code.*SMS/i);
   });
 });
 

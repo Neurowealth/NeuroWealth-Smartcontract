@@ -39,21 +39,6 @@ const twilioStub = {
   twiml: { MessagingResponse: FakeMessagingResponse },
 };
 
-const otpDeliveryModulePath = require.resolve('../otpDelivery');
-require.cache[otpDeliveryModulePath] = {
-  id: otpDeliveryModulePath,
-  filename: otpDeliveryModulePath,
-  loaded: true,
-  exports: {
-    deliverOTP: async (phoneNumber: string, code: string) => {
-      deliveredCodes.set(phoneNumber, code);
-    },
-  },
-  parent: null,
-  children: [],
-  paths: [],
-} as any;
-
 // Inject under both CJS keys twilio uses
 for (const key of [
   require.resolve('twilio'),
@@ -68,12 +53,30 @@ for (const key of [
   } catch { /* ignore resolve errors */ }
 }
 
+const deliveryModulePath = require.resolve('../messageDeliveryService');
+require.cache[deliveryModulePath] = {
+  id: deliveryModulePath,
+  filename: deliveryModulePath,
+  loaded: true,
+  exports: {
+    applyDeliveryStatus: async () => ({ applied: true, created: true }),
+    retryFailedDelivery: async () => ({ retried: false, escalated: false }),
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as any;
+
 const wallets = new Map<string, {
   public_key: string;
   encrypted_data: string;
   iv: string;
   tag: string;
   created_at: Date;
+  wrapped_dek: string;
+  dek_iv: string;
+  dek_tag: string;
+  key_version: string;
 }>();
 
 const dbPath = require.resolve('../db');
@@ -91,6 +94,10 @@ require.cache[dbPath] = {
             iv: params[3],
             tag: params[4],
             created_at: new Date(params[5]),
+            wrapped_dek: params[6],
+            dek_iv: params[7],
+            dek_tag: params[8],
+            key_version: params[9],
           });
         }
         return { rows: [] };
@@ -112,11 +119,26 @@ import assert from 'node:assert/strict';
 import { VaultClient } from '@neurowealth/vault-client';
 import { handleWhatsAppWebhook } from '../webhook';
 import { InMemoryStateStore, setStateStore } from '../stateStore';
+import { smsClient } from '../smsService';
 
 setStateStore(new InMemoryStateStore());
 import { INPUT_LIMITS, SAFE_OVERSIZE_REPLY, SAFE_STRATEGY_REPLY, SAFE_MALFORMED_REPLY } from '../inputBounds';
 
 const FAKE_TX_HASH = 'b'.repeat(64);
+
+smsClient.send = async (phoneNumber: string, body: string) => {
+  const code = /\d{6}/.exec(body)?.[0];
+  if (code) deliveredCodes.set(phoneNumber.replace(/^whatsapp:/, ''), code);
+  return 'SMtest';
+};
+
+VaultClient.prototype.get_balance = async () => 1_000_0000000n;
+VaultClient.prototype.get_user_strategy = async () => 'balanced';
+VaultClient.prototype.get_user_apy = async () => 850n;
+VaultClient.prototype.set_user_strategy = async () => ({ hash: FAKE_TX_HASH });
+VaultClient.prototype.deposit = async () => ({ hash: FAKE_TX_HASH });
+VaultClient.prototype.withdraw = async () => ({ hash: FAKE_TX_HASH });
+VaultClient.prototype.withdraw_all = async () => ({ hash: FAKE_TX_HASH, result: 0n });
 
 // ── Minimal req/res helpers ──────────────────────────────────────────────────
 
@@ -197,7 +219,7 @@ describe('webhook – UNVERIFIED state', () => {
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
     const otp = deliveredCodes.get(phone);
     assert.ok(otp, 'OTP should be delivered by SMS');
-    assert.match(lastBody, /sent by sms/i);
+    assert.match(lastBody, /sent.*sms/i);
     assert.doesNotMatch(lastBody, new RegExp(otp), 'WhatsApp reply must not contain the OTP');
   });
 
@@ -234,24 +256,24 @@ describe('webhook – AWAITING_OTP state', () => {
     assert.match(lastBody, /invalid/i);
   });
 
-  test('non-OTP input asks for the 6-digit code', async () => {
+  test('non-code input requests a fresh verification code via SMS', async () => {
     const phone = nextPhone();
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
     await handleWhatsAppWebhook(makeReq(phone, 'please verify me'), makeRes());
-    assert.match(lastBody, /6.digit/i);
+    assert.match(lastBody, /new verification code.*sms/i);
   });
 
   test('"hi" in AWAITING_OTP generates a new OTP code (#1002)', async () => {
     const phone = nextPhone();
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-    const firstOtp = lastBody.match(/(\d{6})/)![1];
+    const firstOtp = deliveredCodes.get(phone)!;
 
     // Send "hi" again to get a new OTP
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-    const secondOtp = lastBody.match(/(\d{6})/)![1];
+    const secondOtp = deliveredCodes.get(phone)!;
 
     assert.notEqual(firstOtp, secondOtp, 'New OTP should be generated');
-    assert.match(lastBody, /new otp/i);
+    assert.match(lastBody, /new verification code/i);
   });
 
   test('lockout after max attempts allows recovery via "hi" (#1002)', async () => {
@@ -267,7 +289,7 @@ describe('webhook – AWAITING_OTP state', () => {
 
     // Recover by sending "hi"
     await handleWhatsAppWebhook(makeReq(phone, 'hi'), makeRes());
-    const newOtp = lastBody.match(/(\d{6})/)![1];
+    const newOtp = deliveredCodes.get(phone)!;
     assert.ok(newOtp, 'New OTP should be generated after lockout');
 
     // Verify with new OTP
@@ -431,7 +453,7 @@ describe('webhook – input bounds (#876)', () => {
     const exact = `hi${' '.repeat(INPUT_LIMITS.inboundBody - 2)}`;
     assert.equal(Buffer.byteLength(exact), INPUT_LIMITS.inboundBody);
     await handleWhatsAppWebhook(makeReq(phone, exact), makeRes());
-    assert.match(lastBody, /otp/i);
+    assert.match(lastBody, /verification code|sent.*sms/i);
     assert.doesNotMatch(lastBody, /too long/i);
 
     const over = `hi${' '.repeat(INPUT_LIMITS.inboundBody - 1)}`;
@@ -446,7 +468,7 @@ describe('webhook – input bounds (#876)', () => {
     const phone = nextPhone();
     const exact = 'a'.repeat(INPUT_LIMITS.commandText);
     await handleWhatsAppWebhook(makeReq(phone, exact), makeRes());
-    assert.match(lastBody, /otp/i);
+    assert.match(lastBody, /verification code.*sms/i);
     assert.equal(lastBody.includes(SAFE_OVERSIZE_REPLY), false);
 
     const over = 'a'.repeat(INPUT_LIMITS.commandText + 1);
@@ -492,7 +514,7 @@ describe('webhook – input bounds (#876)', () => {
     const exactFrom = `whatsapp:${'1'.repeat(INPUT_LIMITS.address - 'whatsapp:'.length)}`;
     assert.equal(Buffer.byteLength(exactFrom), INPUT_LIMITS.address);
     await handleWhatsAppWebhook({ body: { From: exactFrom, Body: 'hi' } } as any, makeRes());
-    assert.match(lastBody, /otp/i);
+    assert.match(lastBody, /verification code/i);
 
     const overFrom = `${exactFrom}1`;
     await handleWhatsAppWebhook({ body: { From: overFrom, Body: 'hi' } } as any, makeRes());
