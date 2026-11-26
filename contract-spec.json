@@ -313,6 +313,25 @@
       "state_changing": true
     },
     {
+      "name": "add_allowed_migration_source",
+      "category": "management",
+      "access": "owner",
+      "description": "Allow-list a source vault for receive_migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
       "name": "lock_shares",
       "category": "management",
       "access": "public",
@@ -5016,6 +5035,14 @@
     "VaultError::DepositRejectedZeroAssetsWithShares": {
       "code": 93,
       "description": "The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead."
+    },
+    "VaultError::PendingWithdrawalExists": {
+      "code": 94,
+      "description": "Share migration is blocked while the user has pending withdrawal reservations."
+    },
+    "VaultError::UnauthorizedMigrationSource": {
+      "code": 95,
+      "description": "The source vault is not registered in the owner's migration allow-list."
     },
     "ValidationError": {
       "code": 100,
