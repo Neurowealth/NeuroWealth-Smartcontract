@@ -1027,8 +1027,6 @@ pub struct PauseEvent {
     pub caller: Address,
 }
 
-
-
 /// Emitted once when the vault is initialized via `initialize`.
 ///
 /// # Topics
@@ -3119,7 +3117,11 @@ impl NeuroWealthVault {
         // pre-call balance against `amount` confirms the receipt without
         // requiring the caller to pass the pre-call value as an argument
         // (which would be forgeable).
-        let usdc_token_addr: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let usdc_token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::UsdcToken)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::NotInitialized));
         let usdc_client = token::Client::new(&env, &usdc_token_addr);
         let current_balance = usdc_client.balance(&env.current_contract_address());
         // The expected minimum balance after the inbound transfer:
@@ -3905,7 +3907,11 @@ impl NeuroWealthVault {
             .unwrap_or(0_i128);
         // Ensure user has no reserved shares from pending withdrawals before migrating
         let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
-        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
+        Self::require(
+            &env,
+            reserved_shares == 0,
+            VaultError::PendingWithdrawalExists,
+        );
 
         Self::require(&env, user_shares > 0, VaultError::NoSharesToMigrate);
 
@@ -5475,7 +5481,8 @@ impl NeuroWealthVault {
                     Self::supply_to_dex(&env, dex_to_supply, min_out, false);
                 }
                 Self::sync_deployed_split(&env);
-            }        }
+            }
+        }
 
         env.events().publish(
             (TOPIC_EMERGENCY_HARVEST,),
@@ -10068,7 +10075,8 @@ impl NeuroWealthVault {
             // after an owner-cosigned write-down). Return a defined error
             // instead of aborting on the division below.
             Self::require(&env, total_assets > 0, VaultError::NoAssetsToWithdraw);
-            let numerator = total_reserved_after                .checked_mul(total_shares)
+            let numerator = total_reserved_after
+                .checked_mul(total_shares)
                 .expect("vault: shares overflow");
             numerator
                 .checked_add(total_assets)
@@ -11566,9 +11574,6 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
-        // Ensure user has no reserved shares from pending withdrawals before migrating
-        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
-        Self::require(&env, reserved_shares == 0, VaultError::PendingWithdrawalExists);
 
         let no_shares_error = if mode == BurnAndPayMode::All {
             VaultError::NoSharesToWithdraw

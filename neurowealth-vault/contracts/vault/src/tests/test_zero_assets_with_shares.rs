@@ -14,7 +14,7 @@ fn test_deposit_rejected_when_shares_exist_but_assets_zero() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -24,8 +24,12 @@ fn test_deposit_rejected_when_shares_exist_but_assets_zero() {
     token.mint(&user1, &deposit1);
     client.deposit(&user1, &deposit1);
 
-    // Owner reports total loss (sets TotalAssets to 0)
-    client.update_total_assets(&agent, &0_i128, &true, &1000);
+    // Owner reports total loss. Write TotalAssets directly rather than going
+    // through update_total_assets's owner-cosigned, percentage-capped decrease
+    // path (same approach as test_withdraw.rs's dust-holder scenario).
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+    });
 
     // Second user attempts to deposit - should be rejected
     let user2 = Address::generate(&env);
@@ -92,7 +96,7 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, agent, owner, usdc_token) = setup_vault_with_token(&env);
+    let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);
 
@@ -102,8 +106,10 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     token.mint(&user1, &deposit1);
     client.deposit(&user1, &deposit1);
 
-    // Owner reports total loss
-    client.update_total_assets(&agent, &0_i128, &true, &1000);
+    // Owner reports total loss (direct storage write; see above).
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+    });
 
     // Second user attempts batch_deposit - should be rejected
     let user2 = Address::generate(&env);
@@ -114,7 +120,6 @@ fn test_batch_deposit_rejected_when_shares_exist_but_assets_zero() {
     entries.push_back((usdc_token, deposit2));
     client.batch_deposit(&user2, &entries);
 }
-
 
 /// #1090: queue_withdrawal returns a defined error, not a raw divide-by-zero
 /// panic, when shares exist but total_assets is zero.
@@ -134,8 +139,9 @@ fn test_queue_withdrawal_rejected_when_shares_exist_but_assets_zero() {
     client.deposit(&user, &deposit);
 
     // Write the vault assets down to zero while the user still holds shares.
-    let agent = Address::generate(&env);
-    client.update_total_assets(&agent, &0_i128, &true, &1000);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::TotalAssets, &0_i128);
+    });
 
     client.queue_withdrawal(&user, &1_000_000_i128);
 }

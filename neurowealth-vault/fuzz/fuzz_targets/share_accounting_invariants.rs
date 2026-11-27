@@ -213,6 +213,9 @@ fn setup(env: &Env) -> Harness<'_> {
         &usdc,
         &migration_salt,
     );
+    // #1086: receive_migration rejects source vaults that are not on the
+    // target's owner-managed allow-list.
+    migration_client.add_allowed_migration_source(&contract_id);
 
     client.schedule_migration_target(&owner, &migration_target_id);
     env.ledger()

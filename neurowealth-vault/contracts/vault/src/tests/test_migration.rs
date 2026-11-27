@@ -297,6 +297,9 @@ fn test_migrate_shares_succeeds_with_no_locked_shares() {
         &usdc_token,
         &target_salt,
     );
+    // #1086: the target vault only accepts receive_migration from source
+    // vaults on its owner-managed allow-list.
+    target_client.add_allowed_migration_source(&contract_id);
 
     mint_and_deposit(&env, &client, &usdc_token, &user, amount);
     set_target_now(&env, &client, &owner, &target_id);

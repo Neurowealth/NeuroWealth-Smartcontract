@@ -45,3 +45,24 @@ frontend/src/components/ErrorBoundary.test.tsx:stellar-secret-key:140
 6d7f77f18d8b858a5643b515262387fba6421e3e:packages/bridge/src/bridge-recovery.test.ts:generic-api-key:512
 packages/bridge/src/bridge-recovery.test.ts:generic-api-key:511
 packages/bridge/src/bridge-recovery.test.ts:generic-api-key:512
+
+# WhatsApp cryptoUtils test fixture moved to whatsapp/src/cryptoUtils.test.ts:
+# dummy ENCRYPTION_KEY / PHONE_HASH_SALT test values, not real credentials.
+f3b548f59ced51eb89882aada948f67c50edd5c7:whatsapp/src/cryptoUtils.test.ts:generic-api-key:1
+aa9935db1db74638ee7abd751199706849e242fa:whatsapp/src/cryptoUtils.test.ts:generic-api-key:1
+whatsapp/src/cryptoUtils.test.ts:generic-api-key:1
+
+# Frontend errorSanitizer test fixtures: dummy Stellar secret seeds used to test
+# redaction (generic-api-key rule fires on the same lines after edits shifted).
+04dfdc8d9b4c96ebe114d948307dadd55b82e624:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:53
+04dfdc8d9b4c96ebe114d948307dadd55b82e624:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:107
+f0757b542f63f22e261d47dc4ecf148a1ffd4890:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:53
+f0757b542f63f22e261d47dc4ecf148a1ffd4890:frontend/src/lib/errorSanitizer.test.ts:generic-api-key:107
+frontend/src/lib/errorSanitizer.test.ts:generic-api-key:53
+frontend/src/lib/errorSanitizer.test.ts:generic-api-key:107
+
+# Public mainnet USDC token contract address in bridge .env.example (same
+# false positive as the entry above, re-flagged in later commits).
+04dfdc8d9b4c96ebe114d948307dadd55b82e624:packages/bridge/.env.example:generic-api-key:13
+f0757b542f63f22e261d47dc4ecf148a1ffd4890:packages/bridge/.env.example:generic-api-key:13
+packages/bridge/.env.example:generic-api-key:13

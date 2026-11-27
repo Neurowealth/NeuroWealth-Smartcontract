@@ -279,6 +279,7 @@ on `DataKeyExt`, documented in the same table style as above.
 | `DataKeyExt::QueueOrder` | Instance | `Vec<u32>` | Ordered (FIFO) list of pending (non-fulfilled, non-cancelled) request IDs. `process_withdrawal_queue` walks this list in order; `cancel_withdrawal_request` removes the cancelled ID from it. |
 | `DataKeyExt::WithdrawalQueueStorageVersion` | Instance | `u32` | Withdrawal queue storage schema version, used to gate lazy compaction of `QueueOrder`/stale `WithdrawalRequest` entries across upgrades without a one-shot migration pass. |
 | `DataKeyExt::ReservedWithdrawalAmount(Address)` | Instance | `i128` | Sum of `amount` across one user's own pending (non-fulfilled, non-cancelled) withdrawal requests, in underlying-asset units (#990). `queue_withdrawal` checks the user's shares against this reserved total (converted to shares) in addition to the new request, so queuing several requests that together exceed the user's real balance is rejected instead of silently allowed. |
+| `DataKeyExt::AllowedMigrationSources` | Instance | `Vec<Address>` | Owner-managed allow-list of source vault addresses permitted to call `receive_migration` (#1086). Populated by `add_allowed_migration_source`; an absent key means no source vault has been approved yet. |
 
 See [Share Lock / Unlock, Withdrawal Request, Migration and Standby-Agent
 State Machines](docs/state-machine.md#share-lock--unlock-withdrawal-request-migration-and-standby-agent-state-machines)

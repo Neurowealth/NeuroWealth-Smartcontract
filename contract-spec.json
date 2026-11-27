@@ -313,25 +313,6 @@
       "state_changing": true
     },
     {
-      "name": "add_allowed_migration_source",
-      "category": "management",
-      "access": "owner",
-      "description": "Allow-list a source vault for receive_migration",
-      "parameters": [
-        {
-          "name": "env",
-          "type": "Env"
-        },
-        {
-          "name": "source_vault",
-          "type": "Address"
-        }
-      ],
-      "returns": null,
-      "requires_auth": true,
-      "state_changing": true
-    },
-    {
       "name": "lock_shares",
       "category": "management",
       "access": "public",
@@ -971,6 +952,25 @@
         {
           "name": "paused",
           "type": "bool"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "add_allowed_migration_source",
+      "category": "management",
+      "access": "owner",
+      "description": "Allow-list a source vault for receive_migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
         }
       ],
       "returns": null,
@@ -5038,11 +5038,11 @@
     },
     "VaultError::PendingWithdrawalExists": {
       "code": 94,
-      "description": "Share migration is blocked while the user has pending withdrawal reservations."
+      "description": "Migration blocked: user has pending queued-withdrawal reservations (#1159).  `migrate_shares` zeros the user's share balance, but `burn_and_pay` explicitly refuses to settle a pending request whose reservation has no backing shares. The migration must be blocked until all pending reservations are cancelled or fulfilled."
     },
     "VaultError::UnauthorizedMigrationSource": {
       "code": 95,
-      "description": "The source vault is not registered in the owner's migration allow-list."
+      "description": "`receive_migration` rejected: `source_vault` is not on the owner-managed allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).  Any caller can claim an arbitrary `source_vault` address and self-authorize the sub-call. Without an explicit allow-list this would let an attacker mint unbacked shares. The owner must register legitimate source vaults via `add_allowed_migration_source` before migration can proceed."
     },
     "ValidationError": {
       "code": 100,
