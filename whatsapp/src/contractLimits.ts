@@ -118,7 +118,7 @@ export function validateIntent(
       return { ok: true };
     }
     case 'WITHDRAW': {
-      if (intent.withdrawAll) return { ok: true };
+      if (intent.withdrawAll === true) return { ok: true };
       return validateAmount(intent.amount, 'withdraw');
     }
     case 'STRATEGY': {
@@ -134,7 +134,7 @@ export function validateIntent(
 
 function invalidStrategyMessage(name: string | undefined): string {
   const options = VALID_STRATEGIES.map((s) => `"${s}"`).join(', ');
-  return name
+  return name !== undefined && name !== ''
     ? `"${name}" is not a valid strategy. Choose one of ${options}.`
     : `Please name a strategy: ${options}.`;
 }

@@ -43,7 +43,7 @@ export function verifyTwilioSignature(
 
   if (bypass) {
     console.warn('⚠️ Twilio signature validation is DISABLED (TWILIO_SKIP_SIGNATURE_VALIDATION=true). Never use this in production.');
-  } else if (!authToken) {
+  } else if (authToken === undefined || authToken === '') {
     console.error('TWILIO_AUTH_TOKEN is not set; all WhatsApp webhook requests will be rejected.');
   }
 
@@ -53,7 +53,7 @@ export function verifyTwilioSignature(
       return;
     }
 
-    if (!authToken) {
+    if (authToken === undefined || authToken === '') {
       res.status(500).send('Webhook signature validation is not configured');
       return;
     }
@@ -65,13 +65,17 @@ export function verifyTwilioSignature(
     }
 
     const signature = req.get('X-Twilio-Signature');
-    if (!signature) {
+    if (signature === undefined || signature === '') {
       res.status(403).send('Missing Twilio signature');
       return;
     }
 
-    const url = webhookUrl || requestUrl(req);
-    const params = req.body && typeof req.body === 'object' ? req.body : {};
+    const url = webhookUrl !== undefined && webhookUrl !== '' ? webhookUrl : requestUrl(req);
+    const rawBody: unknown = req.body;
+    const params =
+      rawBody !== null && typeof rawBody === 'object' && !Array.isArray(rawBody)
+        ? (rawBody as Record<string, unknown>)
+        : {};
 
     if (!twilio.validateRequest(authToken, signature, url, params)) {
       res.status(403).send('Invalid Twilio signature');

@@ -16,6 +16,18 @@ export interface CustodialWalletResult {
   isNew: boolean;
 }
 
+interface WalletRow {
+  public_key: string;
+  encrypted_data: string;
+  iv: string;
+  tag: string;
+  wrapped_dek: string | null;
+  dek_iv: string | null;
+  dek_tag: string | null;
+  key_version: string | null;
+  created_at: string | Date;
+}
+
 /**
  * Returns the custodial Stellar wallet for a verified user, creating one if
  * none exists yet.
@@ -65,7 +77,7 @@ export async function createCustodialWallet(phoneHash: string): Promise<Custodia
   }
 
   const existing = await getWallet(phoneHash);
-  if (!existing) {
+  if (existing === undefined) {
     // The insert found a conflicting row (so it did not insert), but that
     // row is now gone - a concurrent delete between the two queries.
     // Extremely unlikely, but surfacing it as an error is safer than
@@ -82,7 +94,7 @@ export async function getWallet(phoneHash: string): Promise<UserWallet | undefin
   const res = await query('SELECT * FROM whatsapp_wallets WHERE phone_hash = $1', [phoneHash]);
   if (res.rows.length === 0) return undefined;
 
-  const row = res.rows[0];
+  const row = res.rows[0] as WalletRow;
   return {
     publicKey: row.public_key,
     encryptedSecret: {

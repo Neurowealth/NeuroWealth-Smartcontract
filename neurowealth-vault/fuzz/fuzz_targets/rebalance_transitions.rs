@@ -1,4 +1,4 @@
-//! LibFuzzer harness: random rebalance transitions against the vault.
+//! `LibFuzzer` harness: random rebalance transitions against the vault.
 //!
 //! Exercises protocol switching (none → blend → none → dex → none)
 //! to catch state-inconsistency bugs during rebalance transitions.
@@ -17,6 +17,7 @@
 //! - Token transfer failures
 
 #![no_main]
+#![allow(clippy::doc_markdown)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};
@@ -34,6 +35,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -105,6 +107,9 @@ fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address, Address) {
     let user = Address::generate(env);
 
     client.initialize(&deployer, &owner, &agent, &usdc, &salt);
+    // Disable the default 120-ledger holding period (#659): the fuzz ledger
+    // never advances, so every withdraw would panic HoldingPeriodNotElapsed.
+    client.set_min_holding_period(&0u32);
 
     let token = FuzzTokenClient::new(env, &usdc);
     token.mint(&user, &TOKEN_FLOAT);
@@ -123,6 +128,15 @@ fn is_allowed_panic(msg: &str) -> bool {
         "Error(Contract, #6)",  // SharesToMintMustBePositive
         "Error(Contract, #7)",  // InsufficientLiquidity
         "Error(Contract, #17)", // UnsupportedProtocol
+        "Error(Contract, #18)", // BlendPoolNotConfigured
+        "Error(Contract, #43)", // RebalanceCooldownActive
+        "Error(Contract, #46)", // DexPoolNotConfigured
+        "Error(Contract, #9)",  // NoAssetsToWithdraw
+        "Error(Contract, #11)", // InsufficientSharesForAmount
+        "Error(Contract, #12)", // NoSharesToWithdraw
+        "Error(Contract, #13)", // NoLiquidityAvailable
+        "Error(Contract, #14)", // NoAssetsToReturn
+        "Error(Contract, #84)", // RateLimitExceeded
         "insufficient balance",
         "amount must be positive",
         "vault: expected_apy out of range",
@@ -194,7 +208,7 @@ fuzz_target!(|data: &[u8]| {
                 1 => {
                     // Rebalance to a target protocol
                     let protocol = protocols[protocol_idx].clone();
-                    let expected_apy = (raw as i128) % 10_000;
+                    let expected_apy = i128::from(raw) % 10_000;
                     client.rebalance(&agent, &protocol, &expected_apy, &0);
                 }
                 2 => {
@@ -219,7 +233,7 @@ fuzz_target!(|data: &[u8]| {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
             }

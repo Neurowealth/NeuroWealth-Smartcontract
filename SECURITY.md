@@ -366,10 +366,12 @@ This register documents every owner-only and agent-only capability, the blast ra
 | execute_migration_target | yes | - | - | - |
 | cancel_migration_target | yes | - | - | - |
 | set_migration_paused | yes | - | - | - |
+| add_allowed_migration_source | yes | - | - | - |
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
 | touch_user_ttl | - | - | yes | - |
+| touch_user_asset_ttl | - | - | yes | - |
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |

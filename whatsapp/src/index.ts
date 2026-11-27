@@ -9,7 +9,10 @@ import { verifyTwilioSignature } from "./twilioSignature";
 import { purgeExpiredState } from "./stateManager";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.PORT === undefined || process.env.PORT === ""
+    ? 3000
+    : process.env.PORT;
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -24,7 +27,9 @@ app.get("/health", (req, res) => {
 app.post(
   "/api/whatsapp/webhook",
   verifyTwilioSignature(),
-  handleWhatsAppWebhook,
+  (req, res, next) => {
+    handleWhatsAppWebhook(req, res).catch(next);
+  },
 );
 
 // Twilio delivery-status callback for outbound WhatsApp messages
@@ -38,7 +43,9 @@ app.post(
     skipValidation: process.env.TWILIO_SKIP_SIGNATURE_VALIDATION === "true",
     nodeEnv: process.env.NODE_ENV,
   }),
-  handleDeliveryStatusCallback,
+  (req, res, next) => {
+    handleDeliveryStatusCallback(req, res).catch(next);
+  },
 );
 
 // Sessions and OTPs live in Postgres now, so idle rows are swept instead of

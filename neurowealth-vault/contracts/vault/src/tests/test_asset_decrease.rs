@@ -75,11 +75,15 @@ fn test_decrease_at_exactly_max_bps_succeeds() {
     token.mint(&user, &amount);
     client.deposit(&user, &amount);
 
+    // The per-call max_decrease_bps argument is ignored (#974); the cap comes
+    // from owner-configured storage. Set it to 500 (5%).
+    client.set_max_decrease_bps(&500);
+
     // max_decrease_bps = 500 (5 %), old_total = 10M
     // max_decrease = 10M * 500 / 10_000 = 500_000
     // new_total = 9_500_000 (decrease of exactly 500_000 = at the boundary)
     let new_total = 9_500_000_i128;
-    client.update_total_assets(&agent, &new_total, &true, &500);
+    client.update_total_assets(&agent, &new_total, &true, &0);
     assert_eq!(client.get_total_assets(), new_total);
 }
 
@@ -99,10 +103,14 @@ fn test_decrease_exceeding_max_bps_rejected() {
     token.mint(&user, &amount);
     client.deposit(&user, &amount);
 
+    // The per-call max_decrease_bps argument is ignored (#974); the cap comes
+    // from owner-configured storage. Set it to 500 (5 %).
+    client.set_max_decrease_bps(&500);
+
     // max_decrease_bps = 500 (5 %), old_total = 10M
     // Attempting a 6 % decrease (600_000) exceeds the 5 % cap.
     let new_total = 9_400_000_i128; // decrease of 600_000
-    client.update_total_assets(&agent, &new_total, &true, &500);
+    client.update_total_assets(&agent, &new_total, &true, &0);
 }
 
 /// Decrease without `allow_decrease = true` is rejected (`TotalAssetsDecreaseNotAllowed = 31`).
@@ -183,7 +191,12 @@ fn test_min_bps_floor_of_100_applied_when_zero_passed() {
     token.mint(&user, &amount);
     client.deposit(&user, &amount);
 
-    // max_decrease_bps = 0 → effective floor = 100 bps (1 %)
+    // The per-call max_decrease_bps argument is ignored (#974); the floor of
+    // 100 bps applies to the stored cap. Store 0 so the clamp(100, 10_000)
+    // path is what produces the effective 100 bps floor.
+    client.set_max_decrease_bps(&0);
+
+    // effective floor = 100 bps (1 %)
     // max_decrease = 10M * 100 / 10_000 = 100_000
     // A 100_000 decrease should succeed (at the floor exactly).
     let new_total = amount - 100_000_i128;

@@ -104,8 +104,10 @@ describe('parseIntent actions (#691)', () => {
     assert.strictEqual(intent.strategy, 'growth');
   });
 
-  it('does not read a strategy without a recognised name', () => {
-    assert.strictEqual(parseIntent('switch to aggressive').type, 'UNKNOWN');
+  it('preserves an unrecognised strategy for contract validation', () => {
+    const intent = parseIntent('switch to aggressive');
+    assert.strictEqual(intent.type, 'STRATEGY');
+    assert.strictEqual(intent.strategy, 'aggressive');
   });
 
   it('falls back to unknown for anything else', () => {

@@ -1,4 +1,4 @@
-//! LibFuzzer harness: tests share-accounting invariants.
+//! `LibFuzzer` harness: tests share-accounting invariants.
 //!
 //! This target verifies that the vault's share-based accounting maintains
 //! mathematical invariants across deposit/withdraw/asset-update sequences,
@@ -8,12 +8,12 @@
 //! `batch_deposit`.
 //!
 //! Invariants checked after every step:
-//! 1. sum(user_shares) == total_shares
-//! 2. user_balance(user) == user_shares(user) * total_assets / total_shares
-//! 3. total_assets >= total_deposits (yield should be non-negative)
-//! 4. user_shares <= total_shares for all users
-//! 5. user_balance <= total_assets for all users
-//! 6. 0 <= locked_shares(user) <= shares(user) for all users (#987)
+//! 1. `sum(user_shares) == total_shares`
+//! 2. `user_balance(user) == user_shares(user) * total_assets / total_shares`
+//! 3. `total_assets >= total_deposits` (yield should be non-negative)
+//! 4. `user_shares <= total_shares` for all users
+//! 5. `user_balance <= total_assets` for all users
+//! 6. `0 <= locked_shares(user) <= shares(user)` for all users (#987)
 //! 7. `UserSharesIndex` (via `get_users_with_shares`) contains exactly the
 //!    users with non-zero shares, no more, no fewer (#987)
 //! 8. The vault is solvent: its own token balance covers `total_assets` minus
@@ -21,22 +21,22 @@
 //!    since this harness never deploys funds to an external protocol (#987)
 //!
 //! Allowed panics (documented vault validation):
-//! - `Error(Contract, #37)` — AmountMustBePositive
-//! - `Error(Contract, #38)` — BelowMinimumDeposit
-//! - `Error(Contract, #39)` — MaximumDepositExceeded
-//! - `Error(Contract, #40)` — ExceedsUserDepositCap
-//! - `Error(Contract, #41)` — ExceedsTvlCap
-//! - `Error(Contract, #7)`  — InsufficientLiquidity
-//! - `Error(Contract, #6)`  — SharesToMintMustBePositive
-//! - `Error(Contract, #8)`  — InsufficientShares
-//! - `Error(Contract, #70)` — SharesAlreadyLocked
-//! - `Error(Contract, #71)` — LockPeriodNotEnded
-//! - `Error(Contract, #72)` — InvalidLockDuration
-//! - `Error(Contract, #73)` — InsufficientUnlockedShares
-//! - `Error(Contract, #74)` — EmergencyWithdrawalNotAllowed
-//! - `Error(Contract, #69)` — NoSharesToMigrate
-//! - `Error(Contract, #67)` — MigrationPaused
-//! - `Error(Contract, #35)` — Paused (vault paused for emergency_withdraw setup)
+//! - `Error(Contract, #37)` — `AmountMustBePositive`
+//! - `Error(Contract, #38)` — `BelowMinimumDeposit`
+//! - `Error(Contract, #39)` — `MaximumDepositExceeded`
+//! - `Error(Contract, #40)` — `ExceedsUserDepositCap`
+//! - `Error(Contract, #41)` — `ExceedsTvlCap`
+//! - `Error(Contract, #7)`  — `InsufficientLiquidity`
+//! - `Error(Contract, #6)`  — `SharesToMintMustBePositive`
+//! - `Error(Contract, #8)`  — `InsufficientShares`
+//! - `Error(Contract, #70)` — `SharesAlreadyLocked`
+//! - `Error(Contract, #71)` — `LockPeriodNotEnded`
+//! - `Error(Contract, #72)` — `InvalidLockDuration`
+//! - `Error(Contract, #73)` — `InsufficientUnlockedShares`
+//! - `Error(Contract, #74)` — `EmergencyWithdrawalNotAllowed`
+//! - `Error(Contract, #69)` — `NoSharesToMigrate`
+//! - `Error(Contract, #67)` — `MigrationPaused`
+//! - `Error(Contract, #35)` — `Paused` (vault paused for emergency_withdraw setup)
 //! - Token transfer failures
 //! - Cross-contract call failures to the migration-target vault (its own
 //!   deposit limits are a different contract's concern, not an accounting
@@ -55,6 +55,7 @@
 //! those tests' `#[ignore]`.
 
 #![no_main]
+#![allow(clippy::doc_markdown)]
 
 use libfuzzer_sys::fuzz_target;
 use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};
@@ -72,6 +73,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -183,6 +185,10 @@ fn setup(env: &Env) -> Harness<'_> {
     let users: std::vec::Vec<Address> = (0..3).map(|_| Address::generate(env)).collect();
 
     client.initialize(&deployer, &owner, &agent, &usdc, &salt);
+    // Disable the default 120-ledger holding period (#659): deposits made
+    // during fuzzing stamp LastDepositLedger at the frozen sequence, so every
+    // subsequent withdraw would panic HoldingPeriodNotElapsed.
+    client.set_min_holding_period(&0u32);
 
     let token = FuzzTokenClient::new(env, &usdc);
     for user in &users {
@@ -211,6 +217,9 @@ fn setup(env: &Env) -> Harness<'_> {
         &usdc,
         &migration_salt,
     );
+    // #1086: receive_migration rejects source vaults that are not on the
+    // target's owner-managed allow-list.
+    migration_client.add_allowed_migration_source(&contract_id);
 
     client.schedule_migration_target(&owner, &migration_target_id);
     env.ledger()
@@ -243,6 +252,21 @@ fn is_allowed_panic(msg: &str) -> bool {
         "Error(Contract, #73)", // InsufficientUnlockedShares
         "Error(Contract, #74)", // EmergencyWithdrawalNotAllowed
         "Error(Contract, #35)", // Paused
+        "Error(Contract, #9)",  // NoAssetsToWithdraw
+        "Error(Contract, #11)", // InsufficientSharesForAmount
+        "Error(Contract, #12)", // NoSharesToWithdraw
+        "Error(Contract, #13)", // NoLiquidityAvailable
+        "Error(Contract, #14)", // NoAssetsToReturn
+        "Error(Contract, #33)", // InsufficientBalanceForAssets
+        "Error(Contract, #80)", // BatchSizeExceeded
+        "Error(Contract, #84)", // RateLimitExceeded
+        "Error(Contract, #87)", // WithdrawalRequestAlreadyFulfilled
+        "Error(Contract, #88)", // WithdrawalRequestAlreadyCancelled
+        "Error(Contract, #89)", // NotRequestOwner
+        "Error(Contract, #90)", // UnauthorizedAgentError
+        "Error(Contract, #91)", // AlreadyPaused
+        "Error(Contract, #94)", // PendingWithdrawalExists
+        "Error(Contract, #95)", // UnauthorizedMigrationSource
         "insufficient balance",
         "amount must be positive",
     ];
@@ -400,6 +424,7 @@ fn assert_share_invariants(
 /// -max_total_time=<seconds>` (works on stable, since cargo-fuzz's own
 /// `-Z` sanitizer flags aren't involved — only libFuzzer's runtime flags,
 /// which it accepts directly).
+#[allow(clippy::too_many_lines)]
 fn run_case(data: &[u8]) {
     if data.is_empty() {
         return;
@@ -588,7 +613,7 @@ fn run_case(data: &[u8]) {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
             }

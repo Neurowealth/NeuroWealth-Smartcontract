@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, QueryResult } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -11,7 +11,7 @@ let pool: Pool | undefined;
 function getPool(): Pool {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
+    if (connectionString === undefined || connectionString === '') {
       throw new Error('DATABASE_URL must be set; refusing to use an unsafe database default');
     }
     pool = new Pool({ connectionString });
@@ -20,4 +20,4 @@ function getPool(): Pool {
   return pool;
 }
 
-export const query = (text: string, params?: any[]) => getPool().query(text, params);
+export const query = (text: string, params?: unknown[]): Promise<QueryResult> => getPool().query(text, params);

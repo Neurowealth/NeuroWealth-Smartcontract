@@ -13,6 +13,7 @@ function fakeReq(headers: Record<string, string>, body: object = BODY): Request 
   for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
   return {
     body,
+    headers: lower,
     protocol: 'https',
     originalUrl: '/api/whatsapp/webhook',
     get: (name: string) => (name.toLowerCase() === 'host' ? 'bot.example.com' : lower[name.toLowerCase()]),

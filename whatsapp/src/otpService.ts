@@ -1,8 +1,9 @@
 import crypto from 'crypto';
+import { envOr } from './envGuard';
 import { getStateStore } from './stateStore';
 
-const OTP_TTL_MS = parseInt(process.env.WHATSAPP_OTP_TTL_MS || '300000', 10); // 5 minutes default
-const MAX_ATTEMPTS = parseInt(process.env.WHATSAPP_OTP_MAX_ATTEMPTS || '3', 10);
+const OTP_TTL_MS = parseInt(envOr(process.env, 'WHATSAPP_OTP_TTL_MS', '300000'), 10); // 5 minutes default
+const MAX_ATTEMPTS = parseInt(envOr(process.env, 'WHATSAPP_OTP_MAX_ATTEMPTS', '3'), 10);
 
 // Challenges are persisted in Postgres (see stateStore.ts) so they survive
 // restarts and are shared by every replica. Only a hash is stored, bound to
