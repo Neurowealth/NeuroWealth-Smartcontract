@@ -75,8 +75,9 @@ export async function handleWhatsAppWebhook(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const fromNumber = req.body?.From;
-  const messageBody = req.body?.Body;
+  const body = (req.body ?? undefined) as Record<string, unknown> | undefined;
+  const fromNumber: unknown = body?.From;
+  const messageBody: unknown = body?.Body;
 
   if (fromNumber === undefined || fromNumber === null || fromNumber === "") {
     res.status(400).send("Missing sender phone number");
@@ -114,13 +115,12 @@ export async function handleWhatsAppWebhook(
   // The idempotency claim happens inside the lock, so an in-process
   // duplicate observes the first delivery's final state.
   const idempotencyKey = deriveIdempotencyKey(
-    req.body,
+    body,
     req.headers?.["i-twilio-idempotency-token"],
   );
+  const sidRaw: unknown = body?.MessageSid;
   const messageSid =
-    typeof req.body?.MessageSid === "string" && req.body.MessageSid !== ""
-      ? req.body.MessageSid
-      : null;
+    typeof sidRaw === "string" && sidRaw !== "" ? sidRaw : null;
   // The raw number is only used in-flight to deliver the OTP via SMS (#942);
   // it is never persisted, only the hash is.
   await runExclusive(phoneHash, () =>
@@ -150,7 +150,7 @@ async function processIdempotently(
   messageBody: string,
   res: Response,
 ): Promise<void> {
-  if (!idempotencyKey) {
+  if (idempotencyKey === null) {
     logger.warn(
       { phoneHash },
       "Inbound webhook has no MessageSid or idempotency token; processing without deduplication",
@@ -258,7 +258,7 @@ async function respondWithCommand(
       { error, phoneHash, idempotencyKey, attempt },
       "Retryable failure processing inbound webhook",
     );
-    if (store && idempotencyKey) {
+    if (store !== null && idempotencyKey !== null) {
       await store
         .fail(
           idempotencyKey,
@@ -276,7 +276,7 @@ async function respondWithCommand(
     return;
   }
 
-  if (store && idempotencyKey) {
+  if (store !== null && idempotencyKey !== null) {
     // If this write fails the record stays `processing`; once its lease
     // expires a duplicate is either re-run (no side effects started, e.g. a
     // balance read) or marked abandoned - never blindly replayed.
@@ -320,7 +320,7 @@ async function processWhatsAppMessage(
   const session = await getSession(phoneHash);
   const intent = parseIntent(messageBody);
 
-  if (intent.strategy) {
+  if (intent.strategy !== undefined && intent.strategy !== '') {
     const strategyCheck = boundText(intent.strategy, INPUT_LIMITS.strategy);
     if (!strategyCheck.ok) {
       reply(twiml, SAFE_STRATEGY_REPLY);
@@ -402,7 +402,7 @@ async function processWhatsAppMessage(
         return twiml.toString();
       }
 
-      if (intent.type === "OTP_CODE" && intent.otpCode) {
+      if (intent.type === "OTP_CODE" && intent.otpCode !== undefined && intent.otpCode !== '') {
         // verifyOTP consumes attempts / the code itself.
         await guard.begin();
         const verification = await verifyOTP(phoneHash, intent.otpCode);
@@ -515,7 +515,7 @@ async function processWhatsAppMessage(
         }
 
         case "STRATEGY": {
-          if (!intent.strategy) {
+          if (intent.strategy === undefined || intent.strategy === '') {
             reply(twiml, "❌ Please specify a valid strategy.");
             break;
           }

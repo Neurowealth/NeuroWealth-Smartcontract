@@ -922,3 +922,31 @@ pub fn mock_agent_only_auth(
         },
     }]);
 }
+
+/// Forces a user's `Shares` persistent entry to an exact remaining TTL.
+///
+/// `extend_ttl` can only ever raise a TTL (the host requires
+/// `threshold <= extend_to` and only acts when the current TTL is below the
+/// threshold), so it cannot shorten an entry that already has a healthy TTL.
+/// Instead this rewrites the entry: `remove` + `set` makes the host assign the
+/// configured `min_persistent_entry_ttl` (tests lower it to 1 beforehand), and
+/// a follow-up `extend_ttl(ttl, ttl)` bumps it to the exact requested value.
+///
+/// Panics if the user has no `Shares` entry.
+pub fn force_shares_ttl(env: &Env, contract_id: &Address, user: &Address, ttl: u32) {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    env.as_contract(contract_id, || {
+        let key = DataKey::Shares(user.clone());
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("force_shares_ttl requires an existing Shares entry");
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().set(&key, &shares);
+        if ttl > 1 {
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
+    });
+}

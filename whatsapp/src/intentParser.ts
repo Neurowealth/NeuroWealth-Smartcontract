@@ -80,7 +80,7 @@ export function parseIntent(message: string): ParsedIntent {
   // Strategy change
   if (clean.includes('switch to') || clean.includes('change strategy')) {
     const known = findKnownStrategy(clean);
-    if (known) return { type: 'STRATEGY', strategy: known, rawText };
+    if (known !== undefined) return { type: 'STRATEGY', strategy: known, rawText };
     // Surface the unrecognised name so the validator can reject it explicitly.
     const named = clean.match(/(?:switch to|change strategy(?: to)?)\s+([a-z]+)/);
     return { type: 'STRATEGY', strategy: named ? named[1] : undefined, rawText };

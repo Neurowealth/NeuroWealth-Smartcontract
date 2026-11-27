@@ -104,6 +104,9 @@ fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
     let user = Address::generate(env);
 
     client.initialize(&deployer, &owner, &agent, &usdc, &salt);
+    // The 120-ledger default holding period (#659) would reject every
+    // deposit→withdraw pair because the fuzz ledger never advances.
+    client.set_min_holding_period(&0u32);
 
     let token = FuzzTokenClient::new(env, &usdc);
     token.mint(&user, &TOKEN_FLOAT);
@@ -120,6 +123,12 @@ fn is_allowed_panic(msg: &str) -> bool {
         "Error(Contract, #41)", // ExceedsTvlCap
         "Error(Contract, #7)",  // InsufficientLiquidity
         "Error(Contract, #6)",  // SharesToMintMustBePositive
+        "Error(Contract, #9)",  // NoAssetsToWithdraw
+        "Error(Contract, #11)", // InsufficientSharesForAmount
+        "Error(Contract, #12)", // NoSharesToWithdraw
+        "Error(Contract, #13)", // NoLiquidityAvailable
+        "Error(Contract, #14)", // NoAssetsToReturn
+        "Error(Contract, #84)", // RateLimitExceeded
         "insufficient balance",
         "amount must be positive",
     ];

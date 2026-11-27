@@ -19,6 +19,7 @@
  * Every attempt carries a fencing token (`attempt`); writes from an attempt
  * whose lease was taken over by a later one are rejected.
  */
+import { envOr } from './envGuard';
 import { query } from './db';
 
 export type InboundWebhookStatus = 'processing' | 'completed' | 'failed' | 'abandoned';
@@ -111,7 +112,7 @@ export function deriveIdempotencyKey(
   }
 
   const token = Array.isArray(idempotencyTokenHeader) ? idempotencyTokenHeader[0] : idempotencyTokenHeader;
-  if (token && token.trim()) {
+  if (token !== undefined && token.trim() !== '') {
     return `twilio:${INBOUND_MESSAGE_EVENT}:${accountSid}:token:${token.trim()}`;
   }
 
@@ -138,7 +139,7 @@ export class SideEffectGuard {
 
   async begin(): Promise<void> {
     if (this.started) return;
-    if (this.store && this.key) {
+    if (this.store !== null && this.key !== null) {
       const stillOwned = await this.store.markSideEffectsStarted(this.key, this.attempt);
       if (!stillOwned) throw new LeaseLostError();
     }
@@ -172,7 +173,8 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
       [key, meta.messageSid, meta.phoneHash, leaseMs]
     );
     if (claimed.rows.length > 0) {
-      return { kind: 'acquired', attempt: Number(claimed.rows[0].attempt_count) };
+      const claimRow = claimed.rows[0] as { attempt_count: unknown };
+      return { kind: 'acquired', attempt: Number(claimRow.attempt_count) };
     }
 
     const existing = await query(
@@ -180,8 +182,8 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
          FROM whatsapp_inbound_webhooks WHERE idempotency_key = $1`,
       [key]
     );
-    const row = existing.rows[0];
-    if (!row) {
+    const row = existing.rows[0] as Record<string, unknown> | undefined;
+    if (row === undefined) {
       // Only reachable if the row was deleted between the two statements.
       throw new RetryableWebhookError('Idempotency record vanished during claim');
     }
@@ -196,7 +198,7 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
     if (row.status === 'abandoned') {
       return { kind: 'abandoned' };
     }
-    if (row.status === 'processing' && row.lease_expired && row.side_effects_started) {
+    if (row.status === 'processing' && row.lease_expired === true && row.side_effects_started === true) {
       await query(
         `UPDATE whatsapp_inbound_webhooks
             SET status = 'abandoned',
@@ -343,4 +345,4 @@ export function setIdempotencyStore(store: IdempotencyStore): void {
   activeStore = store;
 }
 
-export const WEBHOOK_LEASE_MS = parseInt(process.env.WHATSAPP_WEBHOOK_LEASE_MS || '120000', 10);
+export const WEBHOOK_LEASE_MS = parseInt(envOr(process.env, 'WHATSAPP_WEBHOOK_LEASE_MS', '120000'), 10);

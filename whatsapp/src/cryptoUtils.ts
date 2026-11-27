@@ -5,7 +5,7 @@ const ALGORITHM = 'aes-256-gcm';
 
 function getEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
+  if (value === undefined || value === '') {
     throw new Error(`${name} must be set; refusing to use an unsafe production default`);
   }
   return value;
@@ -90,6 +90,18 @@ function findKey(version: string): KeyEntry {
   return entry;
 }
 
+function hasEnvelopeFields(
+  envelope: Partial<EnvelopeFields> | undefined
+): envelope is EnvelopeFields {
+  return (
+    envelope !== undefined &&
+    envelope.wrappedDek !== undefined && envelope.wrappedDek !== '' &&
+    envelope.dekIv !== undefined && envelope.dekIv !== '' &&
+    envelope.dekTag !== undefined && envelope.dekTag !== '' &&
+    envelope.keyVersion !== undefined && envelope.keyVersion !== ''
+  );
+}
+
 function openWithDek(dek: Buffer, encryptedData: string, iv: string, tag: string): string {
   const decipher = crypto.createDecipheriv(ALGORITHM, dek, Buffer.from(iv, 'hex'));
   decipher.setAuthTag(Buffer.from(tag, 'hex'));
@@ -147,8 +159,8 @@ export function decryptSecretKey(
   tag: string,
   envelope?: Partial<EnvelopeFields>
 ): string {
-  if (envelope?.wrappedDek && envelope.dekIv && envelope.dekTag && envelope.keyVersion) {
-    const dek = unwrapDek(envelope as EnvelopeFields, findKey(envelope.keyVersion));
+  if (hasEnvelopeFields(envelope)) {
+    const dek = unwrapDek(envelope, findKey(envelope.keyVersion));
     return openWithDek(dek, encryptedData, iv, tag);
   }
   return decryptLegacy(encryptedData, iv, tag);
@@ -167,8 +179,8 @@ export function isCurrentKeyVersion(secret: EncryptedSecret): boolean {
 export function rewrapSecret(secret: EncryptedSecret): EncryptedSecret & EnvelopeFields {
   const { current } = loadKeyring();
 
-  if (secret.wrappedDek && secret.dekIv && secret.dekTag && secret.keyVersion) {
-    const dek = unwrapDek(secret as EnvelopeFields, findKey(secret.keyVersion));
+  if (hasEnvelopeFields(secret)) {
+    const dek = unwrapDek(secret, findKey(secret.keyVersion));
     return {
       encryptedData: secret.encryptedData,
       iv: secret.iv,

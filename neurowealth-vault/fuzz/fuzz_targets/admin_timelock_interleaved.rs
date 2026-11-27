@@ -27,7 +27,8 @@ use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, BytesN, Env};
 
-const DEFAULT_TIMELOCK_DELAY: u32 = 100;
+// Must match `UPGRADE_TIMELOCK_LEDGERS` in the vault contract (17_280).
+const DEFAULT_TIMELOCK_DELAY: u32 = 17_280;
 const AGENT_TIMELOCK_LEDGERS: u32 = 17_280;
 
 mod token {
@@ -161,6 +162,10 @@ fuzz_target!(|data: &[u8]| {
             _ => Address::generate(&env),
         };
 
+        // Set inside the closure when `try_execute_upgrade` actually succeeds;
+        // a failed execute (fake WASM hash traps in `update_current_contract_wasm`)
+        // rolls back the pending-proposal removal, so state must be kept.
+        let mut upgrade_execute_succeeded = false;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match op {
                 // ── Upgrade timelock operations ──
@@ -169,8 +174,9 @@ fuzz_target!(|data: &[u8]| {
                     client.schedule_upgrade(&owner, &fake_hash(&env, param));
                 }
                 1 => {
-                    // execute_upgrade
-                    let _ = client.try_execute_upgrade(&owner);
+                    // execute_upgrade — fake hash traps, so only a real Ok
+                    // means the pending proposal was cleared.
+                    upgrade_execute_succeeded = client.try_execute_upgrade(&owner).is_ok();
                 }
                 2 => {
                     // cancel_upgrade
@@ -219,8 +225,10 @@ fuzz_target!(|data: &[u8]| {
                     }
                     1 => {
                         // execute_upgrade succeeded — clear pending
-                        upgrade_pending_hash = None;
-                        upgrade_pending_expiry = None;
+                        if upgrade_execute_succeeded {
+                            upgrade_pending_hash = None;
+                            upgrade_pending_expiry = None;
+                        }
                     }
                     2 => {
                         // cancel_upgrade succeeded — clear pending

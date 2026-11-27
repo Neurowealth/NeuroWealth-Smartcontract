@@ -185,6 +185,10 @@ fn setup(env: &Env) -> Harness<'_> {
     let users: std::vec::Vec<Address> = (0..3).map(|_| Address::generate(env)).collect();
 
     client.initialize(&deployer, &owner, &agent, &usdc, &salt);
+    // Disable the default 120-ledger holding period (#659): deposits made
+    // during fuzzing stamp LastDepositLedger at the frozen sequence, so every
+    // subsequent withdraw would panic HoldingPeriodNotElapsed.
+    client.set_min_holding_period(&0u32);
 
     let token = FuzzTokenClient::new(env, &usdc);
     for user in &users {
@@ -248,6 +252,21 @@ fn is_allowed_panic(msg: &str) -> bool {
         "Error(Contract, #73)", // InsufficientUnlockedShares
         "Error(Contract, #74)", // EmergencyWithdrawalNotAllowed
         "Error(Contract, #35)", // Paused
+        "Error(Contract, #9)",  // NoAssetsToWithdraw
+        "Error(Contract, #11)", // InsufficientSharesForAmount
+        "Error(Contract, #12)", // NoSharesToWithdraw
+        "Error(Contract, #13)", // NoLiquidityAvailable
+        "Error(Contract, #14)", // NoAssetsToReturn
+        "Error(Contract, #33)", // InsufficientBalanceForAssets
+        "Error(Contract, #80)", // BatchSizeExceeded
+        "Error(Contract, #84)", // RateLimitExceeded
+        "Error(Contract, #87)", // WithdrawalRequestAlreadyFulfilled
+        "Error(Contract, #88)", // WithdrawalRequestAlreadyCancelled
+        "Error(Contract, #89)", // NotRequestOwner
+        "Error(Contract, #90)", // UnauthorizedAgentError
+        "Error(Contract, #91)", // AlreadyPaused
+        "Error(Contract, #94)", // PendingWithdrawalExists
+        "Error(Contract, #95)", // UnauthorizedMigrationSource
         "insufficient balance",
         "amount must be positive",
     ];

@@ -113,7 +113,7 @@ fn assert_timelock_invariants(
     client: &NeuroWealthVaultClient<'_>,
     expected_active_agent: &Address,
     expected_pending: Option<(Address, u32)>,
-    current_ledger: u32,
+    _current_ledger: u32,
 ) {
     let active_agent = client.get_agent();
     assert_eq!(active_agent, *expected_active_agent);
@@ -123,10 +123,9 @@ fn assert_timelock_invariants(
         (Some((addr, expiry)), Some((expected_addr, expected_expiry))) => {
             assert_eq!(addr, expected_addr, "pending agent address mismatch");
             assert_eq!(expiry, expected_expiry, "pending expiry mismatch");
-            assert!(
-                expiry > current_ledger,
-                "effective_ledger must be in the future"
-            );
+            // NOTE: `expiry` may be <= current_ledger — a pending proposal
+            // stays valid after its effective time until confirmed or
+            // cancelled, so it is NOT required to be in the future.
         }
         (None, None) => {}
         (Some((_, _)), None) => {

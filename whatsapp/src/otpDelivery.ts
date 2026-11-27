@@ -5,7 +5,11 @@ export async function deliverOTP(phoneNumber: string, code: string): Promise<voi
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   const fromNumber = process.env.TWILIO_SMS_FROM;
 
-  if (!accountSid || !authToken || !fromNumber) {
+  if (
+    accountSid === undefined || accountSid === '' ||
+    authToken === undefined || authToken === '' ||
+    fromNumber === undefined || fromNumber === ''
+  ) {
     throw new Error('OTP SMS delivery is not configured');
   }
 

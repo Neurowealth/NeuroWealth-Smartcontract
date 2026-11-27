@@ -25,7 +25,8 @@ use neurowealth_vault::{NeuroWealthVault, NeuroWealthVaultClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, BytesN, Env};
 
-const DEFAULT_TIMELOCK_DELAY: u32 = 100;
+// Must match `UPGRADE_TIMELOCK_LEDGERS` in the vault contract (17_280).
+const DEFAULT_TIMELOCK_DELAY: u32 = 17_280;
 
 fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
     let deployer = Address::generate(env);
@@ -85,6 +86,10 @@ fuzz_target!(|data: &[u8]| {
         let op = chunk[0] % 4;
         let param = chunk.get(1).copied().unwrap_or(0);
 
+        // Set inside the closure when `try_execute_upgrade` actually succeeds;
+        // a failed execute (fake WASM hash traps in `update_current_contract_wasm`)
+        // rolls back the pending-proposal removal, so state must be kept.
+        let mut execute_succeeded = false;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match op {
                 0 => {
@@ -109,14 +114,13 @@ fuzz_target!(|data: &[u8]| {
                     let expiry = pending_expiry.unwrap();
                     let current = env.ledger().sequence();
                     if current < expiry {
-                        // Should fail with TimelockNotElapsed
+                        // Should fail with TimelockNotExpired
                         let _ = client.try_execute_upgrade(&owner);
                     } else {
-                        // Should succeed - but will trap on fake hash
-                        // We catch this as an expected outcome
-                        let _ = client.try_execute_upgrade(&owner);
-                        pending_hash = None;
-                        pending_expiry = None;
+                        // Past expiry the contract clears the proposal then
+                        // traps on the unregistered fake WASM hash, rolling
+                        // the whole call back — only a real Ok clears state.
+                        execute_succeeded = client.try_execute_upgrade(&owner).is_ok();
                     }
                 }
                 2 => {
@@ -142,6 +146,10 @@ fuzz_target!(|data: &[u8]| {
 
         match result {
             Ok(()) => {
+                if op == 1 && execute_succeeded {
+                    pending_hash = None;
+                    pending_expiry = None;
+                }
                 // Verify invariants after successful operation
                 let actual_pending = client.get_pending_upgrade();
                 match (pending_hash.clone(), pending_expiry) {

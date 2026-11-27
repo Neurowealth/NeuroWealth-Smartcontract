@@ -35,7 +35,7 @@ const PHONE_LIKE_PATTERN = /\+?\d[\d\s().-]{6,}\d/g;
 
 /** Strips phone-number-like substrings from provider error text before it is persisted. */
 export function redactErrorMessage(message: string | null | undefined): string | null {
-  if (!message) return null;
+  if (message === null || message === undefined || message === '') return null;
   return message.replace(PHONE_LIKE_PATTERN, '[redacted]');
 }
 
@@ -72,7 +72,7 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
   const { messageSid, status, to, errorCode, errorMessage } = bounded.value;
 
   if (!messageSid) {
-    logger.warn({ status, to: to ? hashPhoneNumber(to) : to }, 'Ignoring delivery status callback with no MessageSid');
+    logger.warn({ status, to: to !== undefined && to !== '' ? hashPhoneNumber(to) : to }, 'Ignoring delivery status callback with no MessageSid');
     return { applied: false, reason: 'missing_message_sid' };
   }
 
@@ -88,8 +88,8 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
   );
 
   if (existing.rows.length === 0) {
-    const phoneHash = to ? hashPhoneNumber(to) : null;
-    const encryptedTo = to ? encryptField(to) : null;
+    const phoneHash = to !== undefined && to !== '' ? hashPhoneNumber(to) : null;
+    const encryptedTo = to !== undefined && to !== '' ? encryptField(to) : null;
 
     const inserted = await query(
       `INSERT INTO whatsapp_message_deliveries
@@ -114,7 +114,7 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
     }
   }
 
-  const currentStatus = existing.rows[0]?.status as MessageDeliveryStatus | undefined;
+  const currentStatus = (existing.rows[0] as { status: MessageDeliveryStatus } | undefined)?.status;
   if (currentStatus !== undefined && STATUS_RANK[status] <= STATUS_RANK[currentStatus]) {
     logger.info(
       { messageSid, status, currentStatus },
@@ -148,6 +148,14 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
 
 const MAX_DELIVERY_RETRIES = 3;
 
+interface DeliveryRow {
+  status: string;
+  to_encrypted: string | null;
+  to_iv: string | null;
+  to_tag: string | null;
+  retry_count: number | string | null;
+}
+
 export interface RetryOutcome {
   retried: boolean;
   escalated: boolean;
@@ -174,7 +182,7 @@ export async function retryFailedDelivery(
     return { retried: false, escalated: false };
   }
 
-  const row = existing.rows[0];
+  const row = existing.rows[0] as DeliveryRow;
   const status = row.status as MessageDeliveryStatus;
   const retryCount = Number(row.retry_count) || 0;
 
@@ -182,7 +190,12 @@ export async function retryFailedDelivery(
     return { retried: false, escalated: false };
   }
 
-  if (retryCount >= MAX_DELIVERY_RETRIES || !row.to_encrypted) {
+  if (
+    retryCount >= MAX_DELIVERY_RETRIES ||
+    row.to_encrypted === null || row.to_encrypted === '' ||
+    row.to_iv === null || row.to_iv === '' ||
+    row.to_tag === null || row.to_tag === ''
+  ) {
     await query(
       'UPDATE whatsapp_message_deliveries SET escalated_at = NOW() WHERE message_sid = $1 AND escalated_at IS NULL',
       [messageSid]

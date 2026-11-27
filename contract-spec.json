@@ -5044,6 +5044,10 @@
       "code": 95,
       "description": "`receive_migration` rejected: `source_vault` is not on the owner-managed allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).  Any caller can claim an arbitrary `source_vault` address and self-authorize the sub-call. Without an explicit allow-list this would let an attacker mint unbacked shares. The owner must register legitimate source vaults via `add_allowed_migration_source` before migration can proceed."
     },
+    "VaultError::PoolRotationWhileDeployed": {
+      "code": 96,
+      "description": "`set_blend_pool` / `set_dex_pool` rejected: the currently configured pool still holds vault funds (#515).  Every deployed-funds lookup reads the pool address from storage, so overwriting it while a position is open would strand those funds in the old pool with no way to exit them. The owner must first rebalance the position out (or fully withdraw) before rotating the address."
+    },
     "ValidationError": {
       "code": 100,
       "description": "General validation error"
