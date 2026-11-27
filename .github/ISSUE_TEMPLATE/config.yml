@@ -9,3 +9,6 @@ contact_links:
   - name: Architecture
     url: https://github.com/NeuroWealth/NeuroWealth-Smartcontract/blob/develop/ARCHITECTURE.md
     about: Understand the system architecture
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Neurowealth/NeuroWealth-Smartcontract/security/advisories/new
+    about: Report vulnerabilities privately via GitHub Private Vulnerability Reporting. Never file them as public issues. See SECURITY.md.

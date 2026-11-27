@@ -176,6 +176,22 @@ else
   }
 fi
 
+# Fund an identity via Friendbot, retrying on transient failures. A single flaky
+# Friendbot call must not leave an unfunded identity that fails later steps.
+fund_identity() {
+  local name="$1" attempt
+  for attempt in 1 2 3 4; do
+    if stellar keys fund "$name" --network testnet >/dev/null 2>&1; then
+      log "Identity '$name' funded (attempt $attempt)"
+      return 0
+    fi
+    log "Funding '$name' failed (attempt $attempt/4); retrying in $((attempt * 5))s..."
+    sleep $((attempt * 5))
+  done
+  log "WARNING: could not fund '$name' via Friendbot after 4 attempts"
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Identity setup
 # ---------------------------------------------------------------------------
@@ -192,6 +208,7 @@ else
   stellar keys generate e2e-deployer --network testnet --fund 2>/dev/null || {
     log "Identity may already exist, continuing..."
   }
+  fund_identity e2e-deployer || true
 fi
 
 DEPLOYER_ADDR=$(stellar keys address e2e-deployer 2>/dev/null)
@@ -203,6 +220,7 @@ log "Generating testnet identity 'e2e-user'..."
 stellar keys generate e2e-user --network testnet --fund 2>/dev/null || {
   log "User identity may already exist, continuing..."
 }
+fund_identity e2e-user || true
 USER_ADDR=$(stellar keys address e2e-user 2>/dev/null)
 log "User address: $USER_ADDR"
 save_artifact "user_address.txt" "$USER_ADDR"
