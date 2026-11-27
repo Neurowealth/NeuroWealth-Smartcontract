@@ -102,7 +102,10 @@ CREATE INDEX idx_bridge_audit_transfer ON bridge_audit_log(transfer_id);
 CREATE INDEX idx_bridge_audit_event_type ON bridge_audit_log(event_type);
 
 -- Bridge statistics view
-CREATE VIEW bridge_statistics AS
+-- security_invoker = true makes the view evaluate bridge_transfers RLS as the
+-- calling role instead of the view owner, so row-level restrictions apply.
+CREATE VIEW bridge_statistics
+  WITH (security_invoker = true) AS
 SELECT
   COUNT(*) as total_transfers,
   COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed_transfers,
@@ -113,11 +116,16 @@ SELECT
   SUM(CASE WHEN status = 'confirmed' THEN net_amount ELSE 0 END) as confirmed_volume,
   SUM(CASE WHEN status IN ('pending', 'confirming') THEN net_amount ELSE 0 END) as pending_volume,
   
-  AVG(CASE WHEN status = 'confirmed' AND destination_chain_tx_hash IS NOT NULL 
+  AVG(CASE WHEN status = 'confirmed' AND destination_tx_hash IS NOT NULL 
       THEN EXTRACT(EPOCH FROM (updated_at - created_at))
       ELSE NULL END) as average_confirmation_time_seconds
 FROM bridge_transfers
 WHERE created_at > NOW() - INTERVAL '30 days';
+
+-- Do not expose aggregate statistics to anon/authenticated API roles directly;
+-- access is limited to roles that already pass bridge_transfers RLS.
+REVOKE ALL ON bridge_statistics FROM PUBLIC;
+REVOKE ALL ON bridge_statistics FROM anon, authenticated;
 
 -- Enable RLS (Row Level Security)
 ALTER TABLE bridge_transfers ENABLE ROW LEVEL SECURITY;
