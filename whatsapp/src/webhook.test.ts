@@ -1,6 +1,7 @@
 import "./testBootstrap";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
+import { VaultClient } from "@neurowealth/vault-client";
 import { hashPhoneNumber } from "./cryptoUtils";
 import { getWallet } from "./walletService";
 import { getSession, updateState, UserState } from "./stateManager";
@@ -8,6 +9,15 @@ import { InMemoryStateStore, setStateStore } from "./stateStore";
 import { smsClient } from "./smsService";
 
 setStateStore(new InMemoryStateStore());
+
+const TEST_TX_HASH = "b".repeat(64);
+VaultClient.prototype.get_balance = async () => 1_000_0000000n;
+VaultClient.prototype.get_user_strategy = async () => "balanced";
+VaultClient.prototype.get_user_apy = async () => 850n;
+VaultClient.prototype.set_user_strategy = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.deposit = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.withdraw = async () => ({ hash: TEST_TX_HASH });
+VaultClient.prototype.withdraw_all = async () => ({ hash: TEST_TX_HASH, result: 0n });
 
 const { handleWhatsAppWebhook } =
   require("./webhook") as typeof import("./webhook");
@@ -146,7 +156,7 @@ describe("webhook verification flow (#691)", () => {
     await send(from, "hi");
     const captured = await send(from, "what now");
 
-    assert.match(captured.body, /6-digit verification code/);
+    assert.match(captured.body, /new verification code.*SMS/i);
   });
 });
 

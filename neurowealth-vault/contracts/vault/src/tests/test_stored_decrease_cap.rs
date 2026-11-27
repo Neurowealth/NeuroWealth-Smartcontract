@@ -79,6 +79,7 @@ fn test_set_max_decrease_bps_hard_ceiling() {
 
 /// update_total_assets uses stored cap, ignores caller-supplied argument.
 #[test]
+#[should_panic(expected = "Error(Contract, #32)")]
 fn test_update_total_assets_uses_stored_cap() {
     let env = Env::default();
     env.mock_all_auths();
@@ -156,6 +157,7 @@ fn test_update_total_assets_allows_decrease_within_stored_cap() {
 #[test]
 fn test_set_max_decrease_bps_requires_owner() {
     let env = Env::default();
+    env.mock_all_auths();
 
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);

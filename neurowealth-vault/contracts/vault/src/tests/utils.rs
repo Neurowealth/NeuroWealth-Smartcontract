@@ -15,7 +15,7 @@ use soroban_sdk::{
 };
 
 // Re-export so each submodule only needs `use super::utils::*;`
-pub use crate::{NeuroWealthVault, NeuroWealthVaultClient};
+pub use crate::{DataKey, NeuroWealthVault, NeuroWealthVaultClient};
 pub use soroban_sdk::testutils::Events;
 
 // ============================================================================
@@ -619,8 +619,21 @@ pub fn setup_vault(env: &Env) -> (Address, Address, Address) {
     (contract_id, agent, owner)
 }
 
-/// Sets up a vault with a real deployed TestToken contract.
+/// Sets up a vault with a real TestToken and disables holding-period gating
+/// so tests unrelated to holding periods can operate in a single ledger.
 pub fn setup_vault_with_token(env: &Env) -> (Address, Address, Address, Address) {
+    setup_vault_with_token_inner(env, true)
+}
+
+/// Sets up a vault with the contract's default holding period intact.
+pub fn setup_vault_with_default_holding_period(env: &Env) -> (Address, Address, Address, Address) {
+    setup_vault_with_token_inner(env, false)
+}
+
+fn setup_vault_with_token_inner(
+    env: &Env,
+    disable_holding_period: bool,
+) -> (Address, Address, Address, Address) {
     let deployer = Address::generate(env);
     let salt = BytesN::from_array(env, &[0u8; 32]);
     let contract_id = env
@@ -636,6 +649,13 @@ pub fn setup_vault_with_token(env: &Env) -> (Address, Address, Address, Address)
     let owner = Address::generate(env);
 
     client.initialize(&deployer, &owner, &agent, &usdc_token, &salt);
+    if disable_holding_period {
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::MinHoldingPeriod, &0_u32);
+        });
+    }
 
     (contract_id, agent, owner, usdc_token)
 }
@@ -901,4 +921,32 @@ pub fn mock_agent_only_auth(
             sub_invokes: &[],
         },
     }]);
+}
+
+/// Forces a user's `Shares` persistent entry to an exact remaining TTL.
+///
+/// `extend_ttl` can only ever raise a TTL (the host requires
+/// `threshold <= extend_to` and only acts when the current TTL is below the
+/// threshold), so it cannot shorten an entry that already has a healthy TTL.
+/// Instead this rewrites the entry: `remove` + `set` makes the host assign the
+/// configured `min_persistent_entry_ttl` (tests lower it to 1 beforehand), and
+/// a follow-up `extend_ttl(ttl, ttl)` bumps it to the exact requested value.
+///
+/// Panics if the user has no `Shares` entry.
+pub fn force_shares_ttl(env: &Env, contract_id: &Address, user: &Address, ttl: u32) {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    env.as_contract(contract_id, || {
+        let key = DataKey::Shares(user.clone());
+        let shares: i128 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("force_shares_ttl requires an existing Shares entry");
+        env.storage().persistent().remove(&key);
+        env.storage().persistent().set(&key, &shares);
+        if ttl > 1 {
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
+    });
 }

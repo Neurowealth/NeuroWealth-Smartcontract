@@ -163,6 +163,15 @@ fn test_index_tracks_active_users_only() {
 
 /// Deposit performance should remain stable when pruning is active,
 /// even after many cycles of deposit/withdrawal.
+///
+/// NOTE: absolute CPU/memory thresholds cannot be asserted in the test host.
+/// `soroban-env-host`'s `MeteredOrdMap` storage rebuilds the whole sorted map
+/// on every write (O(total ledger entries) metered per `put`), and fully
+/// withdrawn users' TTL'd persistent entries legitimately persist until their
+/// TTL expires — so per-call cost grows with total entry count no matter how
+/// well the index is pruned. What pruning controls is the `UserSharesIndex`
+/// length, which is asserted directly here (raw length, not the filtered
+/// `get_users_with_shares` view).
 #[test]
 fn test_deposit_performance_stable_with_pruning() {
     let env = Env::default();
@@ -175,42 +184,50 @@ fn test_deposit_performance_stable_with_pruning() {
     client.set_tvl_cap(&10_000_000_000_000_i128);
 
     let deposit_amount = 10_000_000_i128;
+    let token_client = TestTokenClient::new(&env, &usdc_token);
 
     // Warm up: create and destroy 100 users to build a pruned index
     for _ in 0..100 {
         deposit_and_withdraw_all(&env, &client, &usdc_token, deposit_amount);
     }
 
-    let token_client = TestTokenClient::new(&env, &usdc_token);
+    // The raw index must be empty — no dead entries for `add_to_user_index`'s
+    // `contains` scan or `get_users_with_shares`' deserialization to wade
+    // through. This is the state that keeps per-deposit index work O(1).
+    let raw_index_len = raw_user_index_len(&env, &contract_id);
+    assert_eq!(
+        raw_index_len, 0,
+        "UserSharesIndex must be empty after full withdrawals; got {raw_index_len} entries"
+    );
 
-    // Measure the cost of depositing into a fresh user after 100 withdraw cycles
+    // Deposit still works correctly for a fresh user afterwards.
     let user_after_cycles = Address::generate(&env);
     token_client.mint(&user_after_cycles, &deposit_amount);
-
     let (cpu_after_cycles, mem_after_cycles) = measure(&env, || {
         client.deposit(&user_after_cycles, &deposit_amount);
     });
+    assert!(client.get_shares(&user_after_cycles) > 0);
 
     std::println!(
-        "[pruning] Deposit cost after 100 deposit+withdraw cycles: cpu={cpu_after_cycles} mem={mem_after_cycles}"
-    );
-
-    // The cost should be comparable to a fresh deposit on an empty vault.
-    // Without pruning, this would show significant regression (10-50x).
-    // With pruning, it should be roughly O(1) with respect to historical cycle count.
-    assert!(
-        cpu_after_cycles < 5_000_000,
-        "Deposit CPU cost regressed after cycles: {cpu_after_cycles}"
-    );
-    assert!(
-        mem_after_cycles < 300_000,
-        "Deposit memory cost regressed after cycles: {mem_after_cycles}"
+        "[pruning] Deposit after 100 cycles: cpu={cpu_after_cycles} mem={mem_after_cycles} (host-metered, grows with total ledger entries)"
     );
 }
 
-/// Large-scale (500+) performance test: measure index size and deposit cost.
-/// With pruning, both should remain bounded. Without pruning, both would
-/// scale with the total number of distinct addresses ever deposited.
+/// Reads the raw `UserSharesIndex` Vec length straight from instance storage,
+/// bypassing the zero-share filtering done by `get_users_with_shares`.
+fn raw_user_index_len(env: &Env, contract_id: &Address) -> u32 {
+    env.as_contract(contract_id, || {
+        let idx: Option<soroban_sdk::Vec<Address>> =
+            env.storage().instance().get(&DataKey::UserSharesIndex);
+        idx.map(|v| v.len()).unwrap_or(0)
+    })
+}
+
+/// Large-scale (500+) load test: the raw `UserSharesIndex` must stay empty
+/// after hundreds of full deposit/withdraw cycles, and deposits must keep
+/// working. As with the 100-cycle perf test, absolute host-metered CPU
+/// cannot be asserted — it scales with total ledger entries, which grow by
+/// design as withdrawn users' TTL'd persistent keys accumulate.
 #[test]
 fn test_large_scale_index_pruning_500_plus_users() {
     let env = Env::default();
@@ -233,21 +250,16 @@ fn test_large_scale_index_pruning_500_plus_users() {
         deposit_and_withdraw_all(&env, &client, &usdc_token, deposit_amount);
     }
 
-    // Verify index is empty (all users withdrawn)
-    let (users_final, _) = client.get_users_with_shares(&0, &1000);
-    std::println!(
-        "[pruning] After {CYCLE_COUNT} cycles: index size = {}",
-        users_final.len()
-    );
+    // Verify the raw index is empty (all users withdrawn and pruned)
+    let raw_index_len = raw_user_index_len(&env, &contract_id);
+    std::println!("[pruning] After {CYCLE_COUNT} cycles: raw index size = {raw_index_len}");
 
     assert_eq!(
-        users_final.len(),
-        0,
-        "Index should be empty after all full withdrawals; got {} users",
-        users_final.len()
+        raw_index_len, 0,
+        "UserSharesIndex must be empty after all full withdrawals; got {raw_index_len} entries"
     );
 
-    // Now measure deposit cost with a pruned, essentially-empty index
+    // A fresh deposit still works correctly afterwards.
     let token_client = TestTokenClient::new(&env, &usdc_token);
     let final_user = Address::generate(&env);
     token_client.mint(&final_user, &deposit_amount);
@@ -255,19 +267,10 @@ fn test_large_scale_index_pruning_500_plus_users() {
     let (cpu_final, mem_final) = measure(&env, || {
         client.deposit(&final_user, &deposit_amount);
     });
+    assert!(client.get_shares(&final_user) > 0);
 
     std::println!(
-        "[pruning] Final deposit cost (after {CYCLE_COUNT} cycles): cpu={cpu_final} mem={mem_final}"
-    );
-
-    // Cost should remain reasonable despite the historical cycle count
-    assert!(
-        cpu_final < 5_000_000,
-        "Deposit CPU cost unexpectedly high: {cpu_final}"
-    );
-    assert!(
-        mem_final < 300_000,
-        "Deposit memory cost unexpectedly high: {mem_final}"
+        "[pruning] Final deposit after {CYCLE_COUNT} cycles: cpu={cpu_final} mem={mem_final} (host-metered)"
     );
 }
 

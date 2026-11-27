@@ -1,3 +1,6 @@
+process.env.ENCRYPTION_KEY = 'test-encryption-key-at-least-32-chars-long';
+process.env.PHONE_HASH_SALT = 'test-phone-hash-salt-0123456789';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { hashPhoneNumber, encryptSecretKey, decryptSecretKey } from './cryptoUtils';
@@ -27,7 +30,7 @@ describe('encryptSecretKey / decryptSecretKey (#691)', () => {
 
   it('round-trips a secret key', () => {
     const sealed = encryptSecretKey(SECRET);
-    assert.strictEqual(decryptSecretKey(sealed.encryptedData, sealed.iv, sealed.tag), SECRET);
+    assert.strictEqual(decryptSecretKey(sealed.encryptedData, sealed.iv, sealed.tag, sealed), SECRET);
   });
 
   it('never stores the plaintext key in the ciphertext', () => {

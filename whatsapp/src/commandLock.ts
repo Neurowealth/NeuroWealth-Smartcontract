@@ -32,7 +32,7 @@ export function runExclusive<T>(key: string, task: Task<T>): Promise<T> {
 
   // Avoid unbounded growth for users who stop messaging: once this is the
   // last queued task for the key and it has settled, drop the entry.
-  settled.then(() => {
+  void settled.then(() => {
     if (tails.get(key) === settled) {
       tails.delete(key);
     }

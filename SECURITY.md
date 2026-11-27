@@ -85,7 +85,7 @@ Depositors are un-privileged external accounts interacting with the vault to ear
   - Deposit USDC into the vault to mint proportional shares (`deposit`, `batch_deposit`).
   - Redeem vault shares for underlying USDC at any time (`withdraw`, `withdraw_all`).
   - Select individual yield strategy preferences (`set_user_strategy`).
-  - Call permissionless maintenance utilities (`touch_user_ttl`).
+  - Refresh the TTL of their own vault entries (`touch_user_ttl`). This requires the user's own authorization (`user.require_auth()`) and is rate limited per user.
 - **CANNOT**:
   - Withdraw funds belonging to other depositors.
   - Trigger vault rebalances or alter asset accounting.
@@ -203,8 +203,8 @@ The contract owner can upgrade the contract code. To protect against malicious o
 
 Soroban persistent entries (such as each user's `Shares` record) accrue state rent and expire if their TTL is not periodically extended:
 - **Pure Read-Only Getters**: `get_balance` and `get_shares` are side-effect free — they do **not** extend storage TTL. This keeps pure reads cheap and prevents read traffic from silently mutating ledger state.
-- **Explicit Maintenance**: Off-chain indexers or maintenance jobs should call the permissionless `touch_user_ttl(user)` to refresh a user's `Shares` TTL. State-changing calls (`deposit`, `withdraw`) already rewrite `Shares` and refresh its TTL during normal operation.
-- **Risk**: A long-dormant user who never transacts and whose entry is never touched could see their `Shares` entry expire and require restoration. Active users, and any indexer running `touch_user_ttl`, are unaffected.
+- **Explicit Maintenance**: `touch_user_ttl(user)` is **not** permissionless: it calls `user.require_auth()` and is rate limited per user, so an indexer or keeper cannot call it on a user's behalf without that user's authorization. A TTL-maintenance job can only succeed if it holds the user's signature (for example the user, or a wallet or session the user has authorized, submits the call) or if the user's own transactions refresh the entry. Anonymous third-party keepers are not supported by the current contract. State-changing calls (`deposit`, `withdraw`) already rewrite `Shares` and refresh its TTL during normal operation.
+- **Risk**: A long-dormant user who never transacts and whose entry is never touched could see their `Shares` entry expire and require restoration. Active users, and users who periodically submit an authorized `touch_user_ttl` call themselves, are unaffected. Operators must not assume an unauthenticated keeper can extend TTLs.
 
 ### 6. Fee-on-Transfer / Deflationary Asset Risk (Issue #603)
 
@@ -366,10 +366,12 @@ This register documents every owner-only and agent-only capability, the blast ra
 | execute_migration_target | yes | - | - | - |
 | cancel_migration_target | yes | - | - | - |
 | set_migration_paused | yes | - | - | - |
+| add_allowed_migration_source | yes | - | - | - |
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
 | touch_user_ttl | - | - | yes | - |
+| touch_user_asset_ttl | - | - | yes | - |
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
 | get_min_holding_period | - | - | - | anyone |
@@ -522,7 +524,7 @@ to compound yield during this window:
 | `set_blend_approval_ttl` | Owner | 🟢 ALLOWED | Configuration changes should be possible during a pause |
 | `set_max_consecutive_failures` | Owner | 🟢 ALLOWED | Configuration changes should be possible during a pause |
 | `set_user_strategy` | User | 🟢 ALLOWED | Preference storage; no fund movement |
-| `touch_user_ttl` | Anyone | 🟢 ALLOWED | Permissionless TTL maintenance; no fund movement |
+| `touch_user_ttl` | User | 🟢 ALLOWED | User-authorized (`require_auth`), rate-limited TTL maintenance; no fund movement |
 | `initialize` | Deployer | 🟢 ALLOWED | Initialization runs before pause is even possible |
 
 ### Read-Only / View Functions

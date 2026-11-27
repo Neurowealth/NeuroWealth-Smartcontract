@@ -260,8 +260,9 @@ fn test_dex_supply_min_out_enforced() {
     token_client.mint(&vault_id, &100_000_000);
     dex_client.set_max_supply_limit(&40_000_000);
 
-    // Require at least 50 USDC supplied: the 40 USDC fill trips MinOutNotMet (#42).
-    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &50_000_000);
+    // min_out is a slippage tolerance in bps: 1000 (10%) requires at least 90%
+    // of the attempted amount. The 40 USDC fill trips MinOutNotMet (#42).
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &1_000);
 }
 
 #[test]
@@ -418,17 +419,14 @@ fn test_dex_partial_fill_rebalance_accounts_for_actual_amount() {
 
 // ─── Issue #515: DEX pool rotation mid-deployment ────────────────────────────
 //
-// Documents that rotating the configured DEX pool address while funds are
-// actively deployed silently strands those funds: every subsequent lookup
-// reads the *new* pool address from storage, so the vault loses the ability
-// to see or recover the position in the *old* pool.
-//
-// Pre-fix this test pins the stranding behaviour.  Once a guard is added to
-// `set_dex_pool` that rejects rotation while `CurrentProtocol == "dex"`, flip
-// the rotation call below to expect a panic instead.
+// `set_dex_pool` rejects rotating the configured pool address while the vault
+// still has funds deployed in it: every deployed-funds lookup reads
+// `DataKey::DexPool`, so overwriting the pointer would strand the position in
+// the old pool. The owner must exit the position first; rotation then succeeds
+// and the next deployment lands in the new pool.
 
 #[test]
-fn test_set_dex_pool_rotation_while_deployed_strands_funds() {
+fn test_set_dex_pool_rotation_while_deployed_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -453,45 +451,40 @@ fn test_set_dex_pool_rotation_while_deployed_strands_funds() {
         Symbol::new(&env, "dex")
     );
 
-    // Rotate the DEX pool address while funds are still deployed.
-    // No guard currently exists — this succeeds.
+    // Rotating the pool address while deployed is rejected (#96).
     let new_pool = env.register_contract(None, MockDexPool);
+    assert!(
+        vault_client.try_set_dex_pool(&owner, &new_pool).is_err(),
+        "pool rotation must be rejected while funds are deployed"
+    );
+    assert_eq!(
+        vault_client.get_dex_pool(),
+        Some(old_pool.clone()),
+        "rejected rotation must leave the configured pool unchanged"
+    );
+    assert_eq!(
+        old_pool_client.balance(&usdc_token, &vault_id),
+        deposit_amount,
+        "funds must remain in the configured pool"
+    );
+
+    // Exit the position; the funds are recovered to the vault.
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0_i128);
+    assert_eq!(token_client.balance(&vault_id), deposit_amount);
+
+    // With nothing deployed, rotation succeeds.
     vault_client.set_dex_pool(&owner, &new_pool);
     assert_eq!(vault_client.get_dex_pool(), Some(new_pool.clone()));
 
-    // Funds remain stuck in the old pool; the vault's pointer now targets new_pool.
-    assert_eq!(
-        old_pool_client.balance(&usdc_token, &vault_id),
-        deposit_amount,
-        "deployed funds remain in the old pool, untouched by rotation"
-    );
+    // The next deployment lands in the new pool.
+    vault_client.rebalance(&agent, &Symbol::new(&env, "dex"), &850, &0_i128);
     let new_pool_client = MockDexPoolClient::new(&env, &new_pool);
     assert_eq!(
         new_pool_client.balance(&usdc_token, &vault_id),
-        0,
-        "new pool has no balance"
-    );
-
-    // Attempting to exit the position silently succeeds without recovering
-    // anything: the vault queries new_pool (via DataKey::DexPool), sees 0,
-    // and flips CurrentProtocol to "none" — funds remain stranded.
-    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &0_i128);
-
-    assert_eq!(
-        vault_client.get_current_protocol(),
-        Symbol::new(&env, "none"),
-        "vault believes it exited the position cleanly"
-    );
-    assert_eq!(
-        token_client.balance(&vault_id),
-        0,
-        "no funds were actually recovered"
-    );
-    assert_eq!(
-        old_pool_client.balance(&usdc_token, &vault_id),
         deposit_amount,
-        "funds remain permanently stranded in the old pool"
+        "redeployment must use the new pool"
     );
+    assert_eq!(old_pool_client.balance(&usdc_token, &vault_id), 0);
 }
 
 // ─── Issue #516: min_out slippage on the DEX withdrawal leg ─────────────────
@@ -525,8 +518,9 @@ fn test_rebalance_dex_withdraw_leg_below_min_out_panics() {
     // Cap the pool's withdrawal to 30 USDC — simulates a partial-fill exit.
     dex_client.set_max_withdraw_limit(&30_000_000);
 
-    // Attempt to exit with min_out = 50 USDC.
-    // The pool can only return 30 USDC, which is below min_out — must panic
-    // with MinOutNotMet (#42), leaving no partial state change.
-    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &50_000_000_i128);
+    // Attempt to exit with min_out = 1000 bps slippage tolerance (requires at
+    // least 90% of the position back). The pool can only return 30 of 100 USDC,
+    // which is below the minimum — must panic with MinOutNotMet (#42),
+    // leaving no partial state change.
+    vault_client.rebalance(&agent, &Symbol::new(&env, "none"), &0, &1_000_i128);
 }

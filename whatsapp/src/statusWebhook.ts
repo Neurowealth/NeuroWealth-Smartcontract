@@ -19,8 +19,11 @@ export async function handleDeliveryStatusCallback(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const body = req.body ?? {};
-  const messageSid = body.MessageSid || body.SmsSid || "";
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const messageSid =
+    [body.MessageSid, body.SmsSid].find(
+      (v) => v !== undefined && v !== null && v !== "",
+    ) ?? "";
   const status =
     typeof body.MessageStatus === "string"
       ? body.MessageStatus

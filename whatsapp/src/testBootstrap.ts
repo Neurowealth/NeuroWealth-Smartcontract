@@ -28,7 +28,7 @@ interface WalletRow {
 const wallets = new Map<string, WalletRow>();
 const deliveries = new Map<string, { status: string }>();
 
-async function inMemoryQuery(sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount?: number }> {
+function inMemoryQuery(sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount?: number }> {
   const normalized = sql.replace(/\s+/g, ' ').trim().toUpperCase();
 
   if (normalized.startsWith('INSERT INTO WHATSAPP_WALLETS')) {
@@ -57,7 +57,7 @@ async function inMemoryQuery(sql: string, params: unknown[] = []): Promise<{ row
     ];
 
     if (wallets.has(phoneHash)) {
-      return { rows: [] };
+      return Promise.resolve({ rows: [] });
     }
 
     const row: WalletRow = {
@@ -73,28 +73,28 @@ async function inMemoryQuery(sql: string, params: unknown[] = []): Promise<{ row
       key_version: keyVersion ?? null,
     };
     wallets.set(phoneHash, row);
-    return { rows: [row] };
+    return Promise.resolve({ rows: [row] });
   }
 
   if (normalized.startsWith('SELECT * FROM WHATSAPP_WALLETS')) {
     const [phoneHash] = params as [string];
     const row = wallets.get(phoneHash);
-    return { rows: row ? [row] : [] };
+    return Promise.resolve({ rows: row ? [row] : [] });
   }
 
   if (normalized.startsWith('SELECT STATUS FROM WHATSAPP_MESSAGE_DELIVERIES')) {
     const [messageSid] = params as [string];
     const row = deliveries.get(messageSid);
-    return { rows: row ? [row] : [] };
+    return Promise.resolve({ rows: row ? [row] : [] });
   }
 
   if (normalized.startsWith('INSERT INTO WHATSAPP_MESSAGE_DELIVERIES')) {
     const [messageSid, , , , , status] = params as [string, unknown, unknown, unknown, unknown, string];
     if (deliveries.has(messageSid)) {
-      return { rows: [], rowCount: 0 };
+      return Promise.resolve({ rows: [], rowCount: 0 });
     }
     deliveries.set(messageSid, { status });
-    return { rows: [], rowCount: 1 };
+    return Promise.resolve({ rows: [], rowCount: 1 });
   }
 
   throw new Error(`inMemoryQuery: unrecognized SQL: ${sql}`);

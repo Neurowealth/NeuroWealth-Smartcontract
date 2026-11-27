@@ -42,5 +42,3 @@ export class DatabaseClient {
 }
 
 export const dbClient = new DatabaseClient();
-
-

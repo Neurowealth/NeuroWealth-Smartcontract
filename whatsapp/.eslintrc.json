@@ -10,18 +10,37 @@
     "plugin:@typescript-eslint/recommended",
     "plugin:@typescript-eslint/recommended-requiring-type-checking"
   ],
-  "plugins": ["@typescript-eslint"],
+  "plugins": [
+    "@typescript-eslint"
+  ],
   "env": {
     "node": true,
     "es2022": true
   },
   "rules": {
-    "@typescript-eslint/explicit-function-return-types": "error",
     "@typescript-eslint/no-floating-promises": "error",
-    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
     "@typescript-eslint/no-explicit-any": "error",
     "@typescript-eslint/strict-boolean-expressions": "error",
-    "no-console": ["warn", { "allow": ["warn", "error"] }]
+    "no-console": [
+      "warn",
+      {
+        "allow": [
+          "warn",
+          "error"
+        ]
+      }
+    ],
+    "@typescript-eslint/explicit-function-return-type": "error"
   },
-  "ignorePatterns": ["dist", "node_modules", "*.test.ts"]
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "*.test.ts"
+  ]
 }

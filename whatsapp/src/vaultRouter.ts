@@ -11,7 +11,7 @@ function rejectUnusableAddress(publicKey: string): string | null {
 
 function requireEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
+  if (value === undefined || value === '') {
     throw new Error(`${name} must be set; refusing to use an unsafe vault contract default`);
   }
   return value;
@@ -56,7 +56,7 @@ async function applyUserStrategy(
     return { ok: false, message: 'Invalid strategy specified on-chain transaction failed.' };
   }
   const result = await client.set_user_strategy(signer, publicKey, symbol);
-  if (!result.hash) {
+  if (result.hash === undefined || result.hash === '') {
     throw new Error('set_user_strategy: transaction did not return a hash');
   }
   return { ok: true, txHash: result.hash, symbol };
@@ -110,11 +110,11 @@ async function loadSigner(phoneHash: string): Promise<LoadedSigner | { error: st
     return { error: 'Wallet not initialized.' };
   }
   const addressError = rejectUnusableAddress(wallet.publicKey);
-  if (addressError) {
+  if (addressError !== null) {
     return { error: addressError };
   }
   const secret = await getDecryptedSecretKey(phoneHash);
-  if (!secret) {
+  if (secret === null) {
     return { error: 'Wallet not initialized.' };
   }
   return { publicKey: wallet.publicKey, signer: Keypair.fromSecret(secret) };
@@ -196,20 +196,20 @@ export async function handleDeposit(
     return { success: false, txHash: '', message: loaded.error };
   }
 
-  const selectedStrategy = strategy || 'Balanced';
+  const selectedStrategy = strategy !== undefined && strategy !== '' ? strategy : 'Balanced';
 
   try {
     const client = vaultClient();
     // The deposit invocation has no strategy argument. Persist the choice
     // with set_user_strategy before claiming the deposit succeeded (#1107).
-    if (strategy) {
+    if (strategy !== undefined && strategy !== '') {
       const applied = await applyUserStrategy(client, loaded.signer, loaded.publicKey, strategy);
       if (!applied.ok) {
         return { success: false, txHash: '', message: applied.message };
       }
     }
     const result = await client.deposit(loaded.signer, loaded.publicKey, toStroops(amount));
-    if (!result.hash) {
+    if (result.hash === undefined || result.hash === '') {
       throw new Error('deposit: transaction did not return a hash');
     }
 
@@ -241,14 +241,14 @@ export async function handleWithdraw(
     return { success: false, txHash: '', message: loaded.error };
   }
 
-  const withdrawAmountText = withdrawAll ? 'all funds' : `${amount} USDC`;
+  const withdrawAmountText = withdrawAll === true ? 'all funds' : `${amount} USDC`;
 
   try {
     const client = vaultClient();
-    const result = withdrawAll
+    const result = withdrawAll === true
       ? await client.withdraw_all(loaded.signer, loaded.publicKey)
       : await client.withdraw(loaded.signer, loaded.publicKey, toStroops(amount as number));
-    if (!result.hash) {
+    if (result.hash === undefined || result.hash === '') {
       throw new Error('withdraw: transaction did not return a hash');
     }
 

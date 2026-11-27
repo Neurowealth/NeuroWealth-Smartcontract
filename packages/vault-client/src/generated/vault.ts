@@ -915,6 +915,9 @@ export const VaultErrorCode = {
   AlreadyPaused: 91,
   StandbyMatchesPrimaryAgent: 92,
   DepositRejectedZeroAssetsWithShares: 93,
+  PendingWithdrawalExists: 94,
+  UnauthorizedMigrationSource: 95,
+  PoolRotationWhileDeployed: 96,
   ValidationError: 100,
   PausedError: 101,
   UnauthorizedAgentError: 102,
@@ -1565,6 +1568,15 @@ export class VaultClient {
   async set_migration_paused(signer: StellarSdk.Keypair, paused: boolean): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(paused, { type: 'bool' })];
     return this.invoke<void>('set_migration_paused', args, signer);
+  }
+
+  /**
+   * Allow-list a source vault for receive_migration
+   * @param source_vault
+   */
+  async add_allowed_migration_source(signer: StellarSdk.Keypair, source_vault: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(source_vault).toScVal()];
+    return this.invoke<void>('add_allowed_migration_source', args, signer);
   }
 
   /**
@@ -2251,6 +2263,16 @@ export class VaultClient {
   async touch_user_ttl(signer: StellarSdk.Keypair, user: string): Promise<TxResult<boolean>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
     return this.invoke<boolean>('touch_user_ttl', args, signer);
+  }
+
+  /**
+   * Extend the persistent TTL for a user's multi-asset shares entry
+   * @param user
+   * @param asset
+   */
+  async touch_user_asset_ttl(signer: StellarSdk.Keypair, user: string, asset: string): Promise<TxResult<boolean>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' })];
+    return this.invoke<boolean>('touch_user_asset_ttl', args, signer);
   }
 
   /**

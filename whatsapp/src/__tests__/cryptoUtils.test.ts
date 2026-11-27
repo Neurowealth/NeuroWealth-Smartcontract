@@ -22,7 +22,7 @@ test('encrypt/decrypt round-trip', () => {
   assert.ok(encrypted.iv);
   assert.ok(encrypted.tag);
   
-  const decrypted = decryptSecretKey(encrypted.encryptedData, encrypted.iv, encrypted.tag);
+  const decrypted = decryptSecretKey(encrypted.encryptedData, encrypted.iv, encrypted.tag, encrypted);
   assert.equal(decrypted, secret);
 });
 
@@ -42,19 +42,19 @@ test('tamper detection throws an error', () => {
   // Tamper with the encrypted data
   const tamperedData = encrypted.encryptedData.replace(/[0-9a-f]/, (m) => (m === '0' ? '1' : '0'));
   assert.throws(() => {
-    decryptSecretKey(tamperedData, encrypted.iv, encrypted.tag);
+    decryptSecretKey(tamperedData, encrypted.iv, encrypted.tag, encrypted);
   });
   
   // Tamper with IV
   const tamperedIv = encrypted.iv.replace(/[0-9a-f]/, (m) => (m === '0' ? '1' : '0'));
   assert.throws(() => {
-    decryptSecretKey(encrypted.encryptedData, tamperedIv, encrypted.tag);
+    decryptSecretKey(encrypted.encryptedData, tamperedIv, encrypted.tag, encrypted);
   });
 
   // Tamper with Tag
   const tamperedTag = encrypted.tag.replace(/[0-9a-f]/, (m) => (m === '0' ? '1' : '0'));
   assert.throws(() => {
-    decryptSecretKey(encrypted.encryptedData, encrypted.iv, tamperedTag);
+    decryptSecretKey(encrypted.encryptedData, encrypted.iv, tamperedTag, encrypted);
   });
 });
 
@@ -65,10 +65,10 @@ test('fail-fast when ENCRYPTION_KEY is too short', () => {
   const modulePath = require.resolve('../cryptoUtils');
   delete require.cache[modulePath];
   
-  assert.throws(() => {
-    require('../cryptoUtils');
-  }, /ENCRYPTION_KEY must be at least 32 characters/);
-  
-  process.env.ENCRYPTION_KEY = originalKey;
-  delete require.cache[modulePath];
+  try {
+    assert.throws(() => encryptSecretKey('secret'), /ENCRYPTION_KEY must be at least 32 characters/);
+  } finally {
+    process.env.ENCRYPTION_KEY = originalKey;
+    delete require.cache[modulePath];
+  }
 });

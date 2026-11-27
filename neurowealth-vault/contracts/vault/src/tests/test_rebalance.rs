@@ -728,6 +728,8 @@ fn test_rebalance_fails_when_switching_protocols_with_partial_exit() {
 }
 
 /// When `min_out > 0`, a pool that supplies less than requested must panic (#150).
+/// `min_out` is a slippage tolerance in bps: 1000 (10%) requires at least 90%
+/// of the attempted amount.
 #[test]
 #[should_panic(expected = "Error(Contract, #42)")]
 fn test_rebalance_min_out_panics_when_pool_returns_less_than_requested() {
@@ -745,7 +747,7 @@ fn test_rebalance_min_out_panics_when_pool_returns_less_than_requested() {
     let user = Address::generate(&env);
     mint_and_deposit(&env, &client, &usdc_token, &user, 10_000_000_i128);
 
-    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &10_000_000_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &1_000_i128);
 }
 
 // ─── Issue #348: DEX approval expiry ledger-boundary test ────────────────────
@@ -858,14 +860,15 @@ fn test_rebalance_exit_failure_leaves_protocol_unchanged() {
     );
 }
 
-// ─── Issue #383: pool-address rotation while funds are deployed ─────────────
+// ─── Issue #383/#515: pool-address rotation while funds are deployed ────────
 //
-// Companion to the `set_blend_pool`/`set_dex_pool` fund-stranding issue.
-// Neither setter currently guards against rotating the configured pool
-// address while a nonzero position is still deployed to the *old* pool.
+// `set_blend_pool`/`set_dex_pool` reject rotating the configured pool address
+// while the old pool still holds vault funds (`PoolRotationWhileDeployed`),
+// because every deployed-funds lookup reads the pool address from storage —
+// overwriting it would strand the position. The owner must exit first.
 
 #[test]
-fn test_blend_pool_rotation_while_deployed_strands_funds() {
+fn test_blend_pool_rotation_while_deployed_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -885,48 +888,27 @@ fn test_blend_pool_rotation_while_deployed_strands_funds() {
     assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
 
-    // Rotate to a brand new pool while the position is still fully deployed
-    // to `old_pool`. No guard currently exists — this succeeds.
+    // Rotation while deployed is rejected (#96); the pointer is unchanged.
     let new_pool = env.register_contract(None, MockBlendPool);
+    assert!(client.try_set_blend_pool(&owner, &new_pool).is_err());
+    assert_eq!(client.get_blend_pool(), Some(old_pool.clone()));
+    assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
+
+    // Exit the position, then rotation succeeds and funds redeploy to the
+    // new pool.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(token_client.balance(&contract_id), deposit_amount);
     client.set_blend_pool(&owner, &new_pool);
     assert_eq!(client.get_blend_pool(), Some(new_pool.clone()));
 
-    // The funds never moved — they are still sitting in `old_pool` — but the
-    // vault's only pointer to a Blend pool now targets `new_pool`.
-    assert_eq!(
-        old_pool_client.supplied(&usdc_token),
-        deposit_amount,
-        "deployed funds remain in the old pool, untouched by the rotation"
-    );
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     let new_pool_client = MockBlendPoolClient::new(&env, &new_pool);
-    assert_eq!(new_pool_client.supplied(&usdc_token), 0);
-
-    // Attempting to exit the position now silently "succeeds" without
-    // recovering anything: withdraw_from_protocol queries `new_pool` (via
-    // DataKey::BlendPool), sees a 0 balance, treats the exit as complete, and
-    // flips CurrentProtocol to "none" — even though the real funds are stuck
-    // in `old_pool`.
-    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
-
-    assert_eq!(
-        client.get_current_protocol(),
-        symbol_short!("none"),
-        "vault believes it exited the position cleanly"
-    );
-    assert_eq!(
-        token_client.balance(&contract_id),
-        0,
-        "no funds were actually recovered to the vault"
-    );
-    assert_eq!(
-        old_pool_client.supplied(&usdc_token),
-        deposit_amount,
-        "funds remain permanently stranded in the old pool"
-    );
+    assert_eq!(new_pool_client.supplied(&usdc_token), deposit_amount);
+    assert_eq!(old_pool_client.supplied(&usdc_token), 0);
 }
 
 #[test]
-fn test_dex_pool_rotation_while_deployed_strands_funds() {
+fn test_dex_pool_rotation_while_deployed_is_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -949,42 +931,27 @@ fn test_dex_pool_rotation_while_deployed_strands_funds() {
     );
     assert_eq!(client.get_current_protocol(), symbol_short!("dex"));
 
-    // Rotate to a brand new pool while the position is still fully deployed
-    // to `old_pool`. No guard currently exists — this succeeds.
+    // Rotation while deployed is rejected (#96); the pointer is unchanged.
     let new_pool = env.register_contract(None, MockDexPool);
+    assert!(client.try_set_dex_pool(&owner, &new_pool).is_err());
+    assert_eq!(client.get_dex_pool(), Some(old_pool.clone()));
+    assert_eq!(
+        old_pool_client.balance(&usdc_token, &contract_id),
+        deposit_amount
+    );
+
+    // Exit the position, then rotation succeeds and funds redeploy to the
+    // new pool.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(token_client.balance(&contract_id), deposit_amount);
     client.set_dex_pool(&owner, &new_pool);
     assert_eq!(client.get_dex_pool(), Some(new_pool.clone()));
 
-    // The funds never moved — they are still sitting in `old_pool` — but the
-    // vault's only pointer to a DEX pool now targets `new_pool`.
-    assert_eq!(
-        old_pool_client.balance(&usdc_token, &contract_id),
-        deposit_amount,
-        "deployed funds remain in the old pool, untouched by the rotation"
-    );
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
     let new_pool_client = MockDexPoolClient::new(&env, &new_pool);
-    assert_eq!(new_pool_client.balance(&usdc_token, &contract_id), 0);
-
-    // Attempting to exit the position now silently "succeeds" without
-    // recovering anything: withdraw_from_protocol queries `new_pool` (via
-    // DataKey::DexPool), sees a 0 balance, treats the exit as complete, and
-    // flips CurrentProtocol to "none" — even though the real funds are stuck
-    // in `old_pool`.
-    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
-
     assert_eq!(
-        client.get_current_protocol(),
-        symbol_short!("none"),
-        "vault believes it exited the position cleanly"
+        new_pool_client.balance(&usdc_token, &contract_id),
+        deposit_amount
     );
-    assert_eq!(
-        token_client.balance(&contract_id),
-        0,
-        "no funds were actually recovered to the vault"
-    );
-    assert_eq!(
-        old_pool_client.balance(&usdc_token, &contract_id),
-        deposit_amount,
-        "funds remain permanently stranded in the old pool"
-    );
+    assert_eq!(old_pool_client.balance(&usdc_token, &contract_id), 0);
 }

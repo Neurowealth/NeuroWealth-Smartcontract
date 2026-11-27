@@ -959,6 +959,25 @@
       "state_changing": true
     },
     {
+      "name": "add_allowed_migration_source",
+      "category": "management",
+      "access": "owner",
+      "description": "Allow-list a source vault for receive_migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
       "name": "set_tvl_cap",
       "category": "administration",
       "access": "owner-only",
@@ -2478,9 +2497,9 @@
     },
     {
       "name": "touch_user_asset_ttl",
-      "category": "management",
-      "access": "public",
-      "description": "Function touch_user_asset_ttl",
+      "category": "maintenance",
+      "access": "user",
+      "description": "Extend the persistent TTL for a user's multi-asset shares entry",
       "parameters": [
         {
           "name": "env",
@@ -2497,7 +2516,9 @@
       ],
       "returns": "bool",
       "requires_auth": true,
-      "state_changing": false
+      "state_changing": true,
+      "storage_type": "persistent",
+      "query_only": false
     },
     {
       "name": "get_user_info",
@@ -5014,6 +5035,18 @@
     "VaultError::DepositRejectedZeroAssetsWithShares": {
       "code": 93,
       "description": "The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead."
+    },
+    "VaultError::PendingWithdrawalExists": {
+      "code": 94,
+      "description": "Migration blocked: user has pending queued-withdrawal reservations (#1159).  `migrate_shares` zeros the user's share balance, but `burn_and_pay` explicitly refuses to settle a pending request whose reservation has no backing shares. The migration must be blocked until all pending reservations are cancelled or fulfilled."
+    },
+    "VaultError::UnauthorizedMigrationSource": {
+      "code": 95,
+      "description": "`receive_migration` rejected: `source_vault` is not on the owner-managed allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).  Any caller can claim an arbitrary `source_vault` address and self-authorize the sub-call. Without an explicit allow-list this would let an attacker mint unbacked shares. The owner must register legitimate source vaults via `add_allowed_migration_source` before migration can proceed."
+    },
+    "VaultError::PoolRotationWhileDeployed": {
+      "code": 96,
+      "description": "`set_blend_pool` / `set_dex_pool` rejected: the currently configured pool still holds vault funds (#515).  Every deployed-funds lookup reads the pool address from storage, so overwriting it while a position is open would strand those funds in the old pool with no way to exit them. The owner must first rebalance the position out (or fully withdraw) before rotating the address."
     },
     "ValidationError": {
       "code": 100,

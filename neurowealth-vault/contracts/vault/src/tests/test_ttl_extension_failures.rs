@@ -98,11 +98,9 @@ fn test_funded_extension_updates_entry_and_preserves_balances() {
     let total_shares_before = client.get_total_shares();
 
     // Force the entry under the threshold so the extension path is exercised.
-    env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Shares(user.clone()), 0, 1)
-    });
+    // extend_ttl cannot shorten a TTL, so the entry is rewritten to pick up
+    // the lowered minimum TTL.
+    force_shares_ttl(&env, &contract_id, &user, 1);
     let ttl_before = shares_ttl(&env, &contract_id, &user);
 
     assert!(
@@ -380,6 +378,12 @@ fn test_protocol_approval_is_live_until_and_including_the_expiry_ledger() {
     let expiry = token_client.allowance_expiration(&contract_id, &blend_pool);
     assert_eq!(expiry, sequence + ttl);
 
+    // The supply leg pulled the entire approved amount, so no residual
+    // allowance remains to observe the expiry boundary with. Grant a standing
+    // approval carrying the same expiry the vault used and verify the token
+    // honors the boundary the vault's TTL constants are measured against.
+    token_client.approve(&contract_id, &blend_pool, &1_000_000_i128, &expiry);
+
     // On the expiry ledger itself the allowance is still valid.
     env.ledger().set_sequence_number(expiry);
     assert!(
@@ -426,6 +430,9 @@ fn test_protocol_approval_state_is_consistent_after_failed_maintenance() {
     client.rebalance(&agent, &symbol_short!("blend"), &700_i128, &0_i128);
 
     let expiration = token_client.allowance_expiration(&contract_id, &blend_pool);
+    // The supply leg consumed the entire approved amount; stand up a residual
+    // approval so the failed-maintenance check observes real allowance state.
+    token_client.approve(&contract_id, &blend_pool, &750_000_i128, &expiration);
     let allowance = token_client.allowance(&contract_id, &blend_pool);
     assert!(allowance > 0);
     assert_eq!(expiration, env.ledger().sequence() + 30_000);

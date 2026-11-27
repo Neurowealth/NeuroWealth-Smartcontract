@@ -104,15 +104,42 @@ export async function getPortfolioValueHistory(
 
   if (!snapshots || snapshots.length === 0) return [];
 
-  let prevAssets = 0;
-  return [...snapshots].reverse().map((s) => {
-    const assets = parseFloat(String(s.total_assets));
-    const date = new Date(s.timestamp);
-    const label = `${date.toLocaleString("en-US", { month: "short" })} ${date.getDate()}`;
-    const yieldVal = Number((assets - prevAssets).toFixed(2));
-    prevAssets = assets;
-    return { date: label, value: Number(assets.toFixed(2)), yield: yieldVal };
-  });
+  const snapshotsByDate = new Map<string, (typeof snapshots)[number]>();
+  for (const snapshot of snapshots) {
+    const date = new Date(snapshot.timestamp).toISOString().slice(0, 10);
+    const existing = snapshotsByDate.get(date);
+    if (!existing || snapshot.timestamp > existing.timestamp) {
+      snapshotsByDate.set(date, snapshot);
+    }
+  }
+
+  const firstSnapshotDate = [...snapshotsByDate.keys()].sort()[0];
+  if (!firstSnapshotDate) return [];
+
+  const { data: earnings } = await supabase
+    .from("earnings_history")
+    .select("daily_earnings, date")
+    .eq("user_id", user.id)
+    .gte("date", firstSnapshotDate)
+    .order("date", { ascending: true });
+
+  const earningsByDate = new Map<string, number>();
+  for (const entry of earnings ?? []) {
+    earningsByDate.set(
+      entry.date,
+      parseFloat(String(entry.daily_earnings)),
+    );
+  }
+
+  return Array.from(snapshotsByDate.entries())
+    .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+    .map(([dateKey, snapshot]) => {
+      const assets = parseFloat(String(snapshot.total_assets));
+      const date = new Date(snapshot.timestamp);
+      const label = `${date.toLocaleString("en-US", { month: "short", timeZone: "UTC" })} ${date.getUTCDate()}`;
+      const yieldVal = Number((earningsByDate.get(dateKey) ?? 0).toFixed(2));
+      return { date: label, value: Number(assets.toFixed(2)), yield: yieldVal };
+    });
 }
 
 export async function getRecentTransactions(
