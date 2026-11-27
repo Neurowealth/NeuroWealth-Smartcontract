@@ -133,18 +133,22 @@ describe('parseIntent – strategy changes', () => {
     });
   }
 
-  // 'balanced' contains the substring 'balance' which triggers the BALANCE
-  // check before the STRATEGY check, so we phrase this to include the full
-  // word 'balanced' but avoid the standalone word 'balance' matching first.
-  // The intentParser checks `clean.includes('balance')` which matches inside
-  // 'balanced', so any phrase with 'balanced' triggers BALANCE. We test the
-  // correct behaviour: 'switch to balanced' routes through BALANCE (the parser
-  // design), so we verify it and accept the actual result.
-  test('"switch to balanced" routes to BALANCE due to substring match in intentParser', () => {
-    // 'balanced' contains 'balance' — parser hits BALANCE check first.
-    // This documents the known parser priority behaviour.
+  // FIXED (issue #1167): 'switch to balanced' now correctly routes to
+  // STRATEGY/balanced. The previous assertion documented and locked the
+  // broken behavior — the balance check used `clean.includes('balance')`
+  // which matched the substring inside 'balanced', so the strategy-change
+  // branch never ran for 'balanced'. The balance check now uses
+  // /\bbalance\b/i which only matches 'balance' as a whole word.
+  test('"switch to balanced" routes to STRATEGY/balanced (issue #1167)', () => {
     const r = parseIntent('switch to balanced');
-    assert.equal(r.type, 'BALANCE');
+    assert.equal(r.type, 'STRATEGY');
+    assert.equal(r.strategy, 'balanced');
+  });
+
+  // Regression: 'switch to balanced' must NOT route to BALANCE.
+  test('"switch to balanced" does NOT route to BALANCE (issue #1167 regression)', () => {
+    const r = parseIntent('switch to balanced');
+    assert.notEqual(r.type, 'BALANCE');
   });
 
   test('"change strategy conservative" returns STRATEGY', () => {

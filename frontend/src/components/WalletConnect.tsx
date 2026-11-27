@@ -42,6 +42,7 @@ export const WalletConnect: React.FC<WalletConnectProps> = ({
 
   return (
     <button
+      id="connect-wallet-btn"
       onClick={onConnect}
       disabled={isConnecting}
       className="relative group flex items-center gap-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-semibold px-5 py-2.5 rounded-full transition-all shadow-glow-emerald hover:shadow-lg disabled:opacity-50"

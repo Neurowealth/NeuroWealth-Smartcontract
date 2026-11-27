@@ -2,6 +2,8 @@ process.env.ENCRYPTION_KEY = 'test-encryption-key-at-least-32-chars!!';
 process.env.PHONE_HASH_SALT = 'test-phone-salt';
 
 const calls: any[] = [];
+let retryCalls = 0;
+let applyResult: { applied: boolean; created: boolean } = { applied: true, created: true };
 let shouldThrow = false;
 
 const messageDeliveryServicePath = require.resolve('../messageDeliveryService');
@@ -13,7 +15,11 @@ require.cache[messageDeliveryServicePath] = {
     applyDeliveryStatus: async (callback: any) => {
       calls.push(callback);
       if (shouldThrow) throw new Error('db unavailable');
-      return { applied: true, created: true };
+      return applyResult;
+    },
+    retryFailedDelivery: async () => {
+      retryCalls += 1;
+      return { retried: true, escalated: false };
     },
   },
   parent: null,
@@ -44,6 +50,8 @@ function makeRes() {
 
 beforeEach(() => {
   calls.length = 0;
+  retryCalls = 0;
+  applyResult = { applied: true, created: true };
   shouldThrow = false;
 });
 
@@ -76,6 +84,27 @@ describe('handleDeliveryStatusCallback', () => {
 
     assert.equal(res.statusCode, 200);
     assert.equal(res.sent, true);
+  });
+
+  test('does not retry a repeated failure callback that did not change status', async () => {
+    applyResult = { applied: false, created: false };
+    const req: any = { body: { MessageSid: 'SM999', MessageStatus: 'failed' } };
+    const res = makeRes();
+
+    await handleDeliveryStatusCallback(req, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(retryCalls, 0);
+  });
+
+  test('retries once when a failure callback applies a status transition', async () => {
+    const req: any = { body: { MessageSid: 'SM999', MessageStatus: 'failed' } };
+    const res = makeRes();
+
+    await handleDeliveryStatusCallback(req, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(retryCalls, 1);
   });
 
   test('forwards a callback field exactly at the limit and drops one byte over before persistence', async () => {

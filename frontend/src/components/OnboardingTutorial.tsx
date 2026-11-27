@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, ChevronRight, ChevronLeft, Wallet, TrendingUp, ArrowDownCircle, PieChart, CheckCircle } from 'lucide-react';
 
 interface TutorialStep {
@@ -48,10 +48,20 @@ const STEPS: TutorialStep[] = [
 
 const COMPLETION_KEY = 'neurowealth-onboarding-completed';
 
+function focusableIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((node) => !node.hasAttribute('disabled'));
+}
+
 export function OnboardingTutorial() {
   const [isOpen, setIsOpen] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const completed = localStorage.getItem(COMPLETION_KEY);
@@ -60,6 +70,56 @@ export function OnboardingTutorial() {
       return () => clearTimeout(timer);
     }
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    previouslyFocused.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    const targetId = STEPS[currentStep]?.target;
+    const target = targetId ? document.getElementById(targetId) : null;
+    if (target) {
+      target.scrollIntoView({ block: 'nearest' });
+      target.style.outline = '2px solid rgb(16 185 129)';
+      target.style.outlineOffset = '4px';
+    }
+    const nodes = dialog ? focusableIn(dialog) : [];
+    (nodes[0] ?? dialog)?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        localStorage.setItem(COMPLETION_KEY, 'true');
+        setIsOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !dialog) return;
+      const items = focusableIn(dialog);
+      if (items.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      if (target) {
+        target.style.outline = '';
+        target.style.outlineOffset = '';
+      }
+      previouslyFocused.current?.focus();
+    };
+  }, [isOpen, currentStep]);
 
   const handleNext = () => {
     if (currentStep < STEPS.length - 1) {
@@ -93,7 +153,15 @@ export function OnboardingTutorial() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="glass-panel rounded-2xl p-6 max-w-md w-full mx-4 relative">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="onboarding-title"
+        aria-describedby="onboarding-description"
+        tabIndex={-1}
+        className="glass-panel rounded-2xl p-6 max-w-md w-full mx-4 relative outline-none"
+      >
         <button
           onClick={skip}
           className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
@@ -121,8 +189,8 @@ export function OnboardingTutorial() {
           <div className="p-4 rounded-2xl bg-emerald-500/10 text-emerald-400 mb-4">
             {step.icon}
           </div>
-          <h3 className="text-xl font-bold text-white mb-2">{step.title}</h3>
-          <p className="text-slate-400 text-sm leading-relaxed">{step.description}</p>
+          <h3 id="onboarding-title" className="text-xl font-bold text-white mb-2">{step.title}</h3>
+          <p id="onboarding-description" className="text-slate-400 text-sm leading-relaxed">{step.description}</p>
         </div>
 
         <div className="flex items-center justify-between">

@@ -12,11 +12,7 @@
  * response.
  */
 
-process.env.ENCRYPTION_KEY = 'test-encryption-key-at-least-32-chars!!';
-process.env.PHONE_HASH_SALT = 'test-phone-salt';
-process.env.VAULT_CONTRACT_ID = 'CTEST_VAULT_CONTRACT_ID';
-process.env.SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
-
+import '../testBootstrap';
 import { test, describe, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { VaultClient, VaultError, VaultErrorCode } from '@neurowealth/vault-client';
@@ -24,6 +20,7 @@ import { createCustodialWallet } from '../walletService';
 import {
   getPortfolio,
   handleDeposit,
+  handleStrategyUpdate,
   handleWithdraw,
 } from '../vaultRouter';
 
@@ -53,9 +50,7 @@ describe('getPortfolio', () => {
   beforeEach(() => {
     mock.method(VaultClient.prototype, 'get_balance', () => Promise.resolve(1_000_0000000n));
     mock.method(VaultClient.prototype, 'get_user_strategy', () => Promise.resolve('growth'));
-    mock.method(VaultClient.prototype, 'get_exchange_rate', () => Promise.resolve(10_500_0000n));
-    mock.method(VaultClient.prototype, 'get_total_assets', () => Promise.resolve(2_000_0000000n));
-    mock.method(VaultClient.prototype, 'get_total_shares', () => Promise.resolve(1_800_0000000n));
+    mock.method(VaultClient.prototype, 'get_user_apy', () => Promise.resolve(850n));
   });
 
   test('returns portfolio with required numeric fields', async () => {
@@ -68,10 +63,12 @@ describe('getPortfolio', () => {
     assert.ok(typeof p.strategy === 'string' && p.strategy.length > 0);
   });
 
-  test('scales raw stroops by 10^7 and maps the strategy name', async () => {
+  test('scales raw stroops by 10^7, reads contract APY, and computes USD 1:1 with USDC', async () => {
     const hash = await setupWallet();
     const p = await getPortfolio(hash);
     assert.equal(p.balance, 1_000);
+    assert.equal(p.usdEquivalent, 1_000);
+    assert.equal(p.apy, 8.5);
     assert.equal(p.strategy, 'Growth');
   });
 
@@ -140,9 +137,14 @@ describe('handleDeposit', () => {
 
   test('message includes the strategy when provided', async () => {
     mock.method(VaultClient.prototype, 'deposit', () => Promise.resolve({ hash: FAKE_HASH }));
+    const strategyMock = mock.method(VaultClient.prototype, 'set_user_strategy', () =>
+      Promise.resolve({ hash: FAKE_HASH }),
+    );
     const hash = await setupWallet();
     const result = await handleDeposit(hash, 100, 'growth');
     assert.match(result.message, /growth/i);
+    assert.equal(strategyMock.mock.callCount(), 1);
+    assert.equal(strategyMock.mock.calls[0].arguments[2], 'growth');
   });
 
   test('uses Balanced strategy when none is provided', async () => {
@@ -263,5 +265,46 @@ describe('handleWithdraw', () => {
 
     assert.equal(result.success, false);
     assert.equal(result.txHash, '');
+  });
+});
+
+describe('handleStrategyUpdate', () => {
+  test('submits set_user_strategy and returns that transaction hash', async () => {
+    const strategyMock = mock.method(VaultClient.prototype, 'set_user_strategy', () =>
+      Promise.resolve({ hash: FAKE_HASH }),
+    );
+    const hash = await setupWallet();
+    const result = await handleStrategyUpdate(hash, 'growth');
+
+    assert.equal(result.success, true);
+    assert.equal(result.txHash, FAKE_HASH);
+    assert.match(result.message, /GROWTH/);
+    assert.equal(strategyMock.mock.callCount(), 1);
+    assert.equal(strategyMock.mock.calls[0].arguments[2], 'growth');
+    assert.doesNotMatch(result.txHash, /^0x/);
+  });
+
+  test('rejects an unknown strategy without calling the vault', async () => {
+    const strategyMock = mock.method(VaultClient.prototype, 'set_user_strategy', () =>
+      Promise.resolve({ hash: FAKE_HASH }),
+    );
+    const hash = await setupWallet();
+    const result = await handleStrategyUpdate(hash, 'INVALID');
+
+    assert.equal(result.success, false);
+    assert.equal(result.txHash, '');
+    assert.equal(strategyMock.mock.callCount(), 0);
+  });
+
+  test('maps a VaultError to a friendly message', async () => {
+    mock.method(VaultClient.prototype, 'set_user_strategy', () =>
+      Promise.reject(new VaultError(VaultErrorCode.Paused, 'Vault contract error 1')),
+    );
+    const hash = await setupWallet();
+    const result = await handleStrategyUpdate(hash, 'balanced');
+
+    assert.equal(result.success, false);
+    assert.match(result.message, /paused/i);
+    assert.doesNotMatch(result.message, /VaultError|contract error/i);
   });
 });

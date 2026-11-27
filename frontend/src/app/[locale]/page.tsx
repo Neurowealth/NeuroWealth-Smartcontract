@@ -21,6 +21,15 @@ import {
   ChartDataPoint,
   TransactionRecord
 } from '@/lib/database';
+import { sanitizeErrorMessage } from '@/lib/errorSanitizer';
+
+function weekOverWeekPercent(data: ChartDataPoint[]): number | null {
+  if (data.length < 2) return null;
+  const first = data[0]?.value;
+  const last = data[data.length - 1]?.value;
+  if (typeof first !== 'number' || typeof last !== 'number' || first === 0) return null;
+  return ((last - first) / first) * 100;
+}
 
 export default function DashboardPage() {
   const t = useTranslations('Index');
@@ -79,7 +88,7 @@ export default function DashboardPage() {
     } catch (err) {
       if (signal?.aborted) return;
       console.error('Failed to load dashboard data:', err);
-      setError(err instanceof Error ? err.message : t('vaultBalancesError'));
+      setError(sanitizeErrorMessage(err));
     } finally {
       if (!signal?.aborted) {
         setLoading(false);
@@ -126,10 +135,10 @@ export default function DashboardPage() {
       if (res.ok) {
         await loadData();
       } else {
-        setStrategyError(res.error || 'Failed to update strategy on-chain.');
+        setStrategyError(sanitizeErrorMessage(res.error || 'Failed to update strategy on-chain.'));
       }
     } catch (err: unknown) {
-      setStrategyError(err instanceof Error ? err.message : 'Failed to update strategy on-chain.');
+      setStrategyError(sanitizeErrorMessage(err));
     } finally {
       setIsUpdatingStrategy(false);
     }
@@ -204,6 +213,7 @@ export default function DashboardPage() {
                   <StrategyBadge
                     strategy={vaultState.strategy}
                     apy={vaultState.apy}
+                    weekDelta={weekOverWeekPercent(chartData)}
                     onSelectStrategy={handleSelectStrategy}
                     isUpdating={isUpdatingStrategy}
                     error={strategyError}
@@ -219,12 +229,12 @@ export default function DashboardPage() {
                 <div className="glass-panel rounded-2xl p-6 h-64 flex items-center justify-center">
                   <Loader2 className="animate-spin text-emerald-400" size={24} />
                 </div>
+              ) : chartData.length === 0 ? (
+                <div role="status" className="glass-panel rounded-2xl p-6 text-sm text-slate-600 dark:text-slate-300">
+                  No portfolio history yet. Performance shows up here after a connected wallet has vault history.
+                </div>
               ) : (
-                <PortfolioChart data={chartData.length > 0 ? chartData : [
-                  { date: 'Jul 21', value: 1000, yield: 0 },
-                  { date: 'Jul 24', value: 1200, yield: 15 },
-                  { date: 'Jul 28', value: 1450, yield: 45 }
-                ]} />
+                <PortfolioChart data={chartData} />
               )}
             </section>
           </ErrorBoundary>

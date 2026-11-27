@@ -306,6 +306,8 @@ fn test_withdraw_asset_burns_shares_and_transfers() {
     client.deposit_asset(&user, &asset(&env, USDC), &amount);
     client.deposit_asset(&user, &asset(&env, USDT), &amount);
 
+    // Clear the default flash-loan holding period so the withdrawal is allowed.
+    client.set_min_holding_period(&0_u32);
     client.withdraw_asset(&user, &asset(&env, USDC), &40_000_000);
 
     assert_eq!(
@@ -322,7 +324,14 @@ fn test_withdraw_asset_burns_shares_and_transfers() {
 
     let events = find_events_by_topic(env.events().all(), &env, TOPIC_ASSET_WITHDRAW);
     assert_eq!(events.len(), 1);
-    let (_, _, data) = &events[0];
+    let (_, topics, data) = &events[0];
+    // Topic 1 is the user and topic 2 the asset, matching the documented schema
+    // so asset-filtering indexers see withdrawals the same way as deposits.
+    assert_eq!(topics.len(), 3);
+    let topic_user = Address::try_from_val(&env, &topics.get(1).unwrap()).expect("user topic");
+    assert_eq!(topic_user, user);
+    let topic_asset = Symbol::try_from_val(&env, &topics.get(2).unwrap()).expect("asset topic");
+    assert_eq!(topic_asset, asset(&env, USDC));
     let ev = AssetWithdrawEvent::try_from_val(&env, data).expect("asset withdraw event");
     assert_eq!(ev.asset, asset(&env, USDC));
     assert_eq!(ev.amount, 40_000_000);
