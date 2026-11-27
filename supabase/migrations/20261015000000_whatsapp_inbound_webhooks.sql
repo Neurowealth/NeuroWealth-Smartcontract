@@ -33,5 +33,6 @@ CREATE INDEX IF NOT EXISTS idx_whatsapp_inbound_webhooks_status_updated
 
 ALTER TABLE whatsapp_inbound_webhooks ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS whatsapp_inbound_webhooks_service_role_all ON whatsapp_inbound_webhooks;
 CREATE POLICY whatsapp_inbound_webhooks_service_role_all ON whatsapp_inbound_webhooks
     AS PERMISSIVE FOR ALL TO service_role USING (true) WITH CHECK (true);
