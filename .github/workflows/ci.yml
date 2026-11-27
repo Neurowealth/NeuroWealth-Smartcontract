@@ -315,8 +315,12 @@ jobs:
               WASM_SIZE=$(stat -c%s "$WASM_FILE")
               LIMIT="${WASM_SIZE_LIMIT_BYTES:-1500000}"
               BASE_BRANCH="${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
-              BASELINE_FILE=".github/wasm-size-history.json"
-              BASELINE_SOURCE_FILE="$BASELINE_FILE"
+              # BASELINE_FILE is a filesystem path (this step runs in
+              # neurowealth-vault/); BASELINE_SOURCE_FILE is a git path used
+              # with `git show origin/$BASE_BRANCH:<path>` and must stay
+              # repo-root relative.
+              BASELINE_FILE="../.github/wasm-size-history.json"
+              BASELINE_SOURCE_FILE=".github/wasm-size-history.json"
               BASELINE_SIZE=""
               DELTA_BYTES=""
               DELTA_DISPLAY="n/a"
@@ -371,11 +375,13 @@ jobs:
               fi
 
               if [ "$GITHUB_EVENT_NAME" = "push" ] && { [ "$GITHUB_REF_NAME" = "main" ] || [ "$GITHUB_REF_NAME" = "develop" ]; }; then
-                python3 scripts/update_wasm_baseline.py "$WASM_SIZE" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_FILE"
+                python3 ../scripts/update_wasm_baseline.py "$WASM_SIZE" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_FILE"
               fi
 
-              # Validate storage layout compatibility gate
-              mkdir -p scripts/e2e-artifacts
+              # Validate storage layout compatibility gate.
+              # NOTE: this step runs with working-directory=neurowealth-vault,
+              # so repo-root paths must be prefixed with ../.
+              mkdir -p ../scripts/e2e-artifacts
               BASELINE_WASM=""
               if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && git rev-parse --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
                 BASELINE_WORKTREE="$RUNNER_TEMP/baseline-repo"
@@ -401,18 +407,18 @@ jobs:
 
               if [ -n "$BASELINE_WASM" ] && [ -f "$BASELINE_WASM" ]; then
                 echo "Running storage layout compatibility gate against baseline WASM..."
-                python3 scripts/check-storage-layout.py \
+                python3 ../scripts/check-storage-layout.py \
                   "$BASELINE_WASM" \
                   "$WASM_FILE" \
-                  --migration-doc docs/UPGRADE_MIGRATION.md \
-                  --output scripts/e2e-artifacts/storage_layout_diff.txt
+                  --migration-doc ../docs/UPGRADE_MIGRATION.md \
+                  --output ../scripts/e2e-artifacts/storage_layout_diff.txt
               else
                 echo "No baseline WASM available. Inspecting candidate WASM DataKey schema..."
-                python3 scripts/check-storage-layout.py \
+                python3 ../scripts/check-storage-layout.py \
                   "$WASM_FILE" \
                   "$WASM_FILE" \
                   --allow-identical \
-                  --output scripts/e2e-artifacts/storage_layout_diff.txt
+                  --output ../scripts/e2e-artifacts/storage_layout_diff.txt
               fi
 
               # Export the WASM path for the artifact upload step.
@@ -739,7 +745,12 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust nightly
+        # Pinned: unpinned `nightly` broke the libFuzzer link with undefined
+        # `__sancov_gen_*` symbols (sanitizer-coverage regression). This date
+        # matches the last green CI run (2026-06-24).
         uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04
+        with:
+          toolchain: nightly-2026-06-23
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
@@ -778,7 +789,12 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust nightly
+        # Pinned: unpinned `nightly` broke the libFuzzer link with undefined
+        # `__sancov_gen_*` symbols (sanitizer-coverage regression). This date
+        # matches the last green CI run (2026-06-24).
         uses: dtolnay/rust-toolchain@2c76c034f9e32a5d6e2c104dc4df23a22476db04
+        with:
+          toolchain: nightly-2026-06-23
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
