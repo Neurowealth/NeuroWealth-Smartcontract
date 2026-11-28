@@ -2254,6 +2254,16 @@ export class VaultClient {
   }
 
   /**
+   * Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit
+   * @param user
+   * @param asset
+   */
+  async touch_user_asset_ttl(signer: StellarSdk.Keypair, user: string, asset: string): Promise<TxResult<boolean>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(asset, { type: 'symbol' })];
+    return this.invoke<boolean>('touch_user_asset_ttl', args, signer);
+  }
+
+  /**
    * Get complete user information and statistics
    * @param user
    */

@@ -2477,6 +2477,31 @@
       "query_only": false
     },
     {
+      "name": "touch_user_asset_ttl",
+      "category": "maintenance",
+      "access": "user",
+      "description": "Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "asset",
+          "type": "Symbol"
+        }
+      ],
+      "returns": "bool",
+      "requires_auth": true,
+      "state_changing": true,
+      "storage_type": "mixed",
+      "query_only": false
+    },
+    {
       "name": "get_user_info",
       "category": "queries",
       "access": "public",
