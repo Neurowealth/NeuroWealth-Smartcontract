@@ -585,10 +585,10 @@ FUNCTION_METADATA = {
     "touch_user_asset_ttl": {
         "category": "maintenance",
         "access": "user",
-        "description": "Extend the persistent TTL for a user's multi-asset shares entry",
+        "description": "Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit",
         "requires_auth": True,
         "state_changing": True,
-        "storage_type": "persistent",
+        "storage_type": "mixed",
         "query_only": False
     },
     "add_allowed_migration_source": {

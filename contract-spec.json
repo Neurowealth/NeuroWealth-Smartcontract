@@ -2499,7 +2499,7 @@
       "name": "touch_user_asset_ttl",
       "category": "maintenance",
       "access": "user",
-      "description": "Extend the persistent TTL for a user's multi-asset shares entry",
+      "description": "Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit",
       "parameters": [
         {
           "name": "env",
@@ -2517,7 +2517,7 @@
       "returns": "bool",
       "requires_auth": true,
       "state_changing": true,
-      "storage_type": "persistent",
+      "storage_type": "mixed",
       "query_only": false
     },
     {

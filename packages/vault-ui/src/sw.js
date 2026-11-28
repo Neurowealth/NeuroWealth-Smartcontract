@@ -1,3 +1,11 @@
+import { precacheAndRoute } from 'workbox-precaching';
+
+// Workbox injects the precache manifest here at build time (injectManifest
+// strategy). This keeps the original generateSW precaching behavior while
+// allowing the custom push/notification handlers below to live in the same
+// service worker, avoiding the sw.js path collision (#1183).
+precacheAndRoute(self.__WB_MANIFEST);
+
 /* NeuroWealth vault notification service worker (Issue #669). */
 
 self.addEventListener('push', event => {

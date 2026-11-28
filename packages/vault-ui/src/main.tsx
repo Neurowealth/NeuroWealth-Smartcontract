@@ -3,11 +3,9 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 
-if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    void navigator.serviceWorker.register('/sw.js');
-  });
-}
+// The service worker is registered automatically by vite-plugin-pwa
+// (injectRegister: 'auto'), so no manual registration is required here.
+// Registering manually would collide with the plugin's injected script (#1183).
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
