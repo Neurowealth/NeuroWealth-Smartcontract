@@ -2500,7 +2500,6 @@
       "category": "maintenance",
       "access": "user",
       "description": "Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit",
-      "description": "Extend the persistent TTL for a user's multi-asset shares entry",
       "parameters": [
         {
           "name": "env",
@@ -2519,7 +2518,6 @@
       "requires_auth": true,
       "state_changing": true,
       "storage_type": "mixed",
-      "storage_type": "persistent",
       "query_only": false
     },
     {

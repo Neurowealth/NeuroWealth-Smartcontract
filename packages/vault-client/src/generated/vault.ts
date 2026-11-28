@@ -2267,7 +2267,6 @@ export class VaultClient {
 
   /**
    * Extend persistent TTL for a user's multi-asset Shares entry with a per-user rate limit
-   * Extend the persistent TTL for a user's multi-asset shares entry
    * @param user
    * @param asset
    */
