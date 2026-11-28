@@ -351,6 +351,29 @@ pub enum VaultError {
     /// assets (#973). Minting here would value those existing holders'
     /// shares at zero, so the deposit is rejected instead.
     DepositRejectedZeroAssetsWithShares = 93,
+    /// Migration blocked: user has pending queued-withdrawal reservations (#1159).
+    ///
+    /// `migrate_shares` zeros the user's share balance, but `burn_and_pay`
+    /// explicitly refuses to settle a pending request whose reservation has
+    /// no backing shares. The migration must be blocked until all pending
+    /// reservations are cancelled or fulfilled.
+    PendingWithdrawalExists = 94,
+    /// `receive_migration` rejected: `source_vault` is not on the owner-managed
+    /// allow-list (`DataKeyExt::AllowedMigrationSources`) (#1086).
+    ///
+    /// Any caller can claim an arbitrary `source_vault` address and self-authorize
+    /// the sub-call. Without an explicit allow-list this would let an attacker
+    /// mint unbacked shares. The owner must register legitimate source vaults
+    /// via `add_allowed_migration_source` before migration can proceed.
+    UnauthorizedMigrationSource = 95,
+    /// `set_blend_pool` / `set_dex_pool` rejected: the currently configured
+    /// pool still holds vault funds (#515).
+    ///
+    /// Every deployed-funds lookup reads the pool address from storage, so
+    /// overwriting it while a position is open would strand those funds in
+    /// the old pool with no way to exit them. The owner must first rebalance
+    /// the position out (or fully withdraw) before rotating the address.
+    PoolRotationWhileDeployed = 96,
 }
 
 impl VaultError {
@@ -659,6 +682,13 @@ pub enum DataKeyExt {
     /// request, so queuing several requests that together exceed the
     /// user's real balance is rejected instead of silently allowed.
     ReservedWithdrawalAmount(Address),
+    /// Allow-listed source vault addresses for `receive_migration` (#1086).
+    ///
+    /// Stored as a `Vec<Address>` in instance storage. Only source vaults
+    /// explicitly registered by the owner via `add_allowed_migration_source`
+    /// are permitted to call `receive_migration`. An absent key means no
+    /// source vault has been approved yet.
+    AllowedMigrationSources,
 }
 
 /// Owner-configured allowance for one rate-limit category.
@@ -3076,6 +3106,43 @@ impl NeuroWealthVault {
         Self::require_not_paused(&env);
         Self::require_positive_amount(&env, amount);
 
+        // #1086: Verify source_vault is on the owner-managed allow-list.
+        // `source_vault.require_auth()` only proves the named address authorized
+        // the sub-call; an attacker-controlled contract can self-authorize just
+        // as the legitimate path does, letting it mint unbacked shares.
+        // The allow-list is the second gate that makes the check meaningful.
+        let allowed_sources: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+        let is_allowed = allowed_sources.iter().any(|a| a == source_vault);
+        Self::require(&env, is_allowed, VaultError::UnauthorizedMigrationSource);
+
+        // #1086: Verify an actual USDC transfer occurred by checking the
+        // balance delta. The source vault must have already transferred `amount`
+        // into this contract before calling receive_migration.  Comparing the
+        // pre-call balance against `amount` confirms the receipt without
+        // requiring the caller to pass the pre-call value as an argument
+        // (which would be forgeable).
+        let usdc_token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::UsdcToken)
+            .unwrap_or_else(|| panic_with_error!(&env, VaultError::NotInitialized));
+        let usdc_client = token::Client::new(&env, &usdc_token_addr);
+        let current_balance = usdc_client.balance(&env.current_contract_address());
+        // The expected minimum balance after the inbound transfer:
+        // any attacker who hasn't actually moved USDC will fail here because
+        // their `amount` claim won't match the real on-chain balance.
+        // We use `>=` so that concurrent operations that also increase the
+        // balance (e.g., deposits) don't create false negatives.
+        Self::require(
+            &env,
+            current_balance >= amount,
+            VaultError::InsufficientBalanceForAssets,
+        );
+
         let shares_to_mint = Self::convert_to_shares_internal(&env, amount);
         Self::require(
             &env,
@@ -3378,17 +3445,19 @@ impl NeuroWealthVault {
             USER_SHARES_TTL_EXTEND_TO,
         );
 
-        for i in 0..total_entries {
-            let (_token, amount) = entries.get(i).unwrap();
-            env.events().publish(
-                (TOPIC_DEPOSIT, user.clone()),
-                DepositEvent {
-                    user: user.clone(),
-                    amount,
-                    shares: shares_to_mint,
-                },
-            );
-        }
+        // Emit one aggregate DepositEvent for the whole batch so that indexers
+        // summing `shares` across events get the correct total (not N × shares_to_mint).
+        // The doc comment at the top of this function already states "one event per
+        // *batch*"; the previous per-entry loop overcounted by (N-1) × shares_to_mint
+        // (#1087).
+        env.events().publish(
+            (TOPIC_DEPOSIT, user.clone()),
+            DepositEvent {
+                user: user.clone(),
+                amount: total_amount,
+                shares: shares_to_mint,
+            },
+        );
     }
 
     // ==========================================================================
@@ -3693,7 +3762,8 @@ impl NeuroWealthVault {
         let configured_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
         if config.token_address == configured_token
             && (current_protocol == symbol_short!("blend")
-                || current_protocol == symbol_short!("dex"))
+                || current_protocol == symbol_short!("dex")
+                || current_protocol == symbol_short!("multi"))
         {
             let vault_balance = token_client.balance(&env.current_contract_address());
             if vault_balance < assets_to_return {
@@ -3843,6 +3913,14 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+        // Ensure user has no reserved shares from pending withdrawals before migrating
+        let reserved_shares = Self::read_reserved_withdrawal_shares(&env, &user);
+        Self::require(
+            &env,
+            reserved_shares == 0,
+            VaultError::PendingWithdrawalExists,
+        );
+
         Self::require(&env, user_shares > 0, VaultError::NoSharesToMigrate);
 
         // migrate_shares always moves the user's entire position (there is
@@ -5397,6 +5475,20 @@ impl NeuroWealthVault {
                 Self::supply_to_blend(&env, withdrawn, min_out, true);
             } else if current_protocol == symbol_short!("dex") {
                 Self::supply_to_dex(&env, withdrawn, min_out, true);
+            } else if current_protocol == symbol_short!("multi") {
+                // #1091 - multi mode exits both venues, so re-supply both by the
+                // stored allocation exactly like harvest() does. Without this
+                // the whole withdrawn amount stayed idle in the vault.
+                let (blend_bps, dex_bps) = Self::read_allocation(&env);
+                let (blend_to_supply, dex_to_supply) =
+                    Self::split_by_bps(withdrawn, blend_bps, dex_bps);
+                if blend_to_supply > 0 {
+                    Self::supply_to_blend(&env, blend_to_supply, min_out, false);
+                }
+                if dex_to_supply > 0 {
+                    Self::supply_to_dex(&env, dex_to_supply, min_out, false);
+                }
+                Self::sync_deployed_split(&env);
             }
         }
 
@@ -5626,6 +5718,40 @@ impl NeuroWealthVault {
             (TOPIC_MIGRATION_PAUSED,),
             MigrationPausedEvent { paused, owner },
         );
+    }
+
+    /// Registers a source vault address as an allowed caller of `receive_migration`.
+    ///
+    /// Part of the fix for #1086: `receive_migration` now rejects any
+    /// `source_vault` that has not been explicitly approved by the owner.
+    /// Call this function once for each legitimate source vault before
+    /// initiating migration.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment.
+    /// * `source_vault` - The source vault address to allow.
+    ///
+    /// # Panics
+    ///
+    /// - If the caller is not the owner.
+    pub fn add_allowed_migration_source(env: Env, source_vault: Address) {
+        Self::require_initialized(&env);
+        Self::require_is_owner(&env);
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKeyExt::AllowedMigrationSources)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Avoid duplicates.
+        if !allowed.iter().any(|a| a == source_vault) {
+            allowed.push_back(source_vault.clone());
+            env.storage()
+                .instance()
+                .set(&DataKeyExt::AllowedMigrationSources, &allowed);
+        }
     }
 
     // ==========================================================================
@@ -7571,11 +7697,21 @@ impl NeuroWealthVault {
             return;
         }
 
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let vault_address = env.current_contract_address();
+
+        // Reject rotation while the currently configured pool still holds
+        // vault funds (#515): every deployed-funds lookup reads
+        // `DataKey::BlendPool`, so overwriting it now would strand the
+        // position in the old pool with no way to exit it.
+        if let Some(old) = old_pool.as_ref() {
+            let deployed = BlendPoolClient::get_balance(&env, old, &usdc_token, &vault_address);
+            Self::require(&env, deployed == 0, VaultError::PoolRotationWhileDeployed);
+        }
+
         // Validate pool interface by probing the `balance` function (Issue #148).
         // If the address is not a valid Blend pool contract the invocation will
         // panic here, rejecting the registration before the address is stored.
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let vault_address = env.current_contract_address();
         BlendPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
         env.storage()
@@ -7639,11 +7775,19 @@ impl NeuroWealthVault {
             return;
         }
 
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
+        let vault_address = env.current_contract_address();
+
+        // Same stranding guard as `set_blend_pool` (#515): refuse to rotate
+        // while the configured pool still holds vault funds.
+        if let Some(old) = old_pool.as_ref() {
+            let deployed = DexPoolClient::get_balance(&env, old, &usdc_token, &vault_address);
+            Self::require(&env, deployed == 0, VaultError::PoolRotationWhileDeployed);
+        }
+
         // Validate the pool interface by probing the `balance` function. If the
         // address is not a valid DEX pool contract the invocation panics here,
         // rejecting the registration before the address is stored.
-        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-        let vault_address = env.current_contract_address();
         DexPoolClient::get_balance(&env, &pool_address, &usdc_token, &vault_address);
 
         env.storage()
@@ -7976,7 +8120,7 @@ impl NeuroWealthVault {
             // The caller-supplied argument is ignored to prevent bypassing the cap.
             // Floor: 100 bps (1%) to prevent disabling decreases entirely.
             // Ceiling: 10_000 bps (100%) enforced by set_max_decrease_bps.
-            let stored_max_bps = env
+            let stored_max_bps: u32 = env
                 .storage()
                 .instance()
                 .get(&DataKey::MaxDecreaseBps)
@@ -8866,22 +9010,6 @@ impl NeuroWealthVault {
             .storage()
             .persistent()
             .has(&DataKey::Shares(user.clone()));
-        let has_lock = env
-            .storage()
-            .persistent()
-            .has(&DataKey::LockState(user.clone()));
-        let has_deposit = env
-            .storage()
-            .persistent()
-            .has(&DataKey::LastDepositLedger(user.clone()));
-        let has_snapshot = env
-            .storage()
-            .persistent()
-            .has(&DataKeyExt::DepositSnapshot(user.clone()));
-        let has_strategy = env
-            .storage()
-            .persistent()
-            .has(&DataKey::UserStrategy(user.clone()));
 
         let mut has_asset_shares = false;
         let supported_assets: Vec<Symbol> = env
@@ -8900,7 +9028,10 @@ impl NeuroWealthVault {
             }
         }
 
-        if !has_shares && !has_lock && !has_deposit && !has_snapshot && !has_strategy && !has_asset_shares {
+        // Only a live share position counts: leftover metadata entries
+        // (lock state, deposit ledger, snapshot, strategy) without shares
+        // must not keep the address in the keeper set.
+        if !has_shares && !has_asset_shares {
             return false;
         }
 
@@ -9947,6 +10078,10 @@ impl NeuroWealthVault {
         // on an exact division and spuriously reject a legitimate
         // full-balance withdrawal request with InsufficientSharesForAmount.
         let shares_needed = if total_shares > 0 {
+            // #1090 - shares exist but the vault reports zero assets (reachable
+            // after an owner-cosigned write-down). Return a defined error
+            // instead of aborting on the division below.
+            Self::require(&env, total_assets > 0, VaultError::NoAssetsToWithdraw);
             let numerator = total_reserved_after
                 .checked_mul(total_shares)
                 .expect("vault: shares overflow");
@@ -10015,10 +10150,9 @@ impl NeuroWealthVault {
         env.storage()
             .instance()
             .set(&DataKeyExt::WithdrawalRequest(request_id), &request);
-        env.storage().instance().extend_ttl(
-            USER_SHARES_TTL_THRESHOLD,
-            USER_SHARES_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .instance()
+            .extend_ttl(USER_SHARES_TTL_THRESHOLD, USER_SHARES_TTL_EXTEND_TO);
 
         // Append to order queue
         let mut order: Vec<u32> = env
@@ -11447,6 +11581,7 @@ impl NeuroWealthVault {
             .persistent()
             .get(&DataKey::Shares(user.clone()))
             .unwrap_or(0_i128);
+
         let no_shares_error = if mode == BurnAndPayMode::All {
             VaultError::NoSharesToWithdraw
         } else {

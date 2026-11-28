@@ -1,4 +1,4 @@
-//! LibFuzzer harness: tests rounding at boundary conditions.
+//! `LibFuzzer` harness: tests rounding at boundary conditions.
 //!
 //! This target exercises edge cases in the vault's share-to-asset conversions:
 //! - Deposits/withdrawals at minimum and maximum limits
@@ -6,16 +6,16 @@
 //! - Boundary values that could cause rounding errors in integer division
 //!
 //! Allowed panics (documented vault validation):
-//! - `Error(Contract, #37)` — AmountMustBePositive
-//! - `Error(Contract, #38)` — BelowMinimumDeposit
-//! - `Error(Contract, #39)` — MaximumDepositExceeded
-//! - `Error(Contract, #40)` — ExceedsUserDepositCap
-//! - `Error(Contract, #41)` — ExceedsTvlCap
-//! - `Error(Contract, #7)`  — InsufficientLiquidity
-//! - `Error(Contract, #6)`  — SharesToMintMustBePositive
-//! - `Error(Contract, #8)`  — InsufficientShares
-//! - `Error(Contract, #10)` — SharesToBurnMustBePositive
-//! - `Error(Contract, #11)` — InsufficientSharesForRequestedAmount
+//! - `Error(Contract, #37)` — `AmountMustBePositive`
+//! - `Error(Contract, #38)` — `BelowMinimumDeposit`
+//! - `Error(Contract, #39)` — `MaximumDepositExceeded`
+//! - `Error(Contract, #40)` — `ExceedsUserDepositCap`
+//! - `Error(Contract, #41)` — `ExceedsTvlCap`
+//! - `Error(Contract, #7)`  — `InsufficientLiquidity`
+//! - `Error(Contract, #6)`  — `SharesToMintMustBePositive`
+//! - `Error(Contract, #8)`  — `InsufficientShares`
+//! - `Error(Contract, #10)` — `SharesToBurnMustBePositive`
+//! - `Error(Contract, #11)` — `InsufficientSharesForRequestedAmount`
 //! - Token transfer failures
 
 #![no_main]
@@ -36,6 +36,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -107,6 +108,9 @@ fn setup(env: &Env) -> (NeuroWealthVaultClient<'_>, Address, Address) {
     let user = Address::generate(env);
 
     client.initialize(&deployer, &owner, &agent, &usdc, &salt);
+    // Disable the default 120-ledger holding period (#659): the fuzz ledger
+    // never advances, so every withdraw would panic HoldingPeriodNotElapsed.
+    client.set_min_holding_period(&0u32);
 
     let token = FuzzTokenClient::new(env, &usdc);
     token.mint(&user, &TOKEN_FLOAT);
@@ -125,7 +129,12 @@ fn is_allowed_panic(msg: &str) -> bool {
         "Error(Contract, #6)",  // SharesToMintMustBePositive
         "Error(Contract, #8)",  // InsufficientShares
         "Error(Contract, #10)", // SharesToBurnMustBePositive
-        "Error(Contract, #11)", // InsufficientSharesForRequestedAmount
+        "Error(Contract, #11)", // InsufficientSharesForAmount
+        "Error(Contract, #9)",  // NoAssetsToWithdraw
+        "Error(Contract, #12)", // NoSharesToWithdraw
+        "Error(Contract, #13)", // NoLiquidityAvailable
+        "Error(Contract, #14)", // NoAssetsToReturn
+        "Error(Contract, #84)", // RateLimitExceeded
         "insufficient balance",
         "amount must be positive",
     ];
@@ -272,7 +281,7 @@ fuzz_target!(|data: &[u8]| {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
             }

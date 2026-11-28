@@ -68,7 +68,7 @@ export async function startLocalRpcServer(): Promise<LocalRpcServer> {
         const { method, params, scenario } = payload;
         let result: unknown;
 
-        if (method === 'connectWallet') result = 'GABCDE123456789WXYZ';
+        if (method === 'connectWallet') result = 'GAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQDZ7H';
         else if (method === 'getNetworkDetails') {
           result = { networkPassphrase: scenario === 'wrong-network' ? 'Wrong Network' : 'Test SDF Network ; September 2015' };
         } else if (method === 'signTransaction' && scenario === 'rejected') {

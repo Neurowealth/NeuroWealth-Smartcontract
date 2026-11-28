@@ -1,25 +1,28 @@
-//! Tests for pool address rotation while funds are deployed (Issue #383).
+//! Tests for pool address rotation while funds are deployed (Issues #383, #515).
 //!
-//! Verify that `set_blend_pool()` / `set_dex_pool()` succeeds even when the
-//! vault currently has funds deployed in the old pool, and that the next
-//! rebalance correctly exits the old pool before entering the new one.
+//! `set_blend_pool()` / `set_dex_pool()` rejects rotating to a different
+//! address while the currently configured pool still holds vault funds
+//! (`PoolRotationWhileDeployed`): every deployed-funds lookup reads the pool
+//! address from storage, so overwriting it would strand the position in the
+//! old pool. The owner must exit the position first; rotation then succeeds
+//! and the next rebalance deploys into the new pool.
 //!
-//! This is a realistic operational scenario: an owner might need to rotate
-//! a pool address (e.g., upgrading the pool contract itself). The vault must
-//! ensure the old pool is fully exited during the next rebalance before funds
-//! are deployed to the new pool.
+//! Also verifies that `set_blend_pool()` / `set_dex_pool()` succeeds while
+//! funds are deployed only in the *other* venue, and that idle rotations are
+//! unrestricted.
 
 use super::utils::*;
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
-/// Test that set_blend_pool() succeeds while funds are deployed, and the
-/// next rebalance exits the old pool and enters the new one.
+/// Test that set_blend_pool() is rejected while funds are deployed, and that
+/// after exiting the position the rotation succeeds and the next rebalance
+/// enters the new pool.
 #[test]
-fn test_blend_pool_rotation_while_deployed_exits_old_before_entering_new() {
+fn test_blend_pool_rotation_while_deployed_is_rejected_until_exit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
+    let (contract_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let old_pool_client = MockBlendPoolClient::new(&env, &old_pool);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -31,26 +34,32 @@ fn test_blend_pool_rotation_while_deployed_exits_old_before_entering_new() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // Rebalance to Blend — funds deployed to old pool
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
     assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
     assert_eq!(token_client.balance(&contract_id), 0_i128); // All deployed
 
-    // ROTATE: Create new pool and point to it
+    // ROTATE: rotation is rejected while the old pool holds funds (#96)
     let new_pool = env.register_contract(None, MockBlendPool);
     let new_pool_client = MockBlendPoolClient::new(&env, &new_pool);
+    assert!(
+        client.try_set_blend_pool(&owner, &new_pool).is_err(),
+        "pool rotation must be rejected while funds are deployed"
+    );
+    assert_eq!(client.get_blend_pool(), Some(old_pool.clone()));
+    assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
 
-    // set_blend_pool() should succeed even with funds deployed to old pool
+    // EXIT: rebalance to "none" recovers the funds to the vault.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(token_client.balance(&contract_id), deposit_amount);
+    assert_eq!(old_pool_client.supplied(&usdc_token), 0);
+
+    // ROTATE again: with nothing deployed the rotation succeeds.
     client.set_blend_pool(&owner, &new_pool);
     assert_eq!(client.get_blend_pool(), Some(new_pool.clone()));
 
-    // Verify vault still points to Blend protocol, but on next rebalance will use new pool
-    assert_eq!(client.get_current_protocol(), symbol_short!("blend"));
-
-    // REBALANCE: Exit old pool, enter new pool
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
-
-    // Verify the rotation: funds exited old pool, entered new pool
+    // REBALANCE: the recovered funds deploy into the new pool.
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(
         old_pool_client.supplied(&usdc_token),
         0,
@@ -73,14 +82,15 @@ fn test_blend_pool_rotation_while_deployed_exits_old_before_entering_new() {
     );
 }
 
-/// Test that set_dex_pool() succeeds while funds are deployed, and the next
-/// rebalance exits the old pool and enters the new one.
+/// Test that set_dex_pool() is rejected while funds are deployed, and that
+/// after exiting the position the rotation succeeds and the next rebalance
+/// enters the new pool.
 #[test]
-fn test_dex_pool_rotation_while_deployed_exits_old_before_entering_new() {
+fn test_dex_pool_rotation_while_deployed_is_rejected_until_exit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
+    let (contract_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_dex(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let old_pool_client = MockDexPoolClient::new(&env, &old_pool);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -92,7 +102,7 @@ fn test_dex_pool_rotation_while_deployed_exits_old_before_entering_new() {
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
 
     // Rebalance to DEX — funds deployed to old pool
-    client.rebalance(&_agent, &symbol_short!("dex"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
     assert_eq!(client.get_current_protocol(), symbol_short!("dex"));
     assert_eq!(
         old_pool_client.balance(&usdc_token, &contract_id),
@@ -100,21 +110,30 @@ fn test_dex_pool_rotation_while_deployed_exits_old_before_entering_new() {
     );
     assert_eq!(token_client.balance(&contract_id), 0_i128); // All deployed
 
-    // ROTATE: Create new pool and point to it
+    // ROTATE: rotation is rejected while the old pool holds funds (#96)
     let new_pool = env.register_contract(None, MockDexPool);
     let new_pool_client = MockDexPoolClient::new(&env, &new_pool);
+    assert!(
+        client.try_set_dex_pool(&owner, &new_pool).is_err(),
+        "pool rotation must be rejected while funds are deployed"
+    );
+    assert_eq!(client.get_dex_pool(), Some(old_pool.clone()));
+    assert_eq!(
+        old_pool_client.balance(&usdc_token, &contract_id),
+        deposit_amount
+    );
 
-    // set_dex_pool() should succeed even with funds deployed to old pool
+    // EXIT: rebalance to "none" recovers the funds to the vault.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(token_client.balance(&contract_id), deposit_amount);
+    assert_eq!(old_pool_client.balance(&usdc_token, &contract_id), 0);
+
+    // ROTATE again: with nothing deployed the rotation succeeds.
     client.set_dex_pool(&owner, &new_pool);
     assert_eq!(client.get_dex_pool(), Some(new_pool.clone()));
 
-    // Verify vault still points to DEX protocol, but on next rebalance will use new pool
-    assert_eq!(client.get_current_protocol(), symbol_short!("dex"));
-
-    // REBALANCE: Exit old pool, enter new pool
-    client.rebalance(&_agent, &symbol_short!("dex"), &500_i128, &0_i128);
-
-    // Verify the rotation: funds exited old pool, entered new pool
+    // REBALANCE: the recovered funds deploy into the new pool.
+    client.rebalance(&agent, &symbol_short!("dex"), &500_i128, &0_i128);
     assert_eq!(
         old_pool_client.balance(&usdc_token, &contract_id),
         0,
@@ -193,13 +212,13 @@ fn test_blend_pool_rotation_with_zero_deployed_funds() {
     assert_eq!(client.get_current_protocol(), symbol_short!("none"));
 }
 
-/// Edge case: Set pool, rotate back immediately before rebalance.
+/// Edge case: Set pool, rotate back and forth while idle.
 #[test]
 fn test_blend_pool_rotation_back_and_forth_before_rebalance() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, pool_a) = setup_vault_with_token_and_blend(&env);
+    let (contract_id, agent, owner, usdc_token, pool_a) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let pool_a_client = MockBlendPoolClient::new(&env, &pool_a);
     let token_client = TestTokenClient::new(&env, &usdc_token);
@@ -209,27 +228,33 @@ fn test_blend_pool_rotation_back_and_forth_before_rebalance() {
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(pool_a_client.supplied(&usdc_token), deposit_amount);
 
-    // Rotate: Pool A → Pool B
+    // While deployed, rotation away from A is rejected (#96)
     let pool_b = env.register_contract(None, MockBlendPool);
+    assert!(client.try_set_blend_pool(&owner, &pool_b).is_err());
+    assert_eq!(client.get_blend_pool(), Some(pool_a.clone()));
+
+    // Exit the position so rotations become possible.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(token_client.balance(&contract_id), deposit_amount);
+
+    // Rotate: Pool A → Pool B → Pool A (both pools empty, unrestricted)
     client.set_blend_pool(&owner, &pool_b);
-    assert_eq!(client.get_blend_pool(), Some(pool_b));
-
-    // Immediately rotate back: Pool B → Pool A
+    assert_eq!(client.get_blend_pool(), Some(pool_b.clone()));
     client.set_blend_pool(&owner, &pool_a);
-    assert_eq!(client.get_blend_pool(), Some(pool_a));
+    assert_eq!(client.get_blend_pool(), Some(pool_a.clone()));
 
-    // Rebalance should still work correctly (detect funds already in pool A, no-op)
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
-
-    // Verify funds remain in pool A (no unnecessary exit/re-entry)
+    // Rebalance deploys the recovered funds back into pool A.
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(
         pool_a_client.supplied(&usdc_token),
         deposit_amount,
-        "funds should remain in pool A"
+        "funds should be deployed to pool A"
     );
+    let pool_b_client = MockBlendPoolClient::new(&env, &pool_b);
+    assert_eq!(pool_b_client.supplied(&usdc_token), 0);
 }
 
 /// Edge case: Cross-protocol rotation (Blend → DEX while deployed).
@@ -289,23 +314,24 @@ fn test_cross_protocol_rotation_blend_to_dex_with_deployed_funds() {
     );
 }
 
-/// Edge case: Partial exit during pool rotation (withdrawal mid-rotation).
+/// Edge case: Pool rotation is still rejected while a partial user
+/// withdrawal leaves funds deployed; after a full exit the rotation succeeds
+/// and the next rebalance enters the new pool.
 #[test]
 fn test_blend_pool_rotation_with_partial_user_withdrawal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (contract_id, _agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
+    let (contract_id, agent, owner, usdc_token, old_pool) = setup_vault_with_token_and_blend(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let old_pool_client = MockBlendPoolClient::new(&env, &old_pool);
-    let token_client = TestTokenClient::new(&env, &usdc_token);
 
     // Deploy funds to old pool
     client.set_blend_pool(&owner, &old_pool);
     let user = Address::generate(&env);
     let deposit_amount = 10_000_000_i128;
     mint_and_deposit(&env, &client, &usdc_token, &user, deposit_amount);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
     assert_eq!(old_pool_client.supplied(&usdc_token), deposit_amount);
 
     // User withdraws some funds (requires exit from old pool)
@@ -319,13 +345,19 @@ fn test_blend_pool_rotation_with_partial_user_withdrawal() {
         "some funds should have been withdrawn from old pool"
     );
 
-    // Now rotate the pool while remaining funds are still deployed
+    // Rotation is rejected while the remaining funds are still deployed (#96)
     let new_pool = env.register_contract(None, MockBlendPool);
-    client.set_blend_pool(&owner, &new_pool);
+    assert!(client.try_set_blend_pool(&owner, &new_pool).is_err());
+    assert_eq!(client.get_blend_pool(), Some(old_pool.clone()));
 
-    // Rebalance to new pool
+    // Exit the remaining position to the vault.
+    client.rebalance(&agent, &symbol_short!("none"), &0_i128, &0_i128);
+    assert_eq!(old_pool_client.supplied(&usdc_token), 0);
+
+    // Now rotation succeeds and the next rebalance deploys into the new pool.
+    client.set_blend_pool(&owner, &new_pool);
     let new_pool_client = MockBlendPoolClient::new(&env, &new_pool);
-    client.rebalance(&_agent, &symbol_short!("blend"), &500_i128, &0_i128);
+    client.rebalance(&agent, &symbol_short!("blend"), &500_i128, &0_i128);
 
     // Verify transition happened correctly with reduced balance
     assert_eq!(

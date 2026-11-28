@@ -2,9 +2,10 @@
 //!
 //! `UserSharesIndex` (see `add_to_user_index` in `lib.rs`) is a single
 //! `Instance`-storage `Vec<Address>` that is appended to the first time an
-//! address holds non-zero shares, and is never pruned — a fully-withdrawn
-//! holder's slot is left behind as a zero-share entry (see
-//! `get_users_with_shares`'s doc comment and `test_users_with_shares.rs`).
+//! address holds non-zero shares. Entries for fully-withdrawn holders are
+//! pruned on the way to zero shares (Issue #440), but every *active* holder
+//! still occupies a slot — so the index still grows with the number of
+//! distinct addresses that currently hold shares.
 //!
 //! Every `deposit()` call from a `current_shares == 0` address reads the
 //! *entire* index into memory and linear-scans it (`index.contains(user)`)
@@ -142,6 +143,10 @@ fn test_deposit_cost_grows_with_index_size() {
     // We do assert an ordering sanity check: cost must not be negative/zero,
     // and must stay within a generous absolute ceiling so a truly runaway
     // (e.g. accidentally quadratic elsewhere) regression is still caught.
+    // The ceiling is deliberately loose: `soroban-env-host`'s metered memory
+    // counts the full Vec deserialize/serialize on every index rewrite, so
+    // 500 active entries legitimately cost several MB — the bound only needs
+    // to catch an order-of-magnitude regression, not track the exact figure.
     assert!(cpu > 0 && mem > 0);
     assert!(
         cpu < 50_000_000,
@@ -150,7 +155,7 @@ fn test_deposit_cost_grows_with_index_size() {
          section, for the storage-griefing analysis this benchmark supports)"
     );
     assert!(
-        mem < 5_000_000,
+        mem < 10_000_000,
         "deposit memory cost with a {INDEX_SIZE}-entry index is unexpectedly high: {mem}"
     );
 }

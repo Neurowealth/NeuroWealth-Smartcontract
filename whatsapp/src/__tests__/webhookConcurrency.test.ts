@@ -44,15 +44,33 @@ for (const key of [
 }
 
 // ── Stub db with an in-memory whatsapp_wallets table ─────────────────────────
-const wallets = new Map<string, { public_key: string; encrypted_data: string; iv: string; tag: string }>();
+const wallets = new Map<string, {
+  public_key: string;
+  encrypted_data: string;
+  iv: string;
+  tag: string;
+  wrapped_dek: string;
+  dek_iv: string;
+  dek_tag: string;
+  key_version: string;
+}>();
 
 async function fakeQuery(sql: string, params: any[] = []) {
   const normalized = sql.replace(/\s+/g, ' ').trim().toUpperCase();
 
   if (normalized.startsWith('INSERT INTO WHATSAPP_WALLETS')) {
-    const [phoneHash, publicKey, encryptedData, iv, tag] = params;
+    const [phoneHash, publicKey, encryptedData, iv, tag, , wrappedDek, dekIv, dekTag, keyVersion] = params;
     if (!wallets.has(phoneHash)) {
-      wallets.set(phoneHash, { public_key: publicKey, encrypted_data: encryptedData, iv, tag });
+      wallets.set(phoneHash, {
+        public_key: publicKey,
+        encrypted_data: encryptedData,
+        iv,
+        tag,
+        wrapped_dek: wrappedDek,
+        dek_iv: dekIv,
+        dek_tag: dekTag,
+        key_version: keyVersion,
+      });
     }
     return { rows: [] };
   }
@@ -72,7 +90,7 @@ require.cache[dbModulePath] = {
   exports: { query: fakeQuery }, parent: null, children: [], paths: [],
 } as any;
 
-import { test, describe, mock } from 'node:test';
+import { test, describe, mock, beforeEach, afterEach } from 'node:test';
 import { VaultClient } from '@neurowealth/vault-client';
 import assert from 'node:assert/strict';
 import { handleWhatsAppWebhook } from '../webhook';
@@ -82,6 +100,15 @@ import { InMemoryStateStore, setStateStore } from '../stateStore';
 
 setStateStore(new InMemoryStateStore());
 import { hashPhoneNumber } from '../cryptoUtils';
+
+beforeEach(() => {
+  mock.method(VaultClient.prototype, 'set_user_strategy', () => Promise.resolve({ hash: 'b'.repeat(64) }));
+  mock.method(VaultClient.prototype, 'get_balance', () => Promise.resolve(1_000_0000000n));
+  mock.method(VaultClient.prototype, 'get_user_strategy', () => Promise.resolve('growth'));
+  mock.method(VaultClient.prototype, 'get_user_apy', () => Promise.resolve(850n));
+});
+
+afterEach(() => mock.restoreAll());
 
 let phoneCounter = 0;
 function nextPhone(): string {
@@ -116,9 +143,6 @@ async function verifiedPhone(): Promise<string> {
 
 describe('webhook concurrency (per-user command serialization)', () => {
   test('two commands from the same user apply in arrival order, not interleaved', async () => {
-    mock.method(VaultClient.prototype, 'set_user_strategy', () =>
-      Promise.resolve({ hash: 'b'.repeat(64) }),
-    );
     const phone = await verifiedPhone();
     const order: string[] = [];
 

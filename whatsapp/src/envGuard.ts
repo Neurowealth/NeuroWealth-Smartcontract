@@ -21,6 +21,12 @@ function missing(env: NodeJS.ProcessEnv, name: string): boolean {
   return env[name] === undefined || env[name]?.trim() === '';
 }
 
+/** Returns the env var's value, or `fallback` when it is unset or blank. */
+export function envOr(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
+  const raw = env[name];
+  return raw === undefined || raw.trim() === '' ? fallback : raw;
+}
+
 function checkSecret(env: NodeJS.ProcessEnv, name: string, minLength: number, problems: string[]): void {
   if (missing(env, name)) {
     problems.push(`${name} must be set; refusing to use an unsafe default`);

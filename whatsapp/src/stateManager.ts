@@ -1,3 +1,4 @@
+import { envOr } from './envGuard';
 import { getStateStore } from './stateStore';
 
 export enum UserState {
@@ -13,9 +14,9 @@ export interface ConversationSession {
   rateLimitWindowStart: number;
 }
 
-const SESSION_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SESSION_TIMEOUT_MS || '900000', 10); // 15 minutes default
-const RATE_LIMIT_MAX_MESSAGES = parseInt(process.env.WHATSAPP_RATE_LIMIT_MAX_MESSAGES || '10', 10);
-const RATE_LIMIT_WINDOW_MS = parseInt(process.env.WHATSAPP_RATE_LIMIT_WINDOW_MS || '60000', 10); // 1 minute default
+const SESSION_TIMEOUT_MS = parseInt(envOr(process.env, 'WHATSAPP_SESSION_TIMEOUT_MS', '900000'), 10); // 15 minutes default
+const RATE_LIMIT_MAX_MESSAGES = parseInt(envOr(process.env, 'WHATSAPP_RATE_LIMIT_MAX_MESSAGES', '10'), 10);
+const RATE_LIMIT_WINDOW_MS = parseInt(envOr(process.env, 'WHATSAPP_RATE_LIMIT_WINDOW_MS', '60000'), 10); // 1 minute default
 
 // Sessions are persisted in Postgres (see stateStore.ts) so a restart or a
 // request landing on another replica sees the same conversation state.

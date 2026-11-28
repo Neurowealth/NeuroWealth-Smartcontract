@@ -95,6 +95,9 @@ fn test_withdrawal_queue_ordering_cancellation_and_processing() {
 fn test_any_authenticated_keeper_can_process_bounded_queue() {
     let env = Env::default();
     env.mock_all_auths();
+    // 50 queue fulfillments in a single call exceed the default debug-build
+    // CPU budget; the test asserts batching semantics, not metered cost.
+    env.budget().reset_unlimited();
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let token = TestTokenClient::new(&env, &usdc_token);

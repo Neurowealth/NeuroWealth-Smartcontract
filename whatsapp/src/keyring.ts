@@ -59,14 +59,15 @@ export function parseRetiredKeys(raw: string | undefined): KeyEntry[] {
 
 export function loadKeyring(env: NodeJS.ProcessEnv = process.env): Keyring {
   const material = env.ENCRYPTION_KEY;
-  if (!material) {
+  if (material === undefined || material === '') {
     throw new Error('ENCRYPTION_KEY must be set; refusing to use an unsafe production default');
   }
   if (material.length < MIN_KEY_LENGTH) {
     throw new Error(`ENCRYPTION_KEY must be at least ${MIN_KEY_LENGTH} characters`);
   }
 
-  const version = env.ENCRYPTION_KEY_VERSION?.trim() || DEFAULT_KEY_VERSION;
+  const rawVersion = env.ENCRYPTION_KEY_VERSION?.trim();
+  const version = rawVersion === undefined || rawVersion === '' ? DEFAULT_KEY_VERSION : rawVersion;
   if (!VERSION_PATTERN.test(version)) {
     throw new Error('ENCRYPTION_KEY_VERSION may only contain letters, digits, ".", "_" and "-" (max 32 chars)');
   }

@@ -183,28 +183,30 @@ fn touch_ttl_is_limited_per_user_per_ledger() {
 }
 
 #[test]
-fn all_preview_and_conversion_entrypoints_share_one_global_bucket() {
+fn preview_and_conversion_entrypoints_are_not_rate_limited() {
+    // Preview/convert functions are pure read-only computations, so they are
+    // exempt from `RATE_LIMIT_PREVIEW`: the bucket can still be configured,
+    // but no calls are metered against it.
     let env = Env::default();
     env.mock_all_auths();
     let (contract_id, _agent, _owner) = setup_vault(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
 
-    set_limit(&client, RATE_LIMIT_PREVIEW, 2, 2);
-    let _ = client.preview_deposit_to_shares(&1_000_000);
-    let _ = client.convert_to_assets(&1_000_000);
-    assert!(
-        client.try_preview_withdraw(&1_000_000).is_err(),
-        "preview aliases must not provide separate bypass buckets"
-    );
+    set_limit(&client, RATE_LIMIT_PREVIEW, 1, 1);
+    for _ in 0..5 {
+        let _ = client.preview_deposit_to_shares(&1_000_000);
+        let _ = client.preview_withdraw(&1_000_000);
+        let _ = client.preview_shares_to_assets(&1_000_000);
+        let _ = client.convert_to_shares(&1_000_000);
+        let _ = client.convert_to_assets(&1_000_000);
+    }
 
-    let state = client.get_global_rate_limit_state(&RATE_LIMIT_PREVIEW);
-    env.ledger().set_sequence_number(state.window_start + 2);
-    let _ = client.preview_shares_to_assets(&1_000_000);
     assert_eq!(
         client
             .get_global_rate_limit_state(&RATE_LIMIT_PREVIEW)
             .calls,
-        1
+        0,
+        "preview/convert calls must not consume the preview bucket"
     );
 }
 

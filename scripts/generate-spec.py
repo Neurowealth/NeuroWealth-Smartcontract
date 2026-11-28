@@ -591,6 +591,19 @@ FUNCTION_METADATA = {
         "storage_type": "mixed",
         "query_only": False
     },
+        "description": "Extend the persistent TTL for a user's multi-asset shares entry",
+        "requires_auth": True,
+        "state_changing": True,
+        "storage_type": "persistent",
+        "query_only": False
+    },
+    "add_allowed_migration_source": {
+        "category": "management",
+        "access": "owner",
+        "description": "Allow-list a source vault for receive_migration",
+        "requires_auth": True,
+        "state_changing": True
+    },
     "preview_deposit_to_shares": {
         "category": "queries",
         "access": "public",

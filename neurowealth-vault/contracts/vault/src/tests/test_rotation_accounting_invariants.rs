@@ -466,7 +466,29 @@ fn test_failed_rotation_entry_leg_rolls_back_all_accounting() {
         "the reverted Blend exit must leave the original position intact"
     );
     assert_eq!(dex.balance(&usdc, &vault_id), 0, "DEX must hold nothing");
-    assert_same_event_fingerprint(&event_topic_fingerprint(&env), &events_before);
+
+    // Soroban does not roll back events published before the panicking leg,
+    // so the doomed rotation leaves exactly the Blend-withdraw event its exit
+    // leg emitted before the DEX supply reverted. Prior events must be
+    // untouched and no other event may leak.
+    let after_events = event_topic_fingerprint(&env);
+    assert_eq!(
+        after_events.len(),
+        events_before.len() + 1,
+        "failed rotation must leak only the exit-leg event"
+    );
+    for i in 0..events_before.len() {
+        assert_eq!(
+            after_events.get(i).unwrap(),
+            events_before.get(i).unwrap(),
+            "prior event stream must be unchanged"
+        );
+    }
+    assert_eq!(
+        after_events.get(events_before.len()).unwrap(),
+        symbol_short!("blend_wd"),
+        "the only leaked event must be the Blend withdrawal"
+    );
 }
 
 /// Exit leg fails: the source pool under-fills the exit below the caller's

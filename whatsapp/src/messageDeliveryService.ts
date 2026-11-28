@@ -7,9 +7,9 @@ const logger = pino({ name: 'whatsapp-message-delivery' });
 
 /**
  * Delivery states Twilio reports for an outbound WhatsApp message, in the
- * order they can legitimately progress. `failed` and `undelivered` are both
- * terminal and share the same rank as `delivered` - once any of the three is
- * reached, the record no longer moves.
+ * order they can legitimately progress. `failed`, `undelivered`, and
+ * `delivered` are terminal and share the same rank - once any is reached,
+ * the record no longer moves.
  */
 export type MessageDeliveryStatus = 'queued' | 'sent' | 'delivered' | 'failed' | 'undelivered';
 
@@ -35,7 +35,7 @@ const PHONE_LIKE_PATTERN = /\+?\d[\d\s().-]{6,}\d/g;
 
 /** Strips phone-number-like substrings from provider error text before it is persisted. */
 export function redactErrorMessage(message: string | null | undefined): string | null {
-  if (!message) return null;
+  if (message === null || message === undefined || message === '') return null;
   return message.replace(PHONE_LIKE_PATTERN, '[redacted]');
 }
 
@@ -72,7 +72,7 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
   const { messageSid, status, to, errorCode, errorMessage } = bounded.value;
 
   if (!messageSid) {
-    logger.warn({ status, to: to ? hashPhoneNumber(to) : to }, 'Ignoring delivery status callback with no MessageSid');
+    logger.warn({ status, to: to !== undefined && to !== '' ? hashPhoneNumber(to) : to }, 'Ignoring delivery status callback with no MessageSid');
     return { applied: false, reason: 'missing_message_sid' };
   }
 
@@ -88,10 +88,10 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
   );
 
   if (existing.rows.length === 0) {
-    const phoneHash = to ? hashPhoneNumber(to) : null;
-    const encryptedTo = to ? encryptField(to) : null;
+    const phoneHash = to !== undefined && to !== '' ? hashPhoneNumber(to) : null;
+    const encryptedTo = to !== undefined && to !== '' ? encryptField(to) : null;
 
-    await query(
+    const inserted = await query(
       `INSERT INTO whatsapp_message_deliveries
          (message_sid, phone_hash, to_encrypted, to_iv, to_tag, status, error_code, error_reason, retry_count, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, NOW(), NOW())
@@ -108,31 +108,53 @@ export async function applyDeliveryStatus(callback: DeliveryStatusCallback): Pro
       ]
     );
 
-    logger.info({ messageSid, status }, 'Recorded new outbound message delivery status');
-    return { applied: true, created: true };
+    if ((inserted.rowCount ?? 0) > 0) {
+      logger.info({ messageSid, status }, 'Recorded new outbound message delivery status');
+      return { applied: true, created: true };
+    }
   }
 
-  const currentStatus = existing.rows[0].status as MessageDeliveryStatus;
-  if (STATUS_RANK[status] < STATUS_RANK[currentStatus]) {
+  const currentStatus = (existing.rows[0] as { status: MessageDeliveryStatus } | undefined)?.status;
+  if (currentStatus !== undefined && STATUS_RANK[status] <= STATUS_RANK[currentStatus]) {
     logger.info(
       { messageSid, status, currentStatus },
-      'Ignoring out-of-order delivery status callback; current state is already more advanced'
+      'Ignoring duplicate or out-of-order delivery status callback; current state is already as advanced'
     );
     return { applied: false, reason: 'stale_status' };
   }
 
-  await query(
+  const updated = await query(
     `UPDATE whatsapp_message_deliveries
        SET status = $2, error_code = $3, error_reason = $4, updated_at = NOW()
-     WHERE message_sid = $1`,
-    [messageSid, status, errorCode ?? null, redactedError]
+     WHERE message_sid = $1
+       AND CASE status
+         WHEN 'queued' THEN 0
+         WHEN 'sent' THEN 1
+         WHEN 'delivered' THEN 2
+         WHEN 'failed' THEN 2
+         WHEN 'undelivered' THEN 2
+         ELSE -1
+       END < $5`,
+    [messageSid, status, errorCode ?? null, redactedError, STATUS_RANK[status]]
   );
+
+  if ((updated.rowCount ?? 0) === 0) {
+    return { applied: false, reason: 'stale_status' };
+  }
 
   logger.info({ messageSid, status, previousStatus: currentStatus }, 'Updated outbound message delivery status');
   return { applied: true, created: false };
 }
 
 const MAX_DELIVERY_RETRIES = 3;
+
+interface DeliveryRow {
+  status: string;
+  to_encrypted: string | null;
+  to_iv: string | null;
+  to_tag: string | null;
+  retry_count: number | string | null;
+}
 
 export interface RetryOutcome {
   retried: boolean;
@@ -160,7 +182,7 @@ export async function retryFailedDelivery(
     return { retried: false, escalated: false };
   }
 
-  const row = existing.rows[0];
+  const row = existing.rows[0] as DeliveryRow;
   const status = row.status as MessageDeliveryStatus;
   const retryCount = Number(row.retry_count) || 0;
 
@@ -168,7 +190,12 @@ export async function retryFailedDelivery(
     return { retried: false, escalated: false };
   }
 
-  if (retryCount >= MAX_DELIVERY_RETRIES || !row.to_encrypted) {
+  if (
+    retryCount >= MAX_DELIVERY_RETRIES ||
+    row.to_encrypted === null || row.to_encrypted === '' ||
+    row.to_iv === null || row.to_iv === '' ||
+    row.to_tag === null || row.to_tag === ''
+  ) {
     await query(
       'UPDATE whatsapp_message_deliveries SET escalated_at = NOW() WHERE message_sid = $1 AND escalated_at IS NULL',
       [messageSid]

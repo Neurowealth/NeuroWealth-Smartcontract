@@ -16,7 +16,7 @@ import { query } from './db';
 import { EncryptedSecret, rewrapSecret } from './cryptoUtils';
 import { loadKeyring } from './keyring';
 
-export type QueryFn = (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount?: number | null }>;
+export type QueryFn = (text: string, params?: unknown[]) => Promise<{ rows: unknown[]; rowCount?: number | null }>;
 
 export interface RotationOptions {
   batchSize?: number;

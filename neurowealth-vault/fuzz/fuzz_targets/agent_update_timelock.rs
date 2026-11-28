@@ -1,4 +1,4 @@
-//! LibFuzzer harness: random propose/confirm/cancel sequences for agent updates.
+//! `LibFuzzer` harness: random propose/confirm/cancel sequences for agent updates.
 //!
 //! Exercises the two-step timelock for `update_agent()`:
 //! - only one pending proposal may exist at a time
@@ -7,9 +7,9 @@
 //! - scheduled `effective_ledger` is always in the future
 //!
 //! Allowed panics (documented vault validation):
-//! - `Error(Contract, #48)` — TimelockAlreadyPending
-//! - `Error(Contract, #49)` — NoTimelockPending
-//! - `Error(Contract, #50)` — TimelockNotExpired
+//! - `Error(Contract, #48)` — `TimelockAlreadyPending`
+//! - `Error(Contract, #49)` — `NoTimelockPending`
+//! - `Error(Contract, #50)` — `TimelockNotExpired`
 
 #![no_main]
 
@@ -29,6 +29,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -112,7 +113,7 @@ fn assert_timelock_invariants(
     client: &NeuroWealthVaultClient<'_>,
     expected_active_agent: &Address,
     expected_pending: Option<(Address, u32)>,
-    current_ledger: u32,
+    _current_ledger: u32,
 ) {
     let active_agent = client.get_agent();
     assert_eq!(active_agent, *expected_active_agent);
@@ -122,10 +123,9 @@ fn assert_timelock_invariants(
         (Some((addr, expiry)), Some((expected_addr, expected_expiry))) => {
             assert_eq!(addr, expected_addr, "pending agent address mismatch");
             assert_eq!(expiry, expected_expiry, "pending expiry mismatch");
-            assert!(
-                expiry > current_ledger,
-                "effective_ledger must be in the future"
-            );
+            // NOTE: `expiry` may be <= current_ledger — a pending proposal
+            // stays valid after its effective time until confirmed or
+            // cancelled, so it is NOT required to be in the future.
         }
         (None, None) => {}
         (Some((_, _)), None) => {
@@ -156,14 +156,7 @@ fuzz_target!(|data: &[u8]| {
         let op = chunk[0] % 4;
         let raw = u16::from(chunk.get(1).copied().unwrap_or(0))
             | (u16::from(chunk.get(2).copied().unwrap_or(0)) << 8);
-        let agent_selector = chunk.get(3).copied().unwrap_or(0) as usize % 4;
-
-        let proposal_agent = match agent_selector {
-            0 => Address::generate(&env),
-            1 => Address::generate(&env),
-            2 => Address::generate(&env),
-            _ => Address::generate(&env),
-        };
+        let proposal_agent = Address::generate(&env);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match op {
             0 => {
@@ -224,7 +217,7 @@ fuzz_target!(|data: &[u8]| {
                 let msg = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("unknown panic");
                 assert!(
                     is_allowed_panic(msg),

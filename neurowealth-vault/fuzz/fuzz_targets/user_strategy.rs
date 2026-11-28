@@ -1,9 +1,9 @@
-//! LibFuzzer harness: random `set_user_strategy` / `get_user_strategy` sequences.
+//! `LibFuzzer` harness: random `set_user_strategy` / `get_user_strategy` sequences.
 //!
 //! Allowed panics (documented vault validation):
-//! - `Error(Contract, #47)` — InvalidStrategy (unknown strategy string)
+//! - `Error(Contract, #47)` — `InvalidStrategy` (unknown strategy string)
 //! - Auth / not-initialized panics from the mock environment are filtered as
-//!   well because `mock_all_auths()` handles auth; NotInitialized cannot fire
+//!   well because `mock_all_auths()` handles auth; `NotInitialized` cannot fire
 //!   after setup.
 
 #![no_main]
@@ -24,6 +24,7 @@ mod token {
     #[contract]
     pub struct FuzzToken;
 
+    #[allow(clippy::needless_pass_by_value)]
     #[contractimpl]
     impl FuzzToken {
         pub fn mint(env: Env, to: Address, amount: i128) {
@@ -144,7 +145,7 @@ fuzz_target!(|data: &[u8]| {
             let msg = payload
                 .downcast_ref::<&str>()
                 .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("unknown panic");
             assert!(is_allowed_panic(msg), "unexpected panic at step {i}: {msg}");
         }

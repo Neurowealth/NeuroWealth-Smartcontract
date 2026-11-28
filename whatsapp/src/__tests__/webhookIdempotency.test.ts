@@ -53,7 +53,16 @@ for (const key of [
 // ── Stub db with an in-memory whatsapp_wallets table and fault injection ────
 const wallets = new Map<
   string,
-  { public_key: string; encrypted_data: string; iv: string; tag: string }
+  {
+    public_key: string;
+    encrypted_data: string;
+    iv: string;
+    tag: string;
+    wrapped_dek: string;
+    dek_iv: string;
+    dek_tag: string;
+    key_version: string;
+  }
 >();
 const faults: { select: number; insert: number } = { select: 0, insert: 0 };
 
@@ -71,13 +80,17 @@ async function fakeQuery(sql: string, params: any[] = []) {
       faults.insert -= 1;
       throw transientError();
     }
-    const [phoneHash, publicKey, encryptedData, iv, tag] = params;
+    const [phoneHash, publicKey, encryptedData, iv, tag, , wrappedDek, dekIv, dekTag, keyVersion] = params;
     if (!wallets.has(phoneHash)) {
       wallets.set(phoneHash, {
         public_key: publicKey,
         encrypted_data: encryptedData,
         iv,
         tag,
+        wrapped_dek: wrappedDek,
+        dek_iv: dekIv,
+        dek_tag: dekTag,
+        key_version: keyVersion,
       });
     }
     return { rows: [] };
@@ -109,8 +122,23 @@ require.cache[dbModulePath] = {
   paths: [],
 } as any;
 
-import { test, describe, beforeEach } from "node:test";
+import { test, describe, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
+import { VaultClient } from "@neurowealth/vault-client";
+const deliveryModulePath = require.resolve("../messageDeliveryService");
+require.cache[deliveryModulePath] = {
+  id: deliveryModulePath,
+  filename: deliveryModulePath,
+  loaded: true,
+  exports: {
+    applyDeliveryStatus: async () => ({ applied: true, created: true }),
+    retryFailedDelivery: async () => ({ retried: false, escalated: false }),
+  },
+  parent: null,
+  children: [],
+  paths: [],
+} as any;
+
 import { handleWhatsAppWebhook } from "../webhook";
 import { createCustodialWallet } from "../walletService";
 import { updateState, UserState } from "../stateManager";
@@ -139,6 +167,25 @@ function lastSmsCode(): string | undefined {
 }
 
 beforeEach(() => {
+  mock.method(VaultClient.prototype, "set_user_strategy", () =>
+    Promise.resolve({ hash: "b".repeat(64) }),
+  );
+  mock.method(VaultClient.prototype, "get_balance", () =>
+    Promise.resolve(1_000_0000000n),
+  );
+  mock.method(VaultClient.prototype, "get_user_strategy", () =>
+    Promise.resolve("growth"),
+  );
+  mock.method(VaultClient.prototype, "get_user_apy", () => Promise.resolve(850n));
+  mock.method(VaultClient.prototype, "deposit", () =>
+    Promise.resolve({ hash: "c".repeat(64) }),
+  );
+  mock.method(VaultClient.prototype, "withdraw", () =>
+    Promise.resolve({ hash: "d".repeat(64) }),
+  );
+  mock.method(VaultClient.prototype, "withdraw_all", () =>
+    Promise.resolve({ hash: "e".repeat(64), result: 0n }),
+  );
   clock = Date.now();
   store = new InMemoryIdempotencyStore(() => clock);
   setStateStore(new InMemoryStateStore());
@@ -152,6 +199,8 @@ beforeEach(() => {
     return "test-message-sid";
   };
 });
+
+afterEach(() => mock.restoreAll());
 
 let phoneCounter = 0;
 function nextPhone(): string {

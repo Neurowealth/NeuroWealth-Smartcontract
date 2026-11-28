@@ -11,14 +11,11 @@ function rejectUnusableAddress(publicKey: string): string | null {
 
 function requireEnv(name: string): string {
   const value = process.env[name];
-  if (!value) {
+  if (value === undefined || value === '') {
     throw new Error(`${name} must be set; refusing to use an unsafe vault contract default`);
   }
   return value;
 }
-
-const SOROBAN_RPC_URL = requireEnv('SOROBAN_RPC_URL');
-const VAULT_CONTRACT_ID = requireEnv('VAULT_CONTRACT_ID');
 
 /** USDC has 7 decimal places on this vault; see contractLimits.ts's own USDC_DECIMALS. */
 const USDC_DECIMALS = 7;
@@ -33,7 +30,10 @@ function fromStroops(stroops: bigint): number {
 }
 
 function vaultClient(): VaultClient {
-  return new VaultClient({ contractId: VAULT_CONTRACT_ID, rpcUrl: SOROBAN_RPC_URL });
+  return new VaultClient({
+    contractId: requireEnv('VAULT_CONTRACT_ID'),
+    rpcUrl: requireEnv('SOROBAN_RPC_URL'),
+  });
 }
 
 function toStrategySymbol(strategy: string): Strategy | null {
@@ -56,7 +56,7 @@ async function applyUserStrategy(
     return { ok: false, message: 'Invalid strategy specified on-chain transaction failed.' };
   }
   const result = await client.set_user_strategy(signer, publicKey, symbol);
-  if (!result.hash) {
+  if (result.hash === undefined || result.hash === '') {
     throw new Error('set_user_strategy: transaction did not return a hash');
   }
   return { ok: true, txHash: result.hash, symbol };
@@ -110,11 +110,11 @@ async function loadSigner(phoneHash: string): Promise<LoadedSigner | { error: st
     return { error: 'Wallet not initialized.' };
   }
   const addressError = rejectUnusableAddress(wallet.publicKey);
-  if (addressError) {
+  if (addressError !== null) {
     return { error: addressError };
   }
   const secret = await getDecryptedSecretKey(phoneHash);
-  if (!secret) {
+  if (secret === null) {
     return { error: 'Wallet not initialized.' };
   }
   return { publicKey: wallet.publicKey, signer: Keypair.fromSecret(secret) };
@@ -146,27 +146,19 @@ export async function getPortfolio(phoneHash: string): Promise<UserPortfolio> {
   try {
     const client = vaultClient();
     const sourcePublicKey = wallet.publicKey;
-    const [balanceRaw, rawStrategy, exchangeRateRaw, totalAssetsRaw, totalSharesRaw] = await Promise.all([
+    const [balanceRaw, rawStrategy, userApyRaw] = await Promise.all([
       client.get_balance(wallet.publicKey, sourcePublicKey),
       client.get_user_strategy(wallet.publicKey, sourcePublicKey),
-      client.get_exchange_rate(sourcePublicKey),
-      client.get_total_assets(sourcePublicKey),
-      client.get_total_shares(sourcePublicKey),
+      client.get_user_apy(wallet.publicKey, sourcePublicKey).catch(() => 0n),
     ]);
 
     const balance = fromStroops(balanceRaw);
     const strategy = STRATEGY_MAP[String(rawStrategy)] || 'Balanced';
-    const exchangeRateFromContract = fromStroops(exchangeRateRaw);
-    const totalAssets = fromStroops(totalAssetsRaw);
-    const totalShares = fromStroops(totalSharesRaw);
+    const apy = Number((Number(userApyRaw) / 100).toFixed(2));
 
-    const exchangeRate = exchangeRateFromContract || (totalShares > 0 ? totalAssets / totalShares : 1.0);
-    const apy = totalAssets > 0 && totalShares > 0
-      ? Number((((totalAssets / totalShares - 1) * 365 * 100).toFixed(2)))
-      : 0;
-
-    const usdEquivalent = balance * exchangeRate;
-    const dailyEarnings = balance > 0 ? (balance * (apy / 100)) / 365 : 0;
+    // get_balance already returns the user's USDC asset value (1 USDC = $1.00 USD).
+    const usdEquivalent = Number(balance.toFixed(2));
+    const dailyEarnings = balance > 0 && apy > 0 ? (balance * (apy / 100)) / 365 : 0;
 
     return {
       balance,
@@ -204,20 +196,20 @@ export async function handleDeposit(
     return { success: false, txHash: '', message: loaded.error };
   }
 
-  const selectedStrategy = strategy || 'Balanced';
+  const selectedStrategy = strategy !== undefined && strategy !== '' ? strategy : 'Balanced';
 
   try {
     const client = vaultClient();
     // The deposit invocation has no strategy argument. Persist the choice
     // with set_user_strategy before claiming the deposit succeeded (#1107).
-    if (strategy) {
+    if (strategy !== undefined && strategy !== '') {
       const applied = await applyUserStrategy(client, loaded.signer, loaded.publicKey, strategy);
       if (!applied.ok) {
         return { success: false, txHash: '', message: applied.message };
       }
     }
     const result = await client.deposit(loaded.signer, loaded.publicKey, toStroops(amount));
-    if (!result.hash) {
+    if (result.hash === undefined || result.hash === '') {
       throw new Error('deposit: transaction did not return a hash');
     }
 
@@ -249,14 +241,14 @@ export async function handleWithdraw(
     return { success: false, txHash: '', message: loaded.error };
   }
 
-  const withdrawAmountText = withdrawAll ? 'all funds' : `${amount} USDC`;
+  const withdrawAmountText = withdrawAll === true ? 'all funds' : `${amount} USDC`;
 
   try {
     const client = vaultClient();
-    const result = withdrawAll
+    const result = withdrawAll === true
       ? await client.withdraw_all(loaded.signer, loaded.publicKey)
       : await client.withdraw(loaded.signer, loaded.publicKey, toStroops(amount as number));
-    if (!result.hash) {
+    if (result.hash === undefined || result.hash === '') {
       throw new Error('withdraw: transaction did not return a hash');
     }
 

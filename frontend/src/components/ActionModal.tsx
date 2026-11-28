@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   X,
@@ -95,6 +95,31 @@ export const ActionModal: React.FC<ActionModalProps> = ({
   const dialogRef = useRef<HTMLDivElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
   const [portalRoot, setPortalRoot] = useState<HTMLDivElement | null>(null);
+  const submission = submissions[type];
+  const loading = submission.phase !== "idle";
+
+  const handleResetAndClose = useCallback(() => {
+    if (!loading) {
+      setAmount("");
+      setTxSuccess(false);
+      setTxHash("");
+      setTxError(null);
+    }
+
+    onClose();
+  }, [loading, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleResetAndClose();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleResetAndClose, isOpen]);
 
   useEffect(() => {
     if (!isOpen || typeof document === "undefined") return;
@@ -141,8 +166,6 @@ export const ActionModal: React.FC<ActionModalProps> = ({
 
   if (!isOpen) return null;
 
-  const submission = submissions[type];
-  const loading = submission.phase !== "idle";
   const numAmount = parseFloat(amount) || 0;
   const estimatedShares = (numAmount / exchangeRate).toFixed(4);
 
@@ -300,17 +323,6 @@ export const ActionModal: React.FC<ActionModalProps> = ({
     setTxError(null);
   };
 
-  const handleResetAndClose = () => {
-    if (!loading) {
-      setAmount("");
-      setTxSuccess(false);
-      setTxHash("");
-      setTxError(null);
-    }
-
-    onClose();
-  };
-
   const modal = (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
       <div
@@ -320,11 +332,6 @@ export const ActionModal: React.FC<ActionModalProps> = ({
         aria-labelledby="transaction-modal-title"
         aria-describedby="transaction-modal-description"
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            handleResetAndClose();
-            return;
-          }
           if (event.key !== "Tab" || !dialogRef.current) return;
           const focusable = Array.from(
             dialogRef.current.querySelectorAll<HTMLElement>(

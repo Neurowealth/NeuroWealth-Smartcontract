@@ -178,14 +178,9 @@ fn test_touch_restores_ttl_when_below_threshold() {
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000);
 
-    // Force TTL to 1 ledger (insufficient headroom) using threshold=0 so it always acts
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().extend_ttl(
-            &DataKey::Shares(user.clone()),
-            0, // always act
-            1, // 1 ledger remaining
-        )
-    });
+    // Force TTL to 1 ledger (insufficient headroom). extend_ttl cannot shorten
+    // a TTL, so the entry is rewritten to pick up the lowered minimum TTL.
+    force_shares_ttl(&env, &contract_id, &user, 1);
 
     let ttl_before = env.as_contract(&contract_id, || {
         env.storage()
@@ -221,20 +216,21 @@ fn test_touch_does_not_extend_when_ttl_equals_threshold() {
     let env = Env::default();
     env.mock_all_auths();
 
+    // Lower the persistent-entry TTL floor so the forced 100-ledger TTL is not
+    // clamped up to the 4096-ledger default minimum.
+    env.ledger().with_mut(|li| {
+        li.min_persistent_entry_ttl = 1;
+    });
+
     let (contract_id, _agent, _owner, usdc_token) = setup_vault_with_token(&env);
     let client = NeuroWealthVaultClient::new(&env, &contract_id);
     let user = Address::generate(&env);
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000);
 
-    // Set TTL to exactly USER_SHARES_TTL_THRESHOLD (100)
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().extend_ttl(
-            &DataKey::Shares(user.clone()),
-            0,   // always act
-            100, // extend_to == threshold
-        )
-    });
+    // Set TTL to exactly USER_SHARES_TTL_THRESHOLD (100). extend_ttl cannot
+    // shorten a TTL, so the entry is rewritten and bumped to the target.
+    force_shares_ttl(&env, &contract_id, &user, 100);
 
     let ttl_at_threshold = env.as_contract(&contract_id, || {
         env.storage()
@@ -277,14 +273,9 @@ fn test_touch_extends_when_ttl_is_one_below_threshold() {
 
     mint_and_deposit(&env, &client, &usdc_token, &user, 5_000_000);
 
-    // Set TTL to 99 (threshold - 1)
-    env.as_contract(&contract_id, || {
-        env.storage().persistent().extend_ttl(
-            &DataKey::Shares(user.clone()),
-            0, // always act
-            99,
-        )
-    });
+    // Set TTL to 99 (threshold - 1). extend_ttl cannot shorten a TTL, so the
+    // entry is rewritten and bumped to the target.
+    force_shares_ttl(&env, &contract_id, &user, 99);
 
     let ttl_before = env.as_contract(&contract_id, || {
         env.storage()

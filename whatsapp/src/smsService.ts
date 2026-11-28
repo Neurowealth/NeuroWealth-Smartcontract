@@ -14,7 +14,11 @@ export const smsClient = {
     const authToken = process.env.TWILIO_AUTH_TOKEN;
     const from = process.env.TWILIO_SMS_FROM_NUMBER;
 
-    if (!accountSid || !authToken || !from) {
+    if (
+      accountSid === undefined || accountSid === '' ||
+      authToken === undefined || authToken === '' ||
+      from === undefined || from === ''
+    ) {
       throw new Error(
         "Twilio SMS is not configured (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_SMS_FROM_NUMBER)",
       );

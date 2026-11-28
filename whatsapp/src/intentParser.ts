@@ -57,7 +57,12 @@ export function parseIntent(message: string): ParsedIntent {
   }
 
   // Balance query
-  if (clean.includes('balance') || clean.includes('how much do i have') || clean.includes('my funds')) {
+  // Word-boundary match: matches 'balance' as a whole word but NOT 'balanced'
+  // (the 'd' after 'balance' in 'balanced' prevents the trailing \b from matching).
+  // Fixes #1167 — previously `clean.includes('balance')` matched the substring
+  // inside 'balanced', so 'switch to balanced' was routed to BALANCE before the
+  // strategy-change branch at line 76 ever ran.
+  if (/\bbalance\b/i.test(clean) || clean.includes('how much do i have') || clean.includes('my funds')) {
     return { type: 'BALANCE', rawText };
   }
 
@@ -75,7 +80,7 @@ export function parseIntent(message: string): ParsedIntent {
   // Strategy change
   if (clean.includes('switch to') || clean.includes('change strategy')) {
     const known = findKnownStrategy(clean);
-    if (known) return { type: 'STRATEGY', strategy: known, rawText };
+    if (known !== undefined) return { type: 'STRATEGY', strategy: known, rawText };
     // Surface the unrecognised name so the validator can reject it explicitly.
     const named = clean.match(/(?:switch to|change strategy(?: to)?)\s+([a-z]+)/);
     return { type: 'STRATEGY', strategy: named ? named[1] : undefined, rawText };
